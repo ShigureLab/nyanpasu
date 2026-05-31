@@ -1,4 +1,4 @@
-enabled_plugins = ["github_reviewer"]
+enabled_plugins = ["github_reviewer", "github_pr_maker"]
 
 [server]
 host = "127.0.0.1"
@@ -40,3 +40,18 @@ base_branches = ["main"]
 name = "AGENTS.md"
 path = "/path/to/repo/AGENTS.md"
 required = false
+
+[plugins.github_pr_maker]
+branch_prefix = "nyanpasu"
+default_base_branch = "main"
+dry_run = true
+draft = false
+follow_up_enabled = true
+follow_up_interval_seconds = 600
+git_author_name = "Nyanpasu"
+git_author_email = "nyanpasu@example.invalid"
+
+[plugins.github_pr_maker.repos."owner/repo"]
+local_path = "/path/to/repo"
+github_remote = "https://github.com/owner/repo.git"
+base_branches = ["main"]

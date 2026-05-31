@@ -2,7 +2,7 @@
 
 GitHub pull request review plugin for Nyanpasu.
 
-This package owns GitHub-specific behavior: webhook payload parsing, polling, PR state baselines, `gh-llm` review prompts, and GitHub-facing review policy. The Nyanpasu core runtime only receives generic `AgentTask` objects.
+This package owns GitHub review behavior: webhook payload parsing, polling, PR state baselines, `gh-llm` review prompts, and GitHub-facing review policy. Shared GitHub config/workspace/signature helpers come from `nyanpasu-github`. The Nyanpasu core runtime only receives generic `AgentTask` objects.
 
 Each PR maps to one Nyanpasu context key, so follow-up events reuse the same Codex thread and context worktree. The worktree is reset to the current PR head before each review task.
 

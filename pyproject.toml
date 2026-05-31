@@ -40,6 +40,8 @@ nyanpasu = "nyanpasu.__main__:app"
 [dependency-groups]
 dev = [
   "httpx>=0.28.0",
+  "nyanpasu-github",
+  "nyanpasu-github-pr-maker",
   "nyanpasu-github-reviewer",
   "ty>=0.0.39",
   "ruff>=0.15.14",
@@ -48,10 +50,16 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/nyanpasu-github-reviewer"]
+members = [
+  "packages/nyanpasu-github",
+  "packages/nyanpasu-github-pr-maker",
+  "packages/nyanpasu-github-reviewer",
+]
 
 [tool.uv.sources]
 nyanpasu = { workspace = true }
+nyanpasu-github = { workspace = true }
+nyanpasu-github-pr-maker = { workspace = true }
 nyanpasu-github-reviewer = { workspace = true }
 
 [tool.ruff]

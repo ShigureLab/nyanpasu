@@ -2,7 +2,7 @@
 
 Nyanpasu is a plugin-oriented Codex agent service. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses persistent Codex threads per context, records state in SQLite, and runs Codex under a constrained runtime policy.
 
-GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package.
+GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and PR publishing without coupling those features to the core runtime.
 
 ## Core Responsibilities
 
@@ -14,7 +14,7 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
 - Runtime safety defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
 
-Anything domain-specific belongs in a plugin. GitHub event parsing, polling, webhook signatures, `gh-llm` prompts, and review submission live in `packages/nyanpasu-github-reviewer`.
+Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
 ## Configuration
 
@@ -25,7 +25,7 @@ Nyanpasu has one user-facing home directory. Set `NYANPASU_HOME` to choose it; o
 `state_dir` is intentionally not a TOML option. To move both config and state, move `NYANPASU_HOME`.
 
 ```toml
-enabled_plugins = ["github_reviewer"]
+enabled_plugins = ["github_reviewer", "github_pr_maker"]
 
 [server]
 host = "127.0.0.1"
@@ -63,6 +63,19 @@ base_branches = ["main"]
 name = "AGENTS.md"
 path = "/path/to/repo/AGENTS.md"
 required = false
+
+[plugins.github_pr_maker]
+branch_prefix = "nyanpasu"
+default_base_branch = "main"
+dry_run = false
+draft = false
+follow_up_enabled = true
+follow_up_interval_seconds = 600
+
+[plugins.github_pr_maker.repos."owner/repo"]
+local_path = "/path/to/repo"
+github_remote = "https://github.com/owner/repo.git"
+base_branches = ["main"]
 ```
 
 Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking Codex. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
@@ -93,6 +106,17 @@ POST /plugins/github-reviewer/webhook
 ```
 
 The plugin can also start its poller during plugin setup. GitHub reviewer polling combines repository events, PR state polling, and PR timeline polling into one event journal: the first poll records current cursors and PR snapshots without handling older work, later polls process matching events after those cursors, and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` means dispatch every matching journal event in the poll window; set it to a positive number only when you intentionally want a per-cycle cap.
+
+The GitHub PR maker plugin mounts:
+
+```text
+POST /plugins/github-pr-maker/tasks
+GET /plugins/github-pr-maker/tasks/{task_id}
+```
+
+It accepts a repository and task description, asks Codex to implement the change in a managed worktree, then its post-process hook commits, pushes, and creates a pull request. Core still never performs GitHub writes directly.
+
+When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so Codex keeps the same thread and the core runtime serializes work for that PR. Follow-up publishing pushes to the existing PR branch instead of opening a second PR.
 
 ## Plugin Contract
 

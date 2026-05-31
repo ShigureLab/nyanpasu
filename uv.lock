@@ -5,6 +5,8 @@ requires-python = ">=3.11"
 [manifest]
 members = [
     "nyanpasu",
+    "nyanpasu-github",
+    "nyanpasu-github-pr-maker",
     "nyanpasu-github-reviewer",
 ]
 
@@ -190,6 +192,8 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "nyanpasu-github" },
+    { name = "nyanpasu-github-pr-maker" },
     { name = "nyanpasu-github-reviewer" },
     { name = "pytest" },
     { name = "pytest-rerunfailures" },
@@ -210,11 +214,51 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.0" },
+    { name = "nyanpasu-github", editable = "packages/nyanpasu-github" },
+    { name = "nyanpasu-github-pr-maker", editable = "packages/nyanpasu-github-pr-maker" },
     { name = "nyanpasu-github-reviewer", editable = "packages/nyanpasu-github-reviewer" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-rerunfailures", specifier = ">=16.3" },
     { name = "ruff", specifier = ">=0.15.14" },
     { name = "ty", specifier = ">=0.0.39" },
+]
+
+[[package]]
+name = "nyanpasu-github"
+version = "0.1.0"
+source = { editable = "packages/nyanpasu-github" }
+dependencies = [
+    { name = "loguru" },
+    { name = "nyanpasu" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "nyanpasu", editable = "." },
+    { name = "pydantic", specifier = ">=2.12.0" },
+]
+
+[[package]]
+name = "nyanpasu-github-pr-maker"
+version = "0.1.0"
+source = { editable = "packages/nyanpasu-github-pr-maker" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "loguru" },
+    { name = "nyanpasu" },
+    { name = "nyanpasu-github" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.125.0" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "nyanpasu", editable = "." },
+    { name = "nyanpasu-github", editable = "packages/nyanpasu-github" },
+    { name = "pydantic", specifier = ">=2.12.0" },
 ]
 
 [[package]]
@@ -226,6 +270,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "loguru" },
     { name = "nyanpasu" },
+    { name = "nyanpasu-github" },
     { name = "pydantic" },
     { name = "typer" },
 ]
@@ -236,6 +281,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.125.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "nyanpasu", editable = "." },
+    { name = "nyanpasu-github", editable = "packages/nyanpasu-github" },
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "typer", specifier = ">=0.20.0" },
 ]

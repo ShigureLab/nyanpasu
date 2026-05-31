@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import subprocess
 import time
@@ -10,6 +9,9 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from loguru import logger
+from nyanpasu_github.gh import GitHubSignatureError, verify_webhook_signature
+from nyanpasu_github.instructions import instruction_documents_for_repo
+from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, TaskAction, WorkspaceRef
@@ -17,7 +19,6 @@ from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
-    InstructionDocumentSettings,
     PullRequestRef,
     ReviewAction,
     ReviewEvent,
@@ -169,19 +170,14 @@ class GitHubReviewerPlugin:
             cleanup_policy="context" if task_action is TaskAction.CLEANUP else "none",
         )
 
-    def _instruction_docs_for_pr(self, pr: PullRequestRef) -> tuple[InstructionDocument, ...]:
+    def _instruction_docs_for_pr(self, pr: PullRequestRef):
         if self.config is None:
             return ()
-        repo_settings = self.config.repos.get(pr.repo)
-        settings = list(self.config.instruction_docs)
-        if repo_settings is not None:
-            settings.extend(repo_settings.instruction_docs)
-        docs: list[InstructionDocument] = []
-        for setting in settings:
-            doc = _instruction_document_from_settings(setting)
-            if doc is not None:
-                docs.append(doc)
-        return tuple(docs)
+        return instruction_documents_for_repo(
+            repo=pr.repo,
+            plugin_instruction_docs=self.config.instruction_docs,
+            repo_settings=self.config.repos,
+        )
 
     def runtime_store_context(self, context_key: str) -> dict[str, Any] | None:
         context_lookup = getattr(self, "_context_lookup", None)
@@ -210,16 +206,10 @@ class GitHubReviewerPlugin:
     def _workspace_for_pr(self, pr: PullRequestRef | None) -> WorkspaceRef | None:
         if pr is None or self.config is None:
             return None
-        repo_config = self.config.repo_configs.get(pr.repo)
-        if repo_config is None:
+        repo_settings = self.config.repos.get(pr.repo)
+        if repo_settings is None:
             return None
-        return WorkspaceRef(
-            key=pr.repo,
-            local_path=repo_config.local_path,
-            remote=repo_config.github_remote,
-            ref=f"pull/{pr.number}/head",
-            revision=pr.head_sha or None,
-        )
+        return pull_request_workspace_ref(pr, repo_settings)
 
     def _preflight_event(self, event: ReviewEvent) -> ReviewEvent:
         if self.config is None or event.pr is None or event.action is not ReviewAction.REVIEW:
@@ -322,38 +312,11 @@ def event_with_coalesced_tasks(event: ReviewEvent, coalesced_tasks: list[dict[st
     return event.model_copy(update={"raw": raw})
 
 
-def _instruction_document_from_settings(setting: InstructionDocumentSettings) -> InstructionDocument | None:
-    if setting.content is not None:
-        return InstructionDocument(
-            name=setting.name or "inline-instructions",
-            content=setting.content,
-            source=None,
-        )
-    if setting.path is None:
-        return None
-    try:
-        content = setting.path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        if setting.required:
-            raise
-        logger.warning("instruction document skipped missing path={}", setting.path)
-        return None
-    return InstructionDocument(
-        name=setting.name or setting.path.name,
-        content=content,
-        source=str(setting.path),
-    )
-
-
 def verify_signature(body: bytes, signature: str | None, secret: str | None) -> None:
-    if not secret:
-        return
-    if not signature or not signature.startswith("sha256="):
-        raise HTTPException(status_code=401, detail="missing GitHub signature")
-    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    actual = signature.removeprefix("sha256=")
-    if not hmac.compare_digest(expected, actual):
-        raise HTTPException(status_code=401, detail="invalid GitHub signature")
+    try:
+        verify_webhook_signature(body, signature, secret)
+    except GitHubSignatureError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def _task_action(action: ReviewAction) -> TaskAction:
