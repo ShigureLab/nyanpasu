@@ -142,6 +142,14 @@ class AgentService:
         async with self._semaphore:
             try:
                 await self._run_task(task)
+            except asyncio.CancelledError:
+                logger.info("task cancelled task_id={} context={}", task.task_id, task.context_key)
+                await to_thread.run_sync(
+                    self.store.mark_task_interrupted,
+                    task.task_id,
+                    "task interrupted by agent shutdown",
+                )
+                raise
             except Exception as exc:
                 logger.exception("task failed task_id={} context={}", task.task_id, task.context_key)
                 await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
@@ -373,5 +381,8 @@ class AgentService:
         for task in list(self._tasks):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        released = await to_thread.run_sync(self.store.release_context_leases_for_owner, self._owner_id)
+        if released:
+            logger.info("agent shutdown released context leases owner={} count={}", self._owner_id, released)
         await self.codex.close()
         logger.info("agent shutdown finished")

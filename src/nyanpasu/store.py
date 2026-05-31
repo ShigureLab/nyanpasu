@@ -117,6 +117,19 @@ class StateStore:
     def mark_task_failed(self, task_id: str, error: str) -> None:
         self._update_task(task_id, TaskStatus.FAILED, error=error)
 
+    def mark_task_interrupted(self, task_id: str, error: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT result_json, error FROM task_runs WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            result_json = None
+            if row is not None and row["result_json"] is not None:
+                result_json = str(row["result_json"])
+        if result_json is None:
+            result_json = json_dumps({"interrupted": True})
+        self._update_task(task_id, TaskStatus.FAILED, result_json=result_json, error=error)
+
     def mark_task_coalesced(self, task_id: str, active_task_id: str) -> None:
         self._update_task(
             task_id,
@@ -266,6 +279,11 @@ class StateStore:
                 (context_key,),
             ).fetchone()
         return ContextLease.model_validate(dict(row)) if row is not None else None
+
+    def release_context_leases_for_owner(self, owner_id: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM context_leases WHERE owner_id = ?", (owner_id,))
+            return cur.rowcount
 
     def coalesced_tasks_for(self, active_task_id: str) -> list[CoalescedTaskRecord]:
         with self._connect() as conn:

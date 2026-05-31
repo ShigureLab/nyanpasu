@@ -114,6 +114,21 @@ def test_mark_task_done_roundtrip(tmp_path: Path) -> None:
     assert recent[0].thread_id == "thread-1"
 
 
+def test_mark_task_interrupted_keeps_dedupe_and_marks_failed(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    task = _task("task-1")
+    assert store.record_task(task)
+    store.mark_task_running("task-1", None)
+
+    store.mark_task_interrupted("task-1", "shutdown")
+
+    assert store.task_status("task-1") == "failed"
+    assert not store.record_task(task)
+    recent = store.recent_tasks()
+    assert recent[0].task_id == "task-1"
+    assert recent[0].error == "shutdown"
+
+
 def test_context_lease_acquire_heartbeat_release_and_expiry(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
 
@@ -136,3 +151,16 @@ def test_context_lease_acquire_heartbeat_release_and_expiry(tmp_path: Path) -> N
     assert stolen is not None
     assert stolen.owner_id == "owner-2"
     assert stolen.task_id == "task-2"
+
+
+def test_release_context_leases_for_owner(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    assert store.try_acquire_context_lease("demo:1", owner_id="owner-1", task_id="task-1", ttl_seconds=60)
+    assert store.try_acquire_context_lease("demo:2", owner_id="owner-1", task_id="task-2", ttl_seconds=60)
+    assert store.try_acquire_context_lease("demo:3", owner_id="owner-2", task_id="task-3", ttl_seconds=60)
+
+    assert store.release_context_leases_for_owner("owner-1") == 2
+
+    assert store.get_context_lease("demo:1") is None
+    assert store.get_context_lease("demo:2") is None
+    assert store.get_context_lease("demo:3") is not None

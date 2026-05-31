@@ -81,6 +81,18 @@ class SlowCodex(FakeCodex):
         return await super().run_turn(cwd=cwd, prompt=prompt, thread_id=thread_id)
 
 
+class CancellableCodex(FakeCodex):
+    def __init__(self, started: asyncio.Event) -> None:
+        super().__init__()
+        self.started = started
+
+    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
+        _ = cwd, prompt, thread_id
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 def _config(tmp_path: Path, *, concurrency: int = 4) -> NyanpasuConfig:
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
@@ -259,6 +271,33 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
     assert store.get_context_lease("demo:1") is None
     await first_agent.shutdown()
     await second_agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_agent_shutdown_marks_running_tasks_failed_and_releases_lease(tmp_path: Path) -> None:
+    config = _config(tmp_path, concurrency=1)
+    store = StateStore(config.db_path)
+    started = asyncio.Event()
+    agent = AgentService(
+        config,
+        store=store,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        codex=CancellableCodex(started),
+    )
+
+    result = await agent.submit(_task("task-1"))
+    await started.wait()
+    assert result["accepted"] is True
+    assert store.task_status("task-1") == "running"
+    assert store.get_context_lease("demo:1") is not None
+
+    await agent.shutdown()
+
+    assert store.task_status("task-1") == "failed"
+    assert store.get_context_lease("demo:1") is None
+    recent = store.recent_tasks()
+    assert recent[0].task_id == "task-1"
+    assert recent[0].error == "task interrupted by agent shutdown"
 
 
 @pytest.mark.anyio
