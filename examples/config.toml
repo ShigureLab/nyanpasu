@@ -1,0 +1,41 @@
+enabled_plugins = ["github_reviewer"]
+
+[server]
+host = "127.0.0.1"
+port = 8765
+
+[codex]
+backend = "app-server"
+command_timeout_seconds = 3600
+sandbox = "workspace-write"
+approval_policy = "never"
+
+[runtime]
+concurrency = 4
+coalesce_window_seconds = 600
+clean_event_snapshots = true
+
+[plugins.github_reviewer]
+agent_name = "Nyanpasu"
+github_login = "your-github-login"
+review_language = "Chinese"
+poll_enabled = true
+poll_interval_seconds = 600
+poll_event_pages = 3
+poll_max_events_per_cycle = 0
+dry_run = false
+post_reviews = true
+
+[[plugins.github_reviewer.instruction_docs]]
+name = "SOUL.md"
+path = "/path/to/SOUL.md"
+
+[plugins.github_reviewer.repos."owner/repo"]
+local_path = "/path/to/repo"
+github_remote = "https://github.com/owner/repo.git"
+base_branches = ["main"]
+
+[[plugins.github_reviewer.repos."owner/repo".instruction_docs]]
+name = "AGENTS.md"
+path = "/path/to/repo/AGENTS.md"
+required = false

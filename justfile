@@ -1,4 +1,4 @@
-VERSION := `uv run python -c "import sys; from moelib import __version__ as version; sys.stdout.write(version)"`
+VERSION := `uv run python -c "import sys; from nyanpasu import __version__ as version; sys.stdout.write(version)"`
 
 install:
   uv sync --all-extras --dev
@@ -12,7 +12,7 @@ fmt:
   prettier --write '**/*.md'
 
 lint:
-  uv run ty check --error-on-warning src/moelib tests
+  uv run ty check --error-on-warning src/nyanpasu packages/nyanpasu-github-reviewer/src tests packages/nyanpasu-github-reviewer/tests
   uv run ruff check .
 
 fmt-docs:

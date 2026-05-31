@@ -1,10 +1,17 @@
 [project]
-name = "moelib"
+name = "nyanpasu"
 version = "0.1.0"
-description = ""
+description = "A plugin-oriented Codex-powered agent service."
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = [
+  "anyio>=4.12.0",
+  "fastapi>=0.125.0",
+  "loguru>=0.7.3",
+  "pydantic>=2.12.0",
+  "typer>=0.20.0",
+  "uvicorn>=0.38.0",
+]
 authors = [{ name = "Nyakku Shigure", email = "sigure.qaq@gmail.com" }]
 keywords = []
 license = "MIT"
@@ -14,7 +21,6 @@ classifiers = [
   "Typing :: Typed",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -23,25 +29,34 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ShigureLab/moelib"
-Documentation = "https://github.com/ShigureLab/moelib"
-Repository = "https://github.com/ShigureLab/moelib"
-Issues = "https://github.com/ShigureLab/moelib/issues"
+Homepage = "https://github.com/ShigureLab/nyanpasu"
+Documentation = "https://github.com/ShigureLab/nyanpasu"
+Repository = "https://github.com/ShigureLab/nyanpasu"
+Issues = "https://github.com/ShigureLab/nyanpasu/issues"
 
 [project.scripts]
-moelib = "moelib.__main__:main"
+nyanpasu = "nyanpasu.__main__:app"
 
 [dependency-groups]
 dev = [
+  "httpx>=0.28.0",
+  "nyanpasu-github-reviewer",
   "ty>=0.0.39",
   "ruff>=0.15.14",
   "pytest>=9.0.3",
   "pytest-rerunfailures>=16.3",
 ]
 
+[tool.uv.workspace]
+members = ["packages/nyanpasu-github-reviewer"]
+
+[tool.uv.sources]
+nyanpasu = { workspace = true }
+nyanpasu-github-reviewer = { workspace = true }
+
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -88,8 +103,12 @@ future-annotations = true
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
-known-first-party = ["moelib"]
+known-first-party = ["nyanpasu", "nyanpasu_github_reviewer"]
 combine-as-imports = true
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-decorators = ["typing.runtime_checkable", "runtime_checkable"]
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 
 [build-system]
 requires = ["uv_build>=0.11.2,<0.12.0"]
