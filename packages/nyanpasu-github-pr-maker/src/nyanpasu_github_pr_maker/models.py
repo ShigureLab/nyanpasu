@@ -52,7 +52,6 @@ class PullRequestPublishMetadata(BaseModel):
     branch_name: str
     title: str
     body: str
-    commit_message: str
     task: str
     context_key: str
     labels: tuple[str, ...] = ()
@@ -63,3 +62,21 @@ class PullRequestPublishMetadata(BaseModel):
     remote_url: str | None = None
     git_author_name: str | None = None
     git_author_email: str | None = None
+
+
+class PullRequestPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    repo: str
+    base_branch: str
+    branch_name: str
+    title: str
+    body: str
+    task: str
+    labels: tuple[str, ...] = ()
+    draft: bool
+    dry_run: bool
+    commit_message: str | None = None
+    git_author_name: str | None = None
+    git_author_email: str | None = None
+    auth_instructions: tuple[str, ...] = ()

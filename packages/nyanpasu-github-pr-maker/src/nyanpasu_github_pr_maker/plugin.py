@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from nyanpasu_github.gh import resolve_branch_sha, run_gh_with_env
+from nyanpasu_github.gh import resolve_branch_sha
 from nyanpasu_github.instructions import instruction_documents_for_repo
 from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
-from nyanpasu_github.publisher import (
-    GitHubPullRequestPublisher,
-    PublishPullRequestRequest,
-    PullRequestPublisher,
-)
-from nyanpasu_github.pulls import fetch_pull_request_view
+from nyanpasu_github.pulls import fetch_pull_request_view, pull_request_number_from_url
 from nyanpasu_github.workspace import branch_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
@@ -23,6 +19,7 @@ from nyanpasu_github_pr_maker.followup import GitHubPrMakerFollowUpPoller
 from nyanpasu_github_pr_maker.models import (
     CreatePullRequestTaskRequest,
     GitHubPrMakerConfig,
+    PullRequestPlan,
     PullRequestPublishMetadata,
 )
 from nyanpasu_github_pr_maker.prompt import build_pr_maker_prompt
@@ -41,11 +38,10 @@ class GitHubPrMakerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubPrMakerConfig
 
-    def __init__(self, *, publisher: PullRequestPublisher | None = None) -> None:
+    def __init__(self) -> None:
         self.config: GitHubPrMakerConfig | None = None
         self.runtime: PluginRuntime | None = None
         self.store: GitHubPrMakerStore | None = None
-        self.publisher = publisher
         self.github: GitHubIntegrationConfig = GitHubIntegrationConfig()
         self.follow_up_poller: GitHubPrMakerFollowUpPoller | None = None
         self.follow_up_task: asyncio.Task[None] | None = None
@@ -56,8 +52,6 @@ class GitHubPrMakerPlugin:
         self.runtime = runtime
         self.github = github_integration_from_config(runtime.config.integrations.get("github"))
         self.config = config
-        if self.publisher is None:
-            self.publisher = GitHubPullRequestPublisher(gh_runner=run_gh_with_env(self.github.gh_env()))
         self.store = GitHubPrMakerStore(runtime.config.db_path)
         runtime.add_router(self._router(), prefix="/plugins/github-pr-maker", tags=["github-pr-maker"])
         runtime.add_post_process_hook(self.id, self._post_process)
@@ -116,21 +110,37 @@ class GitHubPrMakerPlugin:
         context_key = request.context_key or f"github-pr-maker:{request.repo}:{task_id}"
         dry_run = self.config.dry_run if request.dry_run is None else request.dry_run
         draft = self.config.draft if request.draft is None else request.draft
+        git_author_name = self.config.git_author_name or self.github.git_author_name
+        git_author_email = self.config.git_author_email or self.github.git_author_email
         publish = PullRequestPublishMetadata(
             repo=request.repo,
             base_branch=base_branch,
             branch_name=branch_name,
             title=title,
             body=body,
-            commit_message=commit_message,
             task=request.task,
             context_key=context_key,
             labels=request.labels,
             draft=draft,
             dry_run=dry_run,
             remote_url=repo_settings.github_remote,
-            git_author_name=self.config.git_author_name or self.github.git_author_name,
-            git_author_email=self.config.git_author_email or self.github.git_author_email,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
+        )
+        plan = PullRequestPlan(
+            repo=request.repo,
+            base_branch=base_branch,
+            branch_name=branch_name,
+            title=title,
+            body=body,
+            task=request.task,
+            labels=request.labels,
+            draft=draft,
+            dry_run=dry_run,
+            commit_message=commit_message,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
+            auth_instructions=self.github.agent_auth_instructions(),
         )
         instruction_docs = instruction_documents_for_repo(
             repo=request.repo,
@@ -141,7 +151,7 @@ class GitHubPrMakerPlugin:
             task_id=task_id,
             action=TaskAction.RUN,
             context_key=context_key,
-            prompt=build_pr_maker_prompt(config=self.config, request=request, base_branch=base_branch),
+            prompt=build_pr_maker_prompt(config=self.config, plan=plan),
             workspace=branch_workspace_ref(
                 repo=request.repo,
                 settings=repo_settings,
@@ -164,26 +174,7 @@ class GitHubPrMakerPlugin:
         if not isinstance(publish_raw, dict):
             return
         publish = PullRequestPublishMetadata.model_validate(publish_raw)
-        if result.session_worktree is None:
-            self.store.upsert_result(
-                task_id=task.task_id,
-                repo=publish.repo,
-                branch_name=publish.branch_name,
-                status="failed",
-                pr_url=publish.existing_pr_url,
-                pr_number=publish.existing_pr_number,
-                error="task completed without a session worktree",
-                result={},
-            )
-            return
-        try:
-            if self.publisher is None:
-                raise RuntimeError("github pr maker publisher is not initialized")
-            pr_result = self.publisher.publish(
-                worktree=result.session_worktree,
-                request=PublishPullRequestRequest(**publish.model_dump()),
-            )
-        except Exception as exc:
+        if result.status.value != "completed":
             self.store.upsert_result(
                 task_id=task.task_id,
                 repo=publish.repo,
@@ -192,33 +183,53 @@ class GitHubPrMakerPlugin:
                 pr_url=publish.existing_pr_url,
                 pr_number=publish.existing_pr_number,
                 result={},
-                error=str(exc),
+                error=result.error or "agent task did not complete",
             )
-            logger.exception("github pr maker publish failed task_id={} repo={}", task.task_id, publish.repo)
             return
+        pr_url = publish.existing_pr_url or _extract_pr_url(result.final_message)
+        pr_number = publish.existing_pr_number or pull_request_number_from_url(pr_url)
+        no_pr_reason = _extract_no_pr_reason(result.final_message)
+        if publish.dry_run:
+            status = "dry_run"
+        elif pr_url and pr_number is not None:
+            status = "published"
+        elif no_pr_reason is not None:
+            status = "no_changes"
+        else:
+            status = "failed"
+        error = None if status != "failed" else "agent final message did not include `PR: <url>`"
+        result_payload = {
+            "agentic": True,
+            "final_message": result.final_message,
+            "thread_id": result.thread_id,
+            "turn_id": result.turn_id,
+        }
+        if no_pr_reason is not None:
+            result_payload["no_pr_reason"] = no_pr_reason
         self.store.upsert_result(
             task_id=task.task_id,
             repo=publish.repo,
             branch_name=publish.branch_name,
-            status=pr_result.status,
-            pr_url=pr_result.pr_url,
-            pr_number=pr_result.pr_number,
-            result=pr_result.model_dump(mode="json"),
+            status=status,
+            pr_url=pr_url,
+            pr_number=pr_number,
+            result=result_payload,
+            error=error,
         )
         if (
-            pr_result.status == "published"
+            status == "published"
             and publish.existing_pr_number is None
-            and pr_result.pr_url is not None
-            and pr_result.pr_number is not None
+            and pr_url is not None
+            and pr_number is not None
         ):
-            self._register_managed_pr(publish, pr_number=pr_result.pr_number, pr_url=pr_result.pr_url)
+            self._register_managed_pr(publish, pr_number=pr_number, pr_url=pr_url)
         logger.info(
-            "github pr maker publish finished task_id={} repo={} status={} pr_url={} follow_up={}",
+            "github pr maker post-process finished task_id={} repo={} status={} pr_url={} follow_up={}",
             task.task_id,
             publish.repo,
-            pr_result.status,
-            pr_result.pr_url or "",
-            bool(pr_result.pr_number and self.config and self.config.follow_up_enabled),
+            status,
+            pr_url or "",
+            bool(pr_number and self.config and self.config.follow_up_enabled),
         )
 
     def _register_managed_pr(self, publish: PullRequestPublishMetadata, *, pr_number: int, pr_url: str) -> None:
@@ -271,6 +282,21 @@ def _default_pr_body(task: str) -> str:
 
 def _managed_pr_task_id(repo: str, pr_number: int) -> str:
     return f"managed-pr-{safe_slug(repo)}-{pr_number}"
+
+
+def _extract_pr_url(text: str) -> str | None:
+    marker = re.search(r"(?im)^\s*PR:\s*(https://github\.com/[^\s]+/[^\s]+/pull/\d+)\s*$", text)
+    if marker is not None:
+        return marker.group(1)
+    fallback = re.search(r"https://github\.com/[^\s]+/[^\s]+/pull/\d+", text)
+    return fallback.group(0) if fallback is not None else None
+
+
+def _extract_no_pr_reason(text: str) -> str | None:
+    marker = re.search(r"(?im)^\s*NO_PR:\s*(.+?)\s*$", text)
+    if marker is None:
+        return None
+    return marker.group(1).strip() or "no pull request created"
 
 
 def plugin() -> GitHubPrMakerPlugin:

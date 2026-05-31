@@ -37,6 +37,7 @@ sandbox = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 command_timeout_seconds = 3600
+pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
 [runtime]
 concurrency = 4
@@ -87,6 +88,8 @@ Instruction documents are task-scoped. A plugin can attach files such as `SOUL.m
 
 Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. For GitHub, `token_env` is preferred over writing a token directly in TOML. If neither `token` nor `token_env` is set, GitHub plugins fall back to the ambient `gh auth` state.
 
+Agentic GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
+
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 
 ## Run
@@ -121,9 +124,9 @@ POST /plugins/github-pr-maker/tasks
 GET /plugins/github-pr-maker/tasks/{task_id}
 ```
 
-It accepts a repository and task description, asks Codex to implement the change in a managed worktree, then its post-process hook commits, pushes, and creates a pull request. Core still never performs GitHub writes directly.
+It accepts a repository and task description, builds a concrete PR plan, and asks Codex to implement the change, create a branch, commit, push, and open one pull request with `gh pr create` inside the managed worktree. The post-process hook only parses the agent's final `PR: <url>` or `NO_PR: <reason>` marker and records the result. Core still never performs GitHub writes directly.
 
-When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so Codex keeps the same thread and the core runtime serializes work for that PR. Follow-up publishing pushes to the existing PR branch instead of opening a second PR.
+When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so Codex keeps the same thread and the core runtime serializes work for that PR. Follow-up tasks ask Codex to commit and push to the existing PR branch instead of opening a second PR.
 
 ## Plugin Contract
 

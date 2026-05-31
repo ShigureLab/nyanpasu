@@ -10,6 +10,7 @@ command_timeout_seconds = 3600
 sandbox = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
+pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
 [runtime]
 concurrency = 4

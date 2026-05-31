@@ -107,7 +107,12 @@ class GitHubPrMakerFollowUpPoller:
                     active=True,
                 )
                 continue
-            task = build_follow_up_task(self.config, record, pr)
+            task = build_follow_up_task(
+                self.config,
+                record,
+                pr,
+                auth_instructions=self.github.agent_auth_instructions(),
+            )
             result = await self.runtime.submit(task)
             accepted = bool(result.get("accepted", False))
             submitted += int(accepted)
@@ -134,6 +139,8 @@ def build_follow_up_task(
     config: GitHubPrMakerConfig,
     record: ManagedPullRequestRecord,
     pr: PullRequestView,
+    *,
+    auth_instructions: tuple[str, ...] = (),
 ) -> AgentTask:
     repo_settings = config.repos[record.repo]
     task_id = f"{record.task_id}-followup-{int(time.time() * 1000)}"
@@ -143,7 +150,6 @@ def build_follow_up_task(
         branch_name=record.branch_name,
         title=record.title,
         body=record.body,
-        commit_message=f"Follow up {record.title}",
         task=record.task,
         context_key=record.context_key,
         labels=(),
@@ -159,7 +165,12 @@ def build_follow_up_task(
         task_id=task_id,
         action=TaskAction.RUN,
         context_key=record.context_key,
-        prompt=build_pr_follow_up_prompt(config=config, record=record, pr=pr),
+        prompt=build_pr_follow_up_prompt(
+            config=config,
+            record=record,
+            pr=pr,
+            auth_instructions=auth_instructions,
+        ),
         workspace=branch_workspace_ref(
             repo=record.repo,
             settings=repo_settings,

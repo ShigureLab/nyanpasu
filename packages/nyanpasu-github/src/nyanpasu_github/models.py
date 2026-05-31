@@ -31,6 +31,27 @@ class GitHubIntegrationConfig(GitHubModel):
             return None
         return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
 
+    def agent_auth_instructions(self) -> tuple[str, ...]:
+        if self.token_env:
+            if self.token_env in {"GH_TOKEN", "GITHUB_TOKEN"}:
+                return (
+                    f"GitHub CLI authentication may use `${self.token_env}` if it is exposed to the Codex runtime.",
+                    "Do not print or otherwise expose authentication environment variable values.",
+                )
+            return (
+                f"If GitHub CLI authentication is needed and `${self.token_env}` is exposed to the Codex runtime, "
+                f'run `gh` commands with `GH_TOKEN="${{{self.token_env}}}" GITHUB_TOKEN="${{{self.token_env}}}"` '
+                "in the command environment.",
+                "Do not print or otherwise expose authentication environment variable values.",
+            )
+        if self.token:
+            return (
+                "A GitHub token is configured for plugin-side GitHub API calls, but token values are not embedded in "
+                "agent prompts. Use ambient `gh auth` for agent GitHub writes, or configure `token_env` and "
+                "`codex.pass_env`.",
+            )
+        return ("Use ambient `gh auth` for GitHub CLI writes. If authentication is missing, stop and report it.",)
+
 
 class InstructionDocumentSettings(GitHubModel):
     name: str | None = None

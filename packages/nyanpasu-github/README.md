@@ -14,3 +14,12 @@ git_author_email = "nyanpasu@example.invalid"
 ```
 
 `token_env` is preferred. `token` is also supported for controlled environments, but it places the secret in TOML. When neither is set, helpers use the ambient `gh auth` state.
+
+Agentic plugins may ask Codex to run `gh` itself. In that case, also expose the token variable to Codex:
+
+```toml
+[codex]
+pass_env = ["NYANPASU_GITHUB_TOKEN"]
+```
+
+Shared helpers provide prompt-facing authentication notes that mention only environment variable names, never token values.
