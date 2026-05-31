@@ -5,6 +5,12 @@ import hmac
 from typing import TYPE_CHECKING
 
 import pytest
+from nyanpasu_github.agentic import (
+    GitHubRepoConfigError,
+    branch_agent_task,
+    configured_branch_context,
+    parse_agentic_pull_request_outcome,
+)
 from nyanpasu_github.gh import GitHubSignatureError, verify_webhook_signature
 from nyanpasu_github.instructions import instruction_documents_for_repo
 from nyanpasu_github.models import (
@@ -14,6 +20,8 @@ from nyanpasu_github.models import (
     github_integration_from_config,
 )
 from nyanpasu_github.workspace import branch_workspace_ref, pull_request_workspace_ref
+
+from nyanpasu.models import TaskAction
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -88,3 +96,103 @@ def test_github_integration_config_resolves_auth_env(monkeypatch) -> None:
     assert config.resolved_token == "env-token"
     assert config.gh_env() == {"GH_TOKEN": "env-token", "GITHUB_TOKEN": "env-token"}
     assert config.git_author_name == "Bot"
+
+
+def test_configured_branch_context_builds_workspace_and_docs(tmp_path: Path, monkeypatch) -> None:
+    agentic_module = __import__("nyanpasu_github.agentic", fromlist=["resolve_branch_sha"])
+    doc = tmp_path / "AGENTS.md"
+    doc.write_text("repo instructions\n", encoding="utf-8")
+    seen_env: list[dict[str, str] | None] = []
+
+    def resolve(*args, **kwargs):
+        _ = args
+        seen_env.append(kwargs.get("env"))
+        return "base-sha"
+
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", resolve)
+    monkeypatch.setenv("NYANPASU_TEST_GH_TOKEN", "token")
+
+    context = configured_branch_context(
+        repo="owner/repo",
+        requested_base_branch=None,
+        default_base_branch="main",
+        repos={
+            "owner/repo": GitHubRepoSettings(
+                local_path=tmp_path / "repo",
+                github_remote="git@example.com:owner/repo.git",
+                base_branches=("main",),
+                instruction_docs=(InstructionDocumentSettings(name="AGENTS.md", path=doc),),
+            )
+        },
+        github=github_integration_from_config({"token_env": "NYANPASU_TEST_GH_TOKEN"}),
+    )
+
+    assert context.base_branch == "main"
+    assert context.revision == "base-sha"
+    assert context.workspace.ref == "refs/heads/main"
+    assert context.workspace.revision == "base-sha"
+    assert context.instruction_docs[0].content == "repo instructions\n"
+    assert seen_env == [{"GH_TOKEN": "token", "GITHUB_TOKEN": "token"}]
+
+
+def test_configured_branch_context_rejects_unknown_repo_and_branch(tmp_path: Path) -> None:
+    repos = {
+        "owner/repo": GitHubRepoSettings(
+            local_path=tmp_path / "repo",
+            base_branches=("develop",),
+        )
+    }
+
+    with pytest.raises(GitHubRepoConfigError, match="repository is not configured"):
+        configured_branch_context(
+            repo="owner/missing",
+            requested_base_branch=None,
+            default_base_branch="develop",
+            repos=repos,
+        )
+    with pytest.raises(GitHubRepoConfigError, match="base branch is not allowed"):
+        configured_branch_context(
+            repo="owner/repo",
+            requested_base_branch="main",
+            default_base_branch="develop",
+            repos=repos,
+        )
+
+
+def test_branch_agent_task_uses_context_workspace(tmp_path: Path, monkeypatch) -> None:
+    agentic_module = __import__("nyanpasu_github.agentic", fromlist=["resolve_branch_sha"])
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    context = configured_branch_context(
+        repo="owner/repo",
+        requested_base_branch="main",
+        default_base_branch="main",
+        repos={"owner/repo": GitHubRepoSettings(local_path=tmp_path / "repo")},
+    )
+
+    task = branch_agent_task(
+        task_id="task-1",
+        context_key="ctx",
+        prompt="do it",
+        branch_context=context,
+        metadata={"plugin_id": "demo"},
+        dedupe_key="task-1",
+    )
+
+    assert task.action is TaskAction.RUN
+    assert task.workspace == context.workspace
+    assert task.metadata == {"plugin_id": "demo"}
+
+
+def test_parse_agentic_pull_request_outcome() -> None:
+    published = parse_agentic_pull_request_outcome("done\nPR: https://github.com/owner/repo/pull/12")
+    no_changes = parse_agentic_pull_request_outcome("done\nNO_PR: already done")
+    dry_run = parse_agentic_pull_request_outcome("dry", dry_run=True)
+    failed = parse_agentic_pull_request_outcome("done")
+
+    assert published.status == "published"
+    assert published.pr_number == 12
+    assert no_changes.status == "no_changes"
+    assert no_changes.no_pr_reason == "already done"
+    assert dry_run.status == "dry_run"
+    assert failed.status == "failed"
+    assert failed.error == "agent final message did not include `PR: <url>`"

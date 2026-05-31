@@ -43,8 +43,8 @@ class FakeAgent:
 
 @pytest.mark.anyio
 async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, monkeypatch) -> None:
-    plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         enabled_plugins=("github_pr_maker",),
@@ -104,8 +104,8 @@ async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, 
 
 @pytest.mark.anyio
 async def test_pr_maker_post_process_records_agent_created_pr(tmp_path: Path, monkeypatch) -> None:
-    plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     plugin = GitHubPrMakerPlugin()
     runtime = FakeRuntime(
         tmp_path,
@@ -165,8 +165,8 @@ async def test_pr_maker_post_process_records_agent_created_pr(tmp_path: Path, mo
 
 @pytest.mark.anyio
 async def test_pr_maker_records_failure_when_agent_omits_pr_url(tmp_path: Path, monkeypatch) -> None:
-    plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     plugin = GitHubPrMakerPlugin()
     runtime = FakeRuntime(tmp_path)
     await plugin.setup(
@@ -207,8 +207,8 @@ async def test_pr_maker_records_failure_when_agent_omits_pr_url(tmp_path: Path, 
 
 @pytest.mark.anyio
 async def test_pr_maker_dry_run_records_without_pr_url(tmp_path: Path, monkeypatch) -> None:
-    plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     plugin = GitHubPrMakerPlugin()
     runtime = FakeRuntime(tmp_path)
     await plugin.setup(
@@ -251,8 +251,8 @@ async def test_pr_maker_dry_run_records_without_pr_url(tmp_path: Path, monkeypat
 
 @pytest.mark.anyio
 async def test_pr_maker_records_agent_no_pr_reason(tmp_path: Path, monkeypatch) -> None:
-    plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     plugin = GitHubPrMakerPlugin()
     runtime = FakeRuntime(tmp_path)
     await plugin.setup(
@@ -295,8 +295,9 @@ async def test_pr_maker_records_agent_no_pr_reason(tmp_path: Path, monkeypatch) 
 
 @pytest.mark.anyio
 async def test_pr_maker_registers_managed_pr_when_follow_up_enabled(tmp_path: Path, monkeypatch) -> None:
+    agentic_module = importlib.import_module("nyanpasu_github.agentic")
     plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    monkeypatch.setattr(agentic_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     monkeypatch.setattr(plugin_module, "fetch_pull_request_view", lambda *_, **__: _pr_view(head_sha="abc123"))
     plugin = GitHubPrMakerPlugin()
     runtime = FakeRuntime(tmp_path, integrations={"github": {"token": "token"}})
