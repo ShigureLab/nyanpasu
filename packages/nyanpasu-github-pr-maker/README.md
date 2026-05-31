@@ -16,6 +16,9 @@ dry_run = false
 draft = false
 follow_up_enabled = true
 follow_up_interval_seconds = 600
+
+[integrations.github]
+token_env = "NYANPASU_GITHUB_TOKEN"
 git_author_name = "Nyanpasu"
 git_author_email = "nyanpasu@example.invalid"
 
@@ -24,6 +27,8 @@ local_path = "/path/to/repo"
 github_remote = "git@github.com:owner/repo.git"
 base_branches = ["main"]
 ```
+
+`[integrations.github]` is provided by `nyanpasu-github`, not by the core runtime. `token_env` lets the plugin run `gh` without relying on global `gh auth`; if no token is configured, it falls back to the ambient `gh` authentication state. `git_author_*` is optional and only affects commits created by the PR maker post-process hook.
 
 ## API
 

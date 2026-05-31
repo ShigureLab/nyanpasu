@@ -58,6 +58,7 @@ async def test_webhook_accepts_event(tmp_path: Path) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         enabled_plugins=("github_reviewer",),
+        integrations={"github": {"token": "webhook-token"}},
         plugins={
             "github_reviewer": {
                 "poll_enabled": False,
@@ -87,3 +88,4 @@ async def test_webhook_accepts_event(tmp_path: Path) -> None:
     assert response.json()["accepted"] is True
     assert fake_agent.tasks[0].task_id == "delivery-1"
     assert fake_agent.tasks[0].context_key == "github:ExampleOrg/ExampleRepo#123"
+    assert fake_agent.tasks[0].metadata["raw"]["action"] == "synchronize"

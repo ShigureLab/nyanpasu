@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import subprocess
 import time
 from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from loguru import logger
-from nyanpasu_github.gh import GitHubSignatureError, verify_webhook_signature
+from nyanpasu_github.gh import GitHubCommandError, GitHubSignatureError, gh_json, run_gh, verify_webhook_signature
 from nyanpasu_github.instructions import instruction_documents_for_repo
+from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
@@ -47,10 +47,13 @@ class GitHubReviewerPlugin:
         self.store: GitHubReviewerStore | None = None
         self.poller: GitHubEventsPoller | None = None
         self.poller_task: asyncio.Task[None] | None = None
+        self.github: GitHubIntegrationConfig = GitHubIntegrationConfig()
 
     async def setup(self, runtime: PluginRuntime, config: BaseModel | dict[str, Any]) -> None:
         if not isinstance(config, GitHubReviewerConfig):
             config = GitHubReviewerConfig.model_validate(config)
+        self.github = github_integration_from_config(runtime.config.integrations.get("github"))
+        config = config.model_copy(update={"gh_env": self.github.gh_env()})
         self.config = config
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
@@ -231,9 +234,8 @@ class GitHubReviewerPlugin:
             return event
         if event.pr.head_sha and event.pr.base_ref and event.pr.head_ref:
             return event
-        proc = subprocess.run(
+        data = gh_json(
             [
-                "gh",
                 "pr",
                 "view",
                 str(event.pr.number),
@@ -242,11 +244,8 @@ class GitHubReviewerPlugin:
                 "--json",
                 "number,state,isDraft,url,baseRefName,headRefName,headRefOid",
             ],
-            text=True,
-            capture_output=True,
-            check=True,
+            env=self.config.gh_env if self.config else None,
         )
-        data = json.loads(proc.stdout)
         hydrated = PullRequestRef(
             repo=event.pr.repo,
             number=int(data["number"]),
@@ -272,20 +271,17 @@ class GitHubReviewerPlugin:
         if parent_comment_id is None or event.pr is None or not self.config.github_login:
             return False
         try:
-            proc = subprocess.run(
+            proc = run_gh(
                 [
-                    "gh",
                     "api",
                     f"repos/{event.pr.repo}/pulls/comments/{parent_comment_id}",
                     "--jq",
                     ".user.login",
                 ],
-                text=True,
-                capture_output=True,
-                check=True,
+                env=self.config.gh_env,
                 timeout=30,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, GitHubCommandError):
             return False
         parent_author = proc.stdout.strip()
         return parent_author.casefold() == self.config.github_login.casefold()
@@ -335,7 +331,7 @@ def _mentions_login(text: str, login: str) -> bool:
 
 
 def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -> AgentTask:
-    payload = _pr_payload_from_gh(repo, pr_number)
+    payload = _pr_payload_from_gh(config, repo, pr_number)
     event = parse_github_event(
         "pull_request",
         f"manual-{safe_slug(repo)}-{pr_number}-{int(time.time())}",
@@ -347,15 +343,9 @@ def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -
     return plugin.event_to_task(event)
 
 
-def _pr_payload_from_gh(repo: str, pr: int) -> dict[str, object]:
+def _pr_payload_from_gh(config: GitHubReviewerConfig, repo: str, pr: int) -> dict[str, object]:
     fields = "number,state,isDraft,url,baseRefName,headRefName,headRefOid"
-    proc = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--repo", repo, "--json", fields],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    data = json.loads(proc.stdout)
+    data = gh_json(["pr", "view", str(pr), "--repo", repo, "--json", fields], env=config.gh_env)
     return {
         "action": "synchronize",
         "repository": {"full_name": repo},

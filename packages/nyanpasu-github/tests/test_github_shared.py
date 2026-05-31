@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 import pytest
 from nyanpasu_github.gh import GitHubSignatureError, verify_webhook_signature
 from nyanpasu_github.instructions import instruction_documents_for_repo
-from nyanpasu_github.models import GitHubRepoSettings, InstructionDocumentSettings, PullRequestRef
+from nyanpasu_github.models import (
+    GitHubRepoSettings,
+    InstructionDocumentSettings,
+    PullRequestRef,
+    github_integration_from_config,
+)
 from nyanpasu_github.workspace import branch_workspace_ref, pull_request_workspace_ref
 
 if TYPE_CHECKING:
@@ -67,3 +72,19 @@ def test_workspace_refs(tmp_path: Path) -> None:
     assert branch.revision == "abc"
     assert pr_workspace.ref == "pull/123/head"
     assert pr_workspace.revision == "def"
+
+
+def test_github_integration_config_resolves_auth_env(monkeypatch) -> None:
+    monkeypatch.setenv("NYANPASU_TEST_GH_TOKEN", "env-token")
+
+    config = github_integration_from_config(
+        {
+            "token_env": "NYANPASU_TEST_GH_TOKEN",
+            "git_author_name": "Bot",
+            "git_author_email": "bot@example.com",
+        }
+    )
+
+    assert config.resolved_token == "env-token"
+    assert config.gh_env() == {"GH_TOKEN": "env-token", "GITHUB_TOKEN": "env-token"}
+    assert config.git_author_name == "Bot"

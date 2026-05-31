@@ -43,6 +43,11 @@ concurrency = 4
 coalesce_window_seconds = 600
 clean_event_snapshots = true
 
+[integrations.github]
+token_env = "NYANPASU_GITHUB_TOKEN"
+git_author_name = "Nyanpasu"
+git_author_email = "nyanpasu@example.invalid"
+
 [plugins.github_reviewer]
 github_login = "your-github-login"
 poll_interval_seconds = 600
@@ -79,6 +84,8 @@ base_branches = ["main"]
 ```
 
 Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking Codex. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
+
+Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. For GitHub, `token_env` is preferred over writing a token directly in TOML. If neither `token` nor `token_env` is set, GitHub plugins fall back to the ambient `gh auth` state.
 
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 

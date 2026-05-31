@@ -31,6 +31,11 @@ concurrency = 2
 coalesce_window_seconds = 60
 clean_event_snapshots = false
 
+[integrations.github]
+token_env = "GH_TOKEN"
+git_author_name = "Bot"
+git_author_email = "bot@example.com"
+
 [plugins.github_reviewer]
 github_login = "review-bot"
 poll_interval_seconds = 600
@@ -50,6 +55,8 @@ poll_interval_seconds = 600
     assert config.runtime.concurrency == 2
     assert config.runtime.coalesce_window_seconds == 60
     assert config.runtime.clean_event_snapshots is False
+    assert config.integrations["github"]["token_env"] == "GH_TOKEN"
+    assert config.integrations["github"]["git_author_name"] == "Bot"
     assert config.enabled_plugins == ("github_reviewer",)
     assert config.plugins["github_reviewer"]["github_login"] == "review-bot"
 

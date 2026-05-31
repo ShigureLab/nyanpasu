@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from nyanpasu_github.gh import resolve_branch_sha
+from nyanpasu_github.gh import resolve_branch_sha, run_gh_with_env
 from nyanpasu_github.instructions import instruction_documents_for_repo
+from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.publisher import (
     GitHubPullRequestPublisher,
     PublishPullRequestRequest,
@@ -44,15 +45,19 @@ class GitHubPrMakerPlugin:
         self.config: GitHubPrMakerConfig | None = None
         self.runtime: PluginRuntime | None = None
         self.store: GitHubPrMakerStore | None = None
-        self.publisher = publisher or GitHubPullRequestPublisher()
+        self.publisher = publisher
+        self.github: GitHubIntegrationConfig = GitHubIntegrationConfig()
         self.follow_up_poller: GitHubPrMakerFollowUpPoller | None = None
         self.follow_up_task: asyncio.Task[None] | None = None
 
     async def setup(self, runtime: PluginRuntime, config: BaseModel | dict[str, Any]) -> None:
         if not isinstance(config, GitHubPrMakerConfig):
             config = GitHubPrMakerConfig.model_validate(config)
-        self.config = config
         self.runtime = runtime
+        self.github = github_integration_from_config(runtime.config.integrations.get("github"))
+        self.config = config
+        if self.publisher is None:
+            self.publisher = GitHubPullRequestPublisher(gh_runner=run_gh_with_env(self.github.gh_env()))
         self.store = GitHubPrMakerStore(runtime.config.db_path)
         runtime.add_router(self._router(), prefix="/plugins/github-pr-maker", tags=["github-pr-maker"])
         runtime.add_post_process_hook(self.id, self._post_process)
@@ -102,7 +107,7 @@ class GitHubPrMakerPlugin:
         base_branch = request.base_branch or self.config.default_base_branch
         if repo_settings.base_branches and base_branch not in repo_settings.base_branches:
             raise HTTPException(status_code=400, detail=f"base branch is not allowed: {base_branch}")
-        revision = resolve_branch_sha(request.repo, base_branch)
+        revision = resolve_branch_sha(request.repo, base_branch, env=self.github.gh_env())
         task_id = request.task_id or _task_id(request.repo)
         branch_name = request.branch_name or _branch_name(self.config.branch_prefix, task_id)
         title = request.title or _title_from_task(request.task)
@@ -124,8 +129,8 @@ class GitHubPrMakerPlugin:
             draft=draft,
             dry_run=dry_run,
             remote_url=repo_settings.github_remote,
-            git_author_name=self.config.git_author_name,
-            git_author_email=self.config.git_author_email,
+            git_author_name=self.config.git_author_name or self.github.git_author_name,
+            git_author_email=self.config.git_author_email or self.github.git_author_email,
         )
         instruction_docs = instruction_documents_for_repo(
             repo=request.repo,
@@ -172,6 +177,8 @@ class GitHubPrMakerPlugin:
             )
             return
         try:
+            if self.publisher is None:
+                raise RuntimeError("github pr maker publisher is not initialized")
             pr_result = self.publisher.publish(
                 worktree=result.session_worktree,
                 request=PublishPullRequestRequest(**publish.model_dump()),
@@ -219,7 +226,7 @@ class GitHubPrMakerPlugin:
             raise RuntimeError("github pr maker plugin is not initialized")
         if not self.config.follow_up_enabled:
             return
-        pr = fetch_pull_request_view(publish.repo, pr_number)
+        pr = fetch_pull_request_view(publish.repo, pr_number, env=self.github.gh_env())
         self.store.upsert_managed_pr(
             task_id=_managed_pr_task_id(publish.repo, pr_number),
             context_key=publish.context_key,
@@ -231,6 +238,8 @@ class GitHubPrMakerPlugin:
             title=publish.title,
             body=publish.body,
             task=publish.task,
+            git_author_name=publish.git_author_name,
+            git_author_email=publish.git_author_email,
             last_digest=pr.follow_up_digest(),
             last_head_sha=pr.head_sha,
         )

@@ -7,6 +7,7 @@ from typing import Annotated
 import anyio
 import typer
 from loguru import logger
+from nyanpasu_github.models import github_integration_from_config
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
@@ -37,7 +38,7 @@ def review(
 ) -> None:
     configure_logging()
     core_config = load_config()
-    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}))
+    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}), core_config.integrations)
     ensure_state_dirs(core_config)
     task = manual_event_task(plugin_config, repo, pr)
 
@@ -65,7 +66,7 @@ def poll(
 ) -> None:
     configure_logging()
     core_config = load_config()
-    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}))
+    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}), core_config.integrations)
     ensure_state_dirs(core_config)
     repos = tuple(repo or plugin_config.repos)
     unknown = sorted(set(repos) - set(plugin_config.repos))
@@ -111,8 +112,9 @@ def poll(
     anyio.run(run)
 
 
-def _plugin_config(raw: dict[str, object]) -> GitHubReviewerConfig:
-    return GitHubReviewerConfig.model_validate(raw)
+def _plugin_config(raw: dict[str, object], integrations: dict[str, dict[str, object]]) -> GitHubReviewerConfig:
+    github = github_integration_from_config(integrations.get("github"))
+    return GitHubReviewerConfig.model_validate(raw).model_copy(update={"gh_env": github.gh_env()})
 
 
 class _PluginPollAgent:

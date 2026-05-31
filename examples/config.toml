@@ -16,6 +16,11 @@ concurrency = 4
 coalesce_window_seconds = 600
 clean_event_snapshots = true
 
+[integrations.github]
+token_env = "NYANPASU_GITHUB_TOKEN"
+git_author_name = "Nyanpasu"
+git_author_email = "nyanpasu@example.invalid"
+
 [plugins.github_reviewer]
 agent_name = "Nyanpasu"
 github_login = "your-github-login"
@@ -48,8 +53,6 @@ dry_run = true
 draft = false
 follow_up_enabled = true
 follow_up_interval_seconds = 600
-git_author_name = "Nyanpasu"
-git_author_email = "nyanpasu@example.invalid"
 
 [plugins.github_pr_maker.repos."owner/repo"]
 local_path = "/path/to/repo"

@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from nyanpasu_github.gh import gh_json
 from nyanpasu_github.models import GitHubModel
 
-GhJsonRunner = Callable[[list[str]], Any]
+GhJsonRunner = Callable[..., Any]
 
 
 class PullRequestActivity(GitHubModel):
@@ -59,13 +59,14 @@ def fetch_pull_request_view(
     repo: str,
     number: int,
     *,
+    env: Mapping[str, str] | None = None,
     gh_runner: GhJsonRunner = gh_json,
 ) -> PullRequestView:
     fields = (
         "number,state,isDraft,url,baseRefName,headRefName,headRefOid,"
         "reviewDecision,mergeStateStatus,updatedAt,comments,reviews,statusCheckRollup"
     )
-    data = gh_runner(["pr", "view", str(number), "--repo", repo, "--json", fields])
+    data = gh_runner(["pr", "view", str(number), "--repo", repo, "--json", fields], env=env)
     if not isinstance(data, dict):
         raise ValueError("gh pr view response must be an object")
     return PullRequestView(

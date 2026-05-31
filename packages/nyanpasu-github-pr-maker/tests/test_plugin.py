@@ -61,7 +61,7 @@ class FakePublisher:
 @pytest.mark.anyio
 async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, monkeypatch) -> None:
     plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_: "base-sha")
+    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         enabled_plugins=("github_pr_maker",),
@@ -113,8 +113,8 @@ async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, 
 @pytest.mark.anyio
 async def test_pr_maker_post_process_publishes_and_records_result(tmp_path: Path, monkeypatch) -> None:
     plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_: "base-sha")
-    monkeypatch.setattr(plugin_module, "fetch_pull_request_view", lambda *_: _pr_view(head_sha="abc123"))
+    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    monkeypatch.setattr(plugin_module, "fetch_pull_request_view", lambda *_, **__: _pr_view(head_sha="abc123"))
     publisher = FakePublisher()
     plugin = GitHubPrMakerPlugin(publisher=publisher)
     config = {
@@ -126,7 +126,16 @@ async def test_pr_maker_post_process_publishes_and_records_result(tmp_path: Path
             }
         },
     }
-    runtime = FakeRuntime(tmp_path)
+    runtime = FakeRuntime(
+        tmp_path,
+        integrations={
+            "github": {
+                "token": "token-1",
+                "git_author_name": "Shared Bot",
+                "git_author_email": "shared@example.com",
+            }
+        },
+    )
     await plugin.setup(runtime, config)
     task = plugin.request_to_task(
         CreatePullRequestTaskRequest(
@@ -151,6 +160,8 @@ async def test_pr_maker_post_process_publishes_and_records_result(tmp_path: Path
     )
 
     assert publisher.calls[0][0] == tmp_path / "worktree"
+    assert publisher.calls[0][1].git_author_name == "Shared Bot"
+    assert publisher.calls[0][1].git_author_email == "shared@example.com"
     assert plugin.store is not None
     record = plugin.store.get("task-2")
     assert record is not None
@@ -163,16 +174,17 @@ async def test_pr_maker_post_process_publishes_and_records_result(tmp_path: Path
 @pytest.mark.anyio
 async def test_pr_maker_registers_managed_pr_when_follow_up_enabled(tmp_path: Path, monkeypatch) -> None:
     plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_: "base-sha")
-    monkeypatch.setattr(plugin_module, "fetch_pull_request_view", lambda *_: _pr_view(head_sha="abc123"))
+    monkeypatch.setattr(plugin_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
+    monkeypatch.setattr(plugin_module, "fetch_pull_request_view", lambda *_, **__: _pr_view(head_sha="abc123"))
     publisher = FakePublisher()
     plugin = GitHubPrMakerPlugin(publisher=publisher)
-    runtime = FakeRuntime(tmp_path)
+    runtime = FakeRuntime(tmp_path, integrations={"github": {"token": "token"}})
     await plugin.setup(
         runtime,
         {
             "follow_up_enabled": True,
             "follow_up_interval_seconds": 3600,
+            "git_author_name": "Plugin Bot",
             "repos": {
                 "ExampleOrg/ExampleRepo": {
                     "local_path": str(tmp_path / "repo"),
@@ -211,6 +223,7 @@ async def test_pr_maker_registers_managed_pr_when_follow_up_enabled(tmp_path: Pa
     assert len(managed) == 1
     assert managed[0].context_key == "github-pr-maker:ExampleOrg/ExampleRepo:task-3"
     assert managed[0].pr_number == 1
+    assert managed[0].git_author_name == "Plugin Bot"
 
 
 @pytest.mark.anyio
@@ -218,9 +231,16 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
     followup_module = importlib.import_module("nyanpasu_github_pr_maker.followup")
     first = _pr_view(head_sha="abc123")
     second = _pr_view(head_sha="def456", failing_checks=("unit",))
-    monkeypatch.setattr(followup_module, "fetch_pull_request_view", lambda *_: second)
+    seen_env: list[dict[str, str] | None] = []
+
+    def fetch_pr(*args, **kwargs):
+        _ = args
+        seen_env.append(kwargs.get("env"))
+        return second
+
+    monkeypatch.setattr(followup_module, "fetch_pull_request_view", fetch_pr)
     plugin = GitHubPrMakerPlugin(publisher=FakePublisher())
-    runtime = FakeRuntime(tmp_path)
+    runtime = FakeRuntime(tmp_path, integrations={"github": {"token": "token"}})
     await plugin.setup(
         runtime,
         {
@@ -246,6 +266,8 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         title="Update docs",
         body="Body",
         task="Update docs.",
+        git_author_name="Bot",
+        git_author_email="bot@example.com",
         last_digest=first.follow_up_digest(),
         last_head_sha=first.head_sha,
     )
@@ -261,14 +283,16 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         assert follow_up_task.workspace.ref == "refs/heads/nyanpasu/task-2"
         assert follow_up_task.workspace.revision == "def456"
         assert follow_up_task.metadata["publish"]["existing_pr_number"] == 1
+        assert follow_up_task.metadata["publish"]["git_author_name"] == "Bot"
+        assert seen_env == [{"GH_TOKEN": "token", "GITHUB_TOKEN": "token"}]
         assert "failing checks: unit" in follow_up_task.prompt
     finally:
         await plugin.shutdown()
 
 
 class FakeRuntime:
-    def __init__(self, tmp_path: Path) -> None:
-        self.config = NyanpasuConfig(state_dir=tmp_path / "state")
+    def __init__(self, tmp_path: Path, *, integrations: dict[str, dict[str, Any]] | None = None) -> None:
+        self.config = NyanpasuConfig(state_dir=tmp_path / "state", integrations=integrations or {})
         self.hooks: dict[str, Any] = {}
         self.tasks: list[AgentTask] = []
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
 
@@ -29,6 +30,7 @@ def run_gh(
     args: list[str],
     *,
     cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
     timeout: float | None = 60,
 ) -> subprocess.CompletedProcess[str]:
     argv = ["gh", *args]
@@ -38,6 +40,7 @@ def run_gh(
         text=True,
         capture_output=True,
         check=False,
+        env=_merged_env(env),
         timeout=timeout,
     )
     if proc.returncode != 0:
@@ -45,13 +48,31 @@ def run_gh(
     return proc
 
 
-def gh_json(args: list[str], *, cwd: Path | None = None, timeout: float | None = 60) -> Any:
-    proc = run_gh(args, cwd=cwd, timeout=timeout)
+def run_gh_with_env(env: Mapping[str, str] | None) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def runner(
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: float | None = 60,
+    ) -> subprocess.CompletedProcess[str]:
+        return run_gh(args, cwd=cwd, env=env, timeout=timeout)
+
+    return runner
+
+
+def gh_json(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = 60,
+) -> Any:
+    proc = run_gh(args, cwd=cwd, env=env, timeout=timeout)
     return json.loads(proc.stdout or "null")
 
 
-def resolve_branch_sha(repo: str, branch: str) -> str:
-    data = gh_json(["api", f"repos/{repo}/git/ref/heads/{branch}"])
+def resolve_branch_sha(repo: str, branch: str, *, env: Mapping[str, str] | None = None) -> str:
+    data = gh_json(["api", f"repos/{repo}/git/ref/heads/{branch}"], env=env)
     if not isinstance(data, dict):
         raise ValueError("GitHub branch ref response must be an object")
     obj = data.get("object")
@@ -85,7 +106,7 @@ def run_git(
         text=True,
         capture_output=True,
         check=False,
-        env=dict(env) if env is not None else None,
+        env=_merged_env(env),
         timeout=timeout,
     )
     if proc.returncode != 0:
@@ -101,3 +122,9 @@ def remote_name_for_url(local_path: Path, remote_url: str | None) -> str:
             if len(parts) >= 2 and parts[1] == remote_url:
                 return parts[0]
     return "origin"
+
+
+def _merged_env(env: Mapping[str, str] | None) -> dict[str, str] | None:
+    if env is None:
+        return None
+    return os.environ | dict(env)

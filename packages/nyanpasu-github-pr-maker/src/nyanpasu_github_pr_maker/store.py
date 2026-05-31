@@ -39,6 +39,8 @@ class ManagedPullRequestRecord(BaseModel):
     title: str
     body: str
     task: str
+    git_author_name: str | None = None
+    git_author_email: str | None = None
     last_digest: str | None = None
     last_head_sha: str | None = None
     last_checked_at: float | None = None
@@ -95,6 +97,8 @@ class GitHubPrMakerStore:
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
                     task TEXT NOT NULL,
+                    git_author_name TEXT,
+                    git_author_email TEXT,
                     last_digest TEXT,
                     last_head_sha TEXT,
                     last_checked_at REAL,
@@ -104,6 +108,15 @@ class GitHubPrMakerStore:
                 )
                 """
             )
+            columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(github_pr_maker_managed_prs)").fetchall()
+            }
+            for column, ddl in {
+                "git_author_name": "ALTER TABLE github_pr_maker_managed_prs ADD COLUMN git_author_name TEXT",
+                "git_author_email": "ALTER TABLE github_pr_maker_managed_prs ADD COLUMN git_author_email TEXT",
+            }.items():
+                if column not in columns:
+                    conn.execute(ddl)
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_maker_managed_prs_repo_pr
@@ -196,6 +209,8 @@ class GitHubPrMakerStore:
         title: str,
         body: str,
         task: str,
+        git_author_name: str | None,
+        git_author_email: str | None,
         last_digest: str | None,
         last_head_sha: str | None,
     ) -> None:
@@ -205,9 +220,10 @@ class GitHubPrMakerStore:
                 """
                 INSERT INTO github_pr_maker_managed_prs (
                     task_id, context_key, repo, pr_number, pr_url, base_branch, branch_name, title, body, task,
-                    last_digest, last_head_sha, last_checked_at, active, created_at, updated_at
+                    git_author_name, git_author_email, last_digest, last_head_sha, last_checked_at, active,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     context_key = excluded.context_key,
                     repo = excluded.repo,
@@ -218,6 +234,8 @@ class GitHubPrMakerStore:
                     title = excluded.title,
                     body = excluded.body,
                     task = excluded.task,
+                    git_author_name = excluded.git_author_name,
+                    git_author_email = excluded.git_author_email,
                     last_digest = excluded.last_digest,
                     last_head_sha = excluded.last_head_sha,
                     last_checked_at = excluded.last_checked_at,
@@ -235,6 +253,8 @@ class GitHubPrMakerStore:
                     title,
                     body,
                     task,
+                    git_author_name,
+                    git_author_email,
                     last_digest,
                     last_head_sha,
                     now,
@@ -248,7 +268,8 @@ class GitHubPrMakerStore:
             rows = conn.execute(
                 """
                 SELECT task_id, context_key, repo, pr_number, pr_url, base_branch, branch_name, title, body, task,
-                    last_digest, last_head_sha, last_checked_at, active, created_at, updated_at
+                    git_author_name, git_author_email, last_digest, last_head_sha, last_checked_at, active,
+                    created_at, updated_at
                 FROM github_pr_maker_managed_prs
                 WHERE active = 1
                 ORDER BY updated_at ASC
@@ -288,6 +309,8 @@ def _managed_pr_from_row(row: sqlite3.Row) -> ManagedPullRequestRecord:
         title=str(row["title"]),
         body=str(row["body"]),
         task=str(row["task"]),
+        git_author_name=str(row["git_author_name"]) if row["git_author_name"] is not None else None,
+        git_author_email=str(row["git_author_email"]) if row["git_author_email"] is not None else None,
         last_digest=str(row["last_digest"]) if row["last_digest"] is not None else None,
         last_head_sha=str(row["last_head_sha"]) if row["last_head_sha"] is not None else None,
         last_checked_at=float(row["last_checked_at"]) if row["last_checked_at"] is not None else None,

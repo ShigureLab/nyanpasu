@@ -17,8 +17,8 @@ class GitHubPrMakerConfig(BaseModel):
     draft: bool = False
     follow_up_enabled: bool = True
     follow_up_interval_seconds: int = 600
-    git_author_name: str | None = "Nyanpasu"
-    git_author_email: str | None = "nyanpasu@example.invalid"
+    git_author_name: str | None = None
+    git_author_email: str | None = None
     extra_prompt: str = ""
 
 

@@ -54,6 +54,7 @@ class NyanpasuConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     codex: CodexConfig = Field(default_factory=CodexConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    integrations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)
     enabled_plugins: tuple[str, ...] = ()
 

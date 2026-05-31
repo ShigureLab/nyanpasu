@@ -5,6 +5,7 @@ import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from nyanpasu_github.models import GitHubIntegrationConfig
 from nyanpasu_github.pulls import PullRequestView, fetch_pull_request_view
 from nyanpasu_github.workspace import branch_workspace_ref
 
@@ -29,6 +30,7 @@ class GitHubPrMakerFollowUpPoller:
         self.config = config
         self.store = store
         self.runtime = runtime
+        self.github = GitHubIntegrationConfig.model_validate(runtime.config.integrations.get("github") or {})
         self._stop = asyncio.Event()
 
     async def run_forever(self) -> None:
@@ -60,7 +62,12 @@ class GitHubPrMakerFollowUpPoller:
                 )
                 continue
             try:
-                pr = await asyncio.to_thread(fetch_pull_request_view, record.repo, record.pr_number)
+                pr = await asyncio.to_thread(
+                    fetch_pull_request_view,
+                    record.repo,
+                    record.pr_number,
+                    env=self.github.gh_env(),
+                )
             except Exception:
                 logger.exception(
                     "github pr maker follow-up fetch failed task_id={} repo={} pr={}",
@@ -145,8 +152,8 @@ def build_follow_up_task(
         existing_pr_number=record.pr_number,
         existing_pr_url=record.pr_url,
         remote_url=repo_settings.github_remote,
-        git_author_name=config.git_author_name,
-        git_author_email=config.git_author_email,
+        git_author_name=record.git_author_name,
+        git_author_email=record.git_author_email,
     )
     return AgentTask(
         task_id=task_id,

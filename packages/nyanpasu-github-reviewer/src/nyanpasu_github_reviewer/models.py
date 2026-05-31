@@ -130,6 +130,7 @@ class GitHubReviewerConfig(BaseModel):
     dry_run: bool = False
     post_reviews: bool = True
     request_changes_on_findings: bool = True
+    gh_env: dict[str, str] | None = None
 
     @field_validator("auto_collapse_author_logins", mode="before")
     @classmethod

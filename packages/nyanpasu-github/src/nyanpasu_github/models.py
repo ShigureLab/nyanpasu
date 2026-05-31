@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,27 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 class GitHubModel(BaseModel):
     model_config = ConfigDict(frozen=True)
+
+
+class GitHubIntegrationConfig(GitHubModel):
+    token: str | None = None
+    token_env: str | None = None
+    git_author_name: str | None = None
+    git_author_email: str | None = None
+
+    @property
+    def resolved_token(self) -> str | None:
+        if self.token:
+            return self.token
+        if self.token_env:
+            return os.getenv(self.token_env)
+        return None
+
+    def gh_env(self) -> dict[str, str] | None:
+        token = self.resolved_token
+        if not token:
+            return None
+        return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
 
 
 class InstructionDocumentSettings(GitHubModel):
@@ -84,6 +106,10 @@ def repo_configs_from_settings(repos: dict[str, GitHubRepoSettings]) -> dict[str
         )
         for repo, settings in repos.items()
     }
+
+
+def github_integration_from_config(raw: dict[str, Any] | None) -> GitHubIntegrationConfig:
+    return GitHubIntegrationConfig.model_validate(raw or {})
 
 
 def as_str_tuple(value: Any) -> tuple[str, ...]:

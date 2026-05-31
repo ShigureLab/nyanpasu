@@ -4,7 +4,6 @@ import asyncio
 import functools
 import hashlib
 import json
-import subprocess
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio.to_thread as to_thread
 from loguru import logger
+from nyanpasu_github.gh import run_gh
 
 from nyanpasu.git_ops import safe_slug
 from nyanpasu_github_reviewer.events import parse_github_event
@@ -795,19 +795,7 @@ def list_repo_events_with_gh(config: GitHubReviewerConfig, repo: str) -> list[di
     events: list[dict[str, Any]] = []
     for page in range(1, config.poll_event_pages + 1):
         path = f"repos/{repo}/events?per_page=100&page={page}"
-        proc = subprocess.run(
-            ["gh", "api", "-X", "GET", path],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            stderr = proc.stderr.strip()
-            stdout = proc.stdout.strip()
-            raise RuntimeError(
-                f"gh repo events failed for {repo} page {page} with exit {proc.returncode}: "
-                f"{stderr or stdout or 'no output'}"
-            )
+        proc = run_gh(["api", "-X", "GET", path], env=config.gh_env)
         data = json.loads(proc.stdout)
         if not isinstance(data, list):
             raise ValueError("gh repo events returned non-list JSON")
@@ -827,19 +815,7 @@ def list_pull_requests_with_gh(config: GitHubReviewerConfig, repo: str) -> list[
             path = f"repos/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page={page}"
             if base:
                 path += f"&base={base}"
-            proc = subprocess.run(
-                ["gh", "api", "-X", "GET", path],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if proc.returncode != 0:
-                stderr = proc.stderr.strip()
-                stdout = proc.stdout.strip()
-                raise RuntimeError(
-                    f"gh pulls failed for {repo} page {page} with exit {proc.returncode}: "
-                    f"{stderr or stdout or 'no output'}"
-                )
+            proc = run_gh(["api", "-X", "GET", path], env=config.gh_env)
             data = json.loads(proc.stdout)
             if not isinstance(data, list):
                 raise ValueError("gh pulls returned non-list JSON")
@@ -857,27 +833,10 @@ def list_pull_request_timeline_with_gh(
     items: list[dict[str, Any]] = []
     for page in range(1, config.poll_event_pages + 1):
         path = f"repos/{repo}/issues/{pr_number}/timeline?per_page=100&page={page}"
-        proc = subprocess.run(
-            [
-                "gh",
-                "api",
-                "-X",
-                "GET",
-                "-H",
-                "Accept: application/vnd.github+json",
-                path,
-            ],
-            text=True,
-            capture_output=True,
-            check=False,
+        proc = run_gh(
+            ["api", "-X", "GET", "-H", "Accept: application/vnd.github+json", path],
+            env=config.gh_env,
         )
-        if proc.returncode != 0:
-            stderr = proc.stderr.strip()
-            stdout = proc.stdout.strip()
-            raise RuntimeError(
-                f"gh timeline failed for {repo}#{pr_number} page {page} with exit {proc.returncode}: "
-                f"{stderr or stdout or 'no output'}"
-            )
         data = json.loads(proc.stdout)
         if not isinstance(data, list):
             raise ValueError("gh timeline returned non-list JSON")

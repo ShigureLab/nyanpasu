@@ -10,8 +10,11 @@ def test_pull_request_number_from_url() -> None:
 
 
 def test_fetch_pull_request_view_builds_actionable_digest() -> None:
-    def gh_runner(args: list[str]):
+    seen_env = []
+
+    def gh_runner(args: list[str], **kwargs):
         assert args[:4] == ["pr", "view", "5", "--repo"]
+        seen_env.append(kwargs.get("env"))
         return {
             "number": 5,
             "state": "OPEN",
@@ -48,9 +51,10 @@ def test_fetch_pull_request_view_builds_actionable_digest() -> None:
             ],
         }
 
-    pr = fetch_pull_request_view("owner/repo", 5, gh_runner=gh_runner)
+    pr = fetch_pull_request_view("owner/repo", 5, env={"GH_TOKEN": "token"}, gh_runner=gh_runner)
 
     assert pr.is_open
+    assert seen_env == [{"GH_TOKEN": "token"}]
     assert pr.failing_checks == ("lint",)
     assert [activity.kind for activity in pr.activities] == ["comment", "review"]
     assert pr.follow_up_digest() == pr.model_copy().follow_up_digest()
