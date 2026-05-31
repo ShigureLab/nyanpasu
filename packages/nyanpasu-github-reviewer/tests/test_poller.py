@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from loguru import logger
 
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
@@ -327,6 +328,53 @@ async def test_events_poller_processes_events_after_previous_cursor(tmp_path: Pa
     assert [event.raw["nyanpasu"]["source"] for event in agent.events] == ["events_poll", "events_poll"]
     assert agent.events[0].raw["nyanpasu"]["trigger"] == "mentioned_issue_comment"
     assert agent.events[1].raw["nyanpasu"]["trigger"] == "pull_request_synchronize"
+
+
+@pytest.mark.anyio
+async def test_events_poller_logs_event_decisions(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    logs: list[str] = []
+    sink_id = logger.add(lambda message: logs.append(str(message)), level="INFO", format="{message}")
+    batches = [
+        [_repo_event(1, "PullRequestEvent", created_at="2026-05-30T10:00:00Z", payload=_pr_payload("opened"))],
+        [
+            _repo_event(1, "PullRequestEvent", created_at="2026-05-30T10:00:00Z", payload=_pr_payload("opened")),
+            _repo_event(2, "IssueCommentEvent", created_at="2026-05-30T10:05:00Z", payload=_issue_comment_payload()),
+            _repo_event(
+                3,
+                "IssueCommentEvent",
+                created_at="2026-05-30T10:06:00Z",
+                payload=_issue_comment_payload(body="ordinary comment", comment_id=11),
+            ),
+        ],
+    ]
+
+    def list_repo_events(_: GitHubReviewerConfig, __: str) -> list[dict[str, Any]]:
+        return batches.pop(0)
+
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=list_repo_events,
+        list_pull_requests=lambda *_: [],
+        list_pull_request_timeline=lambda *_: [],
+    )
+
+    try:
+        await poller.run_once()
+        result = await poller.run_once()
+    finally:
+        logger.remove(sink_id)
+
+    assert result.submitted == 1
+    joined = "\n".join(logs)
+    assert "poll event decision source=repo_events_poll decision=journaled" in joined
+    assert "poll event decision source=repo_events_poll decision=ignored reason=comment_without_agent_mention" in joined
+    assert "journal event decision decision=running reason=dispatch_started" in joined
+    assert "journal event decision decision=completed reason=dispatch_finished" in joined
 
 
 @pytest.mark.anyio

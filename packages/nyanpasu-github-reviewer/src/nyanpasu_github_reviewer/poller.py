@@ -6,6 +6,7 @@ import hashlib
 import json
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -211,6 +212,17 @@ class GitHubEventsPoller:
                 len(newest.cursor_event_ids),
                 force_baseline,
             )
+            _log_source_summary(
+                source="repo_events_poll",
+                repo=repo,
+                fetched=len(raw_events),
+                window=0,
+                journaled=0,
+                duplicates=0,
+                ignored=len(raw_events),
+                baselined=len(raw_events),
+                ignored_reasons=Counter({"baseline": len(raw_events)}),
+            )
             return PollCycleResult(
                 submitted=0,
                 duplicates=0,
@@ -237,21 +249,65 @@ class GitHubEventsPoller:
                     cursor_event_ids=newest.cursor_event_ids,
                 )
             )
+            _log_source_summary(
+                source="repo_events_poll",
+                repo=repo,
+                fetched=len(raw_events),
+                window=0,
+                journaled=0,
+                duplicates=0,
+                ignored=len(raw_events),
+                baselined=0,
+                ignored_reasons=Counter({"before_cursor": len(raw_events)}),
+            )
             return PollCycleResult(submitted=0, duplicates=0, ignored=len(raw_events), baselined=0, repos=(repo,))
 
         duplicates = 0
         ignored = 0
+        ignored_reasons: Counter[str] = Counter()
         for raw in window:
             delivery_id = _delivery_id_from_repo_event(repo, raw)
             event = event_from_repo_event(raw, delivery_id=delivery_id, agent_login=self.config.github_login)
             if event is None:
                 ignored += 1
+                reason = _repo_event_ignore_reason(raw, event)
+                ignored_reasons[reason] += 1
+                _log_poll_decision(
+                    source="repo_events_poll",
+                    decision="ignored",
+                    reason=reason,
+                    repo=repo,
+                    raw=raw,
+                    delivery_id=delivery_id,
+                )
                 continue
             if event.action is not ReviewAction.REVIEW and event.action is not ReviewAction.CLEANUP:
                 ignored += 1
+                reason = _repo_event_ignore_reason(raw, event)
+                ignored_reasons[reason] += 1
+                _log_poll_decision(
+                    source="repo_events_poll",
+                    decision="ignored",
+                    reason=reason,
+                    repo=repo,
+                    raw=raw,
+                    event=event,
+                    delivery_id=delivery_id,
+                )
                 continue
             if event.pr is not None and event.pr.repo not in self.config.repos:
                 ignored += 1
+                reason = "unconfigured_repo"
+                ignored_reasons[reason] += 1
+                _log_poll_decision(
+                    source="repo_events_poll",
+                    decision="ignored",
+                    reason=reason,
+                    repo=repo,
+                    raw=raw,
+                    event=event,
+                    delivery_id=delivery_id,
+                )
                 continue
             record = _journal_record_from_event(
                 event, source="repo_events_poll", event_created_at=_event_created_at(raw)
@@ -259,19 +315,23 @@ class GitHubEventsPoller:
             inserted = await to_thread.run_sync(self.store.append_event, record)
             if not inserted:
                 duplicates += 1
-                logger.info(
-                    "events poll event skipped already journaled repo={} delivery_id={} dedupe_key={}",
-                    repo,
-                    event.delivery_id,
-                    record.dedupe_key,
+                _log_poll_decision(
+                    source="repo_events_poll",
+                    decision="duplicate",
+                    reason="already_journaled",
+                    repo=repo,
+                    raw=raw,
+                    event=event,
+                    record=record,
                 )
                 continue
-            logger.info(
-                "events poll event journaled repo={} delivery_id={} github_event={} trigger={}",
-                repo,
-                event.delivery_id,
-                event.github_event,
-                _event_trigger(event),
+            _log_poll_decision(
+                source="repo_events_poll",
+                decision="journaled",
+                repo=repo,
+                raw=raw,
+                event=event,
+                record=record,
             )
 
         await to_thread.run_sync(
@@ -281,6 +341,17 @@ class GitHubEventsPoller:
                 last_event_created_at=newest.last_event_created_at,
                 cursor_event_ids=newest.cursor_event_ids,
             )
+        )
+        _log_source_summary(
+            source="repo_events_poll",
+            repo=repo,
+            fetched=len(raw_events),
+            window=len(window),
+            journaled=len(window) - ignored - duplicates,
+            duplicates=duplicates,
+            ignored=ignored,
+            baselined=0,
+            ignored_reasons=ignored_reasons,
         )
 
         return PollCycleResult(submitted=0, duplicates=duplicates, ignored=ignored, baselined=0, repos=(repo,))
@@ -312,6 +383,17 @@ class GitHubEventsPoller:
                 newest.last_updated_at,
                 len(snapshots),
             )
+            _log_source_summary(
+                source="pr_state_poll",
+                repo=repo,
+                fetched=len(snapshots),
+                window=0,
+                journaled=0,
+                duplicates=0,
+                ignored=len(snapshots),
+                baselined=len(snapshots),
+                ignored_reasons=Counter({"baseline": len(snapshots)}),
+            )
             return PollCycleResult(
                 submitted=0,
                 duplicates=0,
@@ -330,9 +412,15 @@ class GitHubEventsPoller:
         )
         duplicates = 0
         ignored = 0
+        ignored_reasons: Counter[str] = Counter()
         timeline_result = PollCycleResult(submitted=0, duplicates=0, ignored=0, baselined=0, repos=(repo,))
         for snapshot in window:
             previous = await to_thread.run_sync(self.store.get_pr_snapshot, repo, snapshot.number)
+            reason = _snapshot_ignore_reason(
+                snapshot,
+                previous,
+                first_seen_after=cursor.last_updated_at,
+            )
             event = _event_from_snapshot_diff(
                 snapshot,
                 previous,
@@ -342,26 +430,40 @@ class GitHubEventsPoller:
             await to_thread.run_sync(self.store.upsert_pr_snapshot, snapshot)
             if event is None:
                 ignored += 1
+                ignored_reasons[reason] += 1
+                _log_poll_decision(
+                    source="pr_state_poll",
+                    decision="ignored",
+                    reason=reason,
+                    repo=repo,
+                    pr_number=snapshot.number,
+                    event_created_at=snapshot.updated_at,
+                    head_sha=snapshot.head_sha,
+                )
                 continue
             record = _journal_record_from_event(event, source="pr_state_poll", event_created_at=snapshot.updated_at)
             inserted = await to_thread.run_sync(self.store.append_event, record)
             if not inserted:
                 duplicates += 1
-                logger.info(
-                    "pr state event skipped already journaled repo={} delivery_id={} dedupe_key={}",
-                    repo,
-                    event.delivery_id,
-                    record.dedupe_key,
+                _log_poll_decision(
+                    source="pr_state_poll",
+                    decision="duplicate",
+                    reason="already_journaled",
+                    repo=repo,
+                    pr_number=snapshot.number,
+                    event=event,
+                    record=record,
+                    head_sha=snapshot.head_sha,
                 )
                 continue
-            logger.info(
-                "pr state event journaled repo={} pr={} delivery_id={} github_event={} trigger={} head_sha={}",
-                repo,
-                snapshot.number,
-                event.delivery_id,
-                event.github_event,
-                _event_trigger(event),
-                snapshot.head_sha,
+            _log_poll_decision(
+                source="pr_state_poll",
+                decision="journaled",
+                repo=repo,
+                pr_number=snapshot.number,
+                event=event,
+                record=record,
+                head_sha=snapshot.head_sha,
             )
         timeline_result = await self._poll_pr_timelines(
             repo,
@@ -375,6 +477,17 @@ class GitHubEventsPoller:
                 last_updated_at=newest.last_updated_at,
                 pr_node_ids=newest.pr_node_ids,
             )
+        )
+        _log_source_summary(
+            source="pr_state_poll",
+            repo=repo,
+            fetched=len(snapshots),
+            window=len(window),
+            journaled=len(window) - ignored - duplicates,
+            duplicates=duplicates,
+            ignored=ignored,
+            baselined=0,
+            ignored_reasons=ignored_reasons,
         )
         return PollCycleResult(
             submitted=0,
@@ -394,6 +507,9 @@ class GitHubEventsPoller:
         duplicates = 0
         ignored = 0
         baselined = 0
+        total_items = 0
+        total_window = 0
+        ignored_reasons: Counter[str] = Counter()
         candidates = [snapshot for snapshot in snapshots if snapshot.state == "open" and not snapshot.draft]
         for snapshot in candidates:
             logger.info("pr timeline poll started repo={} pr={}", repo, snapshot.number)
@@ -404,6 +520,7 @@ class GitHubEventsPoller:
                 snapshot.number,
             )
             items = _sorted_timeline_items(raw_items)
+            total_items += len(items)
             newest = _newest_timeline_cursor(repo, snapshot.number, items)
             if newest is None:
                 logger.info("pr timeline poll empty repo={} pr={}", repo, snapshot.number)
@@ -423,9 +540,37 @@ class GitHubEventsPoller:
             )
             if cursor is None and not window:
                 baselined += len(items)
+                _log_source_summary(
+                    source="pr_timeline_poll",
+                    repo=repo,
+                    pr_number=snapshot.number,
+                    fetched=len(items),
+                    window=0,
+                    journaled=0,
+                    duplicates=0,
+                    ignored=len(items),
+                    baselined=len(items),
+                    ignored_reasons=Counter({"baseline": len(items)}),
+                )
+            total_window += len(window)
+            pr_duplicates = 0
+            pr_ignored = 0
+            pr_ignored_reasons: Counter[str] = Counter()
             for raw in window:
                 if _timeline_item_is_from_agent(raw, self.config.github_login):
                     ignored += 1
+                    pr_ignored += 1
+                    reason = "agent_authored_item"
+                    ignored_reasons[reason] += 1
+                    pr_ignored_reasons[reason] += 1
+                    _log_poll_decision(
+                        source="pr_timeline_poll",
+                        decision="ignored",
+                        reason=reason,
+                        repo=repo,
+                        pr_number=snapshot.number,
+                        raw=raw,
+                    )
                     continue
                 item_updated_at = _timeline_item_updated_at(raw)
                 delivery_id = _delivery_id_from_timeline_item(repo, snapshot.number, raw)
@@ -437,26 +582,58 @@ class GitHubEventsPoller:
                 )
                 if event is None or event.action is not ReviewAction.REVIEW:
                     ignored += 1
+                    pr_ignored += 1
+                    reason = _timeline_item_ignore_reason(raw, event)
+                    ignored_reasons[reason] += 1
+                    pr_ignored_reasons[reason] += 1
+                    _log_poll_decision(
+                        source="pr_timeline_poll",
+                        decision="ignored",
+                        reason=reason,
+                        repo=repo,
+                        pr_number=snapshot.number,
+                        raw=raw,
+                        event=event,
+                        delivery_id=delivery_id,
+                    )
                     continue
                 record = _journal_record_from_event(event, source="pr_timeline_poll", event_created_at=item_updated_at)
                 inserted = await to_thread.run_sync(self.store.append_event, record)
                 if not inserted:
                     duplicates += 1
-                    logger.info(
-                        "pr timeline event skipped already journaled repo={} pr={} delivery_id={} dedupe_key={}",
-                        repo,
-                        snapshot.number,
-                        event.delivery_id,
-                        record.dedupe_key,
+                    pr_duplicates += 1
+                    _log_poll_decision(
+                        source="pr_timeline_poll",
+                        decision="duplicate",
+                        reason="already_journaled",
+                        repo=repo,
+                        pr_number=snapshot.number,
+                        raw=raw,
+                        event=event,
+                        record=record,
                     )
                     continue
-                logger.info(
-                    "pr timeline event journaled repo={} pr={} delivery_id={} github_event={} trigger={}",
-                    repo,
-                    snapshot.number,
-                    event.delivery_id,
-                    event.github_event,
-                    _event_trigger(event),
+                _log_poll_decision(
+                    source="pr_timeline_poll",
+                    decision="journaled",
+                    repo=repo,
+                    pr_number=snapshot.number,
+                    raw=raw,
+                    event=event,
+                    record=record,
+                )
+            if window:
+                _log_source_summary(
+                    source="pr_timeline_poll",
+                    repo=repo,
+                    pr_number=snapshot.number,
+                    fetched=len(items),
+                    window=len(window),
+                    journaled=len(window) - pr_ignored - pr_duplicates,
+                    duplicates=pr_duplicates,
+                    ignored=pr_ignored,
+                    baselined=0,
+                    ignored_reasons=pr_ignored_reasons,
                 )
             await to_thread.run_sync(
                 functools.partial(
@@ -471,6 +648,17 @@ class GitHubEventsPoller:
                     else newest.item_ids,
                 )
             )
+        _log_source_summary(
+            source="pr_timeline_poll",
+            repo=repo,
+            fetched=total_items,
+            window=total_window,
+            journaled=total_window - ignored - duplicates,
+            duplicates=duplicates,
+            ignored=ignored,
+            baselined=baselined,
+            ignored_reasons=ignored_reasons,
+        )
         return PollCycleResult(
             submitted=0,
             duplicates=duplicates,
@@ -487,10 +675,18 @@ class GitHubEventsPoller:
         max_events: int | None,
     ) -> PollCycleResult:
         pending = await to_thread.run_sync(functools.partial(self.store.pending_events, repo=repo))
+        logger.info(
+            "journal dispatch queue repo={} pending={} max_events={} wait_for_reviews={}",
+            repo,
+            len(pending),
+            max_events if max_events is not None else "unlimited",
+            wait_for_reviews,
+        )
         submitted = 0
         duplicates = 0
         ignored = 0
         for record in pending:
+            _log_journal_decision(record, "pending", reason="queued_for_dispatch")
             known_status = await to_thread.run_sync(self.event_status, record.delivery_id)
             if known_status is not None:
                 duplicates += 1
@@ -502,11 +698,8 @@ class GitHubEventsPoller:
                         result_json=json.dumps({"duplicate_task_status": known_status}, ensure_ascii=False),
                     )
                 )
-                logger.info(
-                    "journal event skipped already processed repo={} delivery_id={} status={}",
-                    repo,
-                    record.delivery_id,
-                    known_status,
+                _log_journal_decision(
+                    record, "skipped", reason="already_processed", result={"task_status": known_status}
                 )
                 continue
             if max_events is not None and submitted >= max_events:
@@ -515,12 +708,14 @@ class GitHubEventsPoller:
                     repo,
                     submitted,
                 )
+                _log_journal_decision(record, "pending", reason="event_limit_reached")
                 break
             await to_thread.run_sync(
                 self.store.mark_event_status,
                 record.delivery_id,
                 GitHubEventJournalStatus.RUNNING,
             )
+            _log_journal_decision(record, "running", reason="dispatch_started")
             try:
                 result = await self._dispatch_event(record.event, wait_for_reviews=wait_for_reviews)
             except Exception as exc:
@@ -532,6 +727,7 @@ class GitHubEventsPoller:
                         error=str(exc),
                     )
                 )
+                _log_journal_decision(record, "failed", reason="dispatch_error", error=str(exc))
                 raise
             status = GitHubEventJournalStatus.COMPLETED
             if result.get("duplicate") or result.get("ignored"):
@@ -544,40 +740,55 @@ class GitHubEventsPoller:
                     result_json=json.dumps(_compact_result(result), ensure_ascii=False),
                 )
             )
-            logger.info(
-                "journal event dispatched repo={} delivery_id={} github_event={} trigger={} result={}",
-                repo,
-                record.delivery_id,
-                record.github_event,
-                _event_trigger(record.event),
-                _compact_result(result),
-            )
+            _log_journal_decision(record, status.value, reason="dispatch_finished", result=_compact_result(result))
             if result.get("duplicate"):
                 duplicates += 1
             elif result.get("ignored"):
                 ignored += 1
             elif result.get("accepted"):
                 submitted += 1
+        logger.info(
+            "journal dispatch finished repo={} submitted={} duplicates={} ignored={} pending_seen={}",
+            repo,
+            submitted,
+            duplicates,
+            ignored,
+            len(pending),
+        )
         return PollCycleResult(submitted=submitted, duplicates=duplicates, ignored=ignored, baselined=0, repos=(repo,))
 
     async def _dispatch_event(self, event: ReviewEvent, *, wait_for_reviews: bool) -> dict[str, Any]:
         pr_label = f"{event.pr.repo}#{event.pr.number}" if event.pr else "<no-pr>"
         logger.info(
-            "dispatching event delivery_id={} pr={} action={}",
+            "agent dispatch started delivery_id={} pr={} github_event={} trigger={} action={} wait_for_reviews={}",
             event.delivery_id,
             pr_label,
+            event.github_event,
+            _event_trigger(event),
             event.action.value,
+            wait_for_reviews,
         )
         if wait_for_reviews:
             try:
                 await self.agent.run_now(event)
             except ValueError as exc:
                 if "duplicate" in str(exc):
-                    logger.info("dispatch skipped duplicate delivery_id={} pr={}", event.delivery_id, pr_label)
+                    logger.info(
+                        "agent dispatch skipped delivery_id={} pr={} reason=duplicate_task",
+                        event.delivery_id,
+                        pr_label,
+                    )
                     return {"accepted": False, "duplicate": True, "delivery_id": event.delivery_id}
                 raise
             return {"accepted": True, "delivery_id": event.delivery_id, "action": event.action.value}
-        return await self.agent.submit(event)
+        result = await self.agent.submit(event)
+        logger.info(
+            "agent dispatch accepted delivery_id={} pr={} result={}",
+            event.delivery_id,
+            pr_label,
+            _compact_result(result),
+        )
+        return result
 
 
 def list_repo_events_with_gh(config: GitHubReviewerConfig, repo: str) -> list[dict[str, Any]]:
@@ -1145,6 +1356,240 @@ def _journal_record_from_event(
         created_at=now,
         updated_at=now,
     )
+
+
+def _log_poll_decision(
+    *,
+    source: str,
+    decision: str,
+    repo: str,
+    reason: str | None = None,
+    raw: dict[str, Any] | None = None,
+    event: ReviewEvent | None = None,
+    record: GitHubEventJournalRecord | None = None,
+    delivery_id: str | None = None,
+    pr_number: int | None = None,
+    event_created_at: str | None = None,
+    head_sha: str | None = None,
+) -> None:
+    event_created_at = event_created_at or record.event_created_at if record is not None else event_created_at
+    logger.info(
+        "poll event decision source={} decision={} reason={} repo={} pr={} delivery_id={} dedupe_key={} "
+        "github_event={} trigger={} action={} event_created_at={} raw_type={} raw_id={} actor={} head_sha={}",
+        source,
+        decision,
+        reason or "",
+        _event_repo(repo, event, record),
+        _event_pr_number(pr_number, event, record),
+        delivery_id or (record.delivery_id if record is not None else event.delivery_id if event is not None else ""),
+        record.dedupe_key if record is not None else "",
+        record.github_event
+        if record is not None
+        else event.github_event
+        if event is not None
+        else _raw_event_name(raw),
+        _event_trigger(event) if event is not None else "",
+        (record.action.value if record is not None else event.action.value if event is not None else ""),
+        event_created_at or _raw_updated_at(raw),
+        _raw_event_name(raw),
+        _raw_event_id(raw),
+        _raw_actor(raw),
+        head_sha or (event.after_sha if event is not None else ""),
+    )
+
+
+def _log_journal_decision(
+    record: GitHubEventJournalRecord,
+    decision: str,
+    *,
+    reason: str = "",
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    logger.info(
+        "journal event decision decision={} reason={} repo={} pr={} delivery_id={} dedupe_key={} source={} "
+        "github_event={} trigger={} action={} event_created_at={} result={} error={}",
+        decision,
+        reason,
+        record.repo,
+        record.pr_number or "",
+        record.delivery_id,
+        record.dedupe_key,
+        record.source,
+        record.github_event,
+        _event_trigger(record.event),
+        record.action.value,
+        record.event_created_at,
+        result or {},
+        error or "",
+    )
+
+
+def _log_source_summary(
+    *,
+    source: str,
+    repo: str,
+    fetched: int,
+    window: int,
+    journaled: int,
+    duplicates: int,
+    ignored: int,
+    baselined: int,
+    ignored_reasons: Counter[str],
+    pr_number: int | None = None,
+) -> None:
+    logger.info(
+        "poll source summary source={} repo={} pr={} fetched={} window={} journaled={} duplicates={} ignored={} "
+        "baselined={} ignored_reasons={}",
+        source,
+        repo,
+        pr_number or "",
+        fetched,
+        window,
+        journaled,
+        duplicates,
+        ignored,
+        baselined,
+        dict(ignored_reasons),
+    )
+
+
+def _event_repo(
+    repo: str,
+    event: ReviewEvent | None,
+    record: GitHubEventJournalRecord | None,
+) -> str:
+    if record is not None and record.repo:
+        return record.repo
+    if event is not None and event.pr is not None:
+        return event.pr.repo
+    return repo
+
+
+def _event_pr_number(
+    pr_number: int | None,
+    event: ReviewEvent | None,
+    record: GitHubEventJournalRecord | None,
+) -> str:
+    if record is not None and record.pr_number is not None:
+        return str(record.pr_number)
+    if event is not None and event.pr is not None:
+        return str(event.pr.number)
+    return str(pr_number) if pr_number is not None else ""
+
+
+def _repo_event_ignore_reason(raw_event: dict[str, Any], event: ReviewEvent | None) -> str:
+    if event is None:
+        if not isinstance(raw_event.get("payload"), dict):
+            return "missing_payload"
+        if _github_event_name(str(raw_event.get("type") or "")) is None:
+            return "unsupported_repo_event_type"
+        return "unparseable_repo_event"
+    if event.action is ReviewAction.IGNORED:
+        return _ignored_event_reason(event)
+    return f"unsupported_action_{event.action.value}"
+
+
+def _timeline_item_ignore_reason(raw_item: dict[str, Any], event: ReviewEvent | None) -> str:
+    if event is None:
+        event_type = str(raw_item.get("event") or "")
+        if event_type not in {"commented", "line-commented", "reviewed"}:
+            return "unsupported_timeline_item_type"
+        if event_type in {"line-commented", "reviewed"}:
+            return "missing_comment_or_review_id"
+        return "unparseable_timeline_item"
+    if event.action is ReviewAction.IGNORED:
+        return _ignored_event_reason(event)
+    return f"unsupported_action_{event.action.value}"
+
+
+def _snapshot_ignore_reason(
+    snapshot: PullRequestSnapshot,
+    previous: PullRequestSnapshot | None,
+    *,
+    first_seen_after: str,
+) -> str:
+    if snapshot.draft:
+        return "draft_pr"
+    action = _snapshot_action(snapshot, previous, first_seen_after=first_seen_after)
+    if action is None:
+        if previous is None:
+            return "old_pr_first_seen"
+        return "no_relevant_snapshot_change"
+    return f"ignored_snapshot_action_{action}"
+
+
+def _ignored_event_reason(event: ReviewEvent) -> str:
+    action = str(event.raw.get("action") or "action")
+    if event.github_event == "pull_request":
+        pr = event.pr
+        if pr is not None and pr.draft:
+            return "draft_pr"
+        return f"ignored_pull_request_{action}"
+    if event.github_event == "issue_comment":
+        issue = event.raw.get("issue")
+        if not isinstance(issue, dict) or not isinstance(issue.get("pull_request"), dict):
+            return "not_pr_comment"
+        if action not in {"created", "edited"}:
+            return f"unsupported_issue_comment_{action}"
+        return "comment_without_agent_mention"
+    if event.github_event == "pull_request_review_comment":
+        if action not in {"created", "edited", "updated"}:
+            return f"unsupported_review_comment_{action}"
+        if _event_is_from_nyanpasu(event):
+            return "agent_authored_item"
+        return "review_comment_without_reply_or_mention"
+    if event.github_event == "pull_request_review":
+        if action not in {"submitted", "edited", "created", "updated"}:
+            return f"unsupported_review_{action}"
+        if _event_is_from_nyanpasu(event):
+            return "agent_authored_item"
+        return "review_without_agent_mention"
+    if event.github_event == "push":
+        return "push_without_pull_request"
+    return f"ignored_{event.github_event}"
+
+
+def _event_is_from_nyanpasu(event: ReviewEvent) -> bool:
+    context = event.raw.get("nyanpasu")
+    return isinstance(context, dict) and context.get("source") == "pr_timeline_poll" and _event_trigger(event) == ""
+
+
+def _raw_event_name(raw: dict[str, Any] | None) -> str:
+    if raw is None:
+        return ""
+    return str(raw.get("type") or raw.get("event") or "")
+
+
+def _raw_event_id(raw: dict[str, Any] | None) -> str:
+    if raw is None:
+        return ""
+    return _event_id(raw) or _timeline_item_id(raw)
+
+
+def _raw_actor(raw: dict[str, Any] | None) -> str:
+    if raw is None:
+        return ""
+    actor = raw.get("actor")
+    if isinstance(actor, dict) and actor.get("login"):
+        return str(actor["login"])
+    user = raw.get("user")
+    if isinstance(user, dict) and user.get("login"):
+        return str(user["login"])
+    for key in ("comment", "review"):
+        nested = raw.get(key)
+        if not isinstance(nested, dict):
+            continue
+        user = nested.get("user")
+        if isinstance(user, dict) and user.get("login"):
+            return str(user["login"])
+    return ""
+
+
+def _raw_updated_at(raw: dict[str, Any] | None) -> str:
+    if raw is None:
+        return ""
+    return _event_created_at(raw) or _timeline_item_updated_at(raw)
 
 
 def _dedupe_key(event: ReviewEvent) -> str:
