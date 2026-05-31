@@ -18,7 +18,8 @@ class CodexConfig(BaseModel):
     bin: str = "codex"
     model: str | None = None
     sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
-    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "never"
+    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "on-request"
+    approvals_reviewer: Literal["user", "auto_review", "guardian_subagent"] = "auto_review"
     command_timeout_seconds: int = 60 * 60
     pass_env: tuple[str, ...] = ()
 
@@ -120,6 +121,7 @@ def _normalize_legacy_flat_config(raw: dict[str, Any]) -> dict[str, Any]:
         "model": "model",
         "sandbox": "sandbox",
         "approval_policy": "approval_policy",
+        "approvals_reviewer": "approvals_reviewer",
         "command_timeout_seconds": "command_timeout_seconds",
         "pass_env": "pass_env",
     }.items():
@@ -163,6 +165,7 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
         "NYANPASU_CODEX_MODEL": "model",
         "NYANPASU_CODEX_SANDBOX": "sandbox",
         "NYANPASU_CODEX_APPROVAL": "approval_policy",
+        "NYANPASU_CODEX_APPROVALS_REVIEWER": "approvals_reviewer",
         "NYANPASU_COMMAND_TIMEOUT_SECONDS": "command_timeout_seconds",
     }
     for env_name, field in env_codex.items():

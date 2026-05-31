@@ -94,6 +94,8 @@ class CodexExecBackend:
             argv.extend(["--model", self.config.codex.model])
         argv.extend(
             [
+                "-c",
+                f'approvals_reviewer="{self.config.codex.approvals_reviewer}"',
                 "--json",
                 "--sandbox",
                 self.config.codex.sandbox,
@@ -140,6 +142,7 @@ class CodexAppServerBackend:
                     "cwd": str(cwd),
                     "runtimeWorkspaceRoots": [str(cwd)],
                     "approvalPolicy": self.config.codex.approval_policy,
+                    "approvalsReviewer": self.config.codex.approvals_reviewer,
                     "sandbox": self.config.codex.sandbox,
                     "model": self.config.codex.model,
                     "persistExtendedHistory": False,
@@ -153,6 +156,7 @@ class CodexAppServerBackend:
                     "cwd": str(cwd),
                     "runtimeWorkspaceRoots": [str(cwd)],
                     "approvalPolicy": self.config.codex.approval_policy,
+                    "approvalsReviewer": self.config.codex.approvals_reviewer,
                     "sandbox": self.config.codex.sandbox,
                     "model": self.config.codex.model,
                     "experimentalRawEvents": False,
@@ -169,6 +173,7 @@ class CodexAppServerBackend:
                 "cwd": str(cwd),
                 "runtimeWorkspaceRoots": [str(cwd)],
                 "approvalPolicy": self.config.codex.approval_policy,
+                "approvalsReviewer": self.config.codex.approvals_reviewer,
                 "sandboxPolicy": self._sandbox_policy(cwd),
                 "model": self.config.codex.model,
             },

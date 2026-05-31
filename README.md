@@ -12,7 +12,7 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Persistent task, thread, and context state.
 - Codex backend management through `codex app-server` or `codex exec`.
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
-- Runtime safety defaults: `sandbox = "workspace-write"` and `approval_policy = "never"`.
+- Runtime safety defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, webhook signatures, `gh-llm` prompts, and review submission live in `packages/nyanpasu-github-reviewer`.
 
@@ -34,7 +34,8 @@ port = 8765
 [codex]
 backend = "app-server"
 sandbox = "workspace-write"
-approval_policy = "never"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 command_timeout_seconds = 3600
 
 [runtime]
@@ -65,6 +66,8 @@ required = false
 ```
 
 Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking Codex. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
+
+`approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 
 ## Run
 

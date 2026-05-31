@@ -8,7 +8,8 @@ port = 8765
 backend = "app-server"
 command_timeout_seconds = 3600
 sandbox = "workspace-write"
-approval_policy = "never"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 
 [runtime]
 concurrency = 4

@@ -22,6 +22,8 @@ port = 9999
 
 [codex]
 backend = "exec"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
 pass_env = ["GH_TOKEN"]
 
 [runtime]
@@ -42,6 +44,8 @@ poll_interval_seconds = 600
     assert config.server.host == "0.0.0.0"
     assert config.server.port == 9999
     assert config.codex.backend == "exec"
+    assert config.codex.approval_policy == "on-request"
+    assert config.codex.approvals_reviewer == "auto_review"
     assert config.codex.pass_env == ("GH_TOKEN",)
     assert config.runtime.concurrency == 2
     assert config.runtime.coalesce_window_seconds == 60

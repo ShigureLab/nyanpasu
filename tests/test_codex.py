@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
+from nyanpasu.codex import CodexAppServerBackend, CodexExecBackend, safe_codex_env
 from nyanpasu.config import CodexConfig, NyanpasuConfig
 
 if TYPE_CHECKING:
@@ -80,3 +80,69 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
     finally:
         asyncio.set_event_loop(None)
         loop.close()
+
+
+def test_exec_backend_argv_includes_approvals_reviewer(tmp_path: Path) -> None:
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        codex=CodexConfig(approval_policy="on-request", approvals_reviewer="auto_review"),
+    )
+    backend = CodexExecBackend(config)
+
+    argv = backend._argv(cwd=tmp_path, thread_id=None, output_path=tmp_path / "out.txt")
+
+    assert "-c" in argv
+    assert 'approvals_reviewer="auto_review"' in argv
+    assert "--ask-for-approval" in argv
+    assert argv[argv.index("--ask-for-approval") + 1] == "on-request"
+
+
+def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        codex=CodexConfig(approval_policy="on-request", approvals_reviewer="auto_review"),
+    )
+    backend = RecordingAppServerBackend(config)
+
+    async def run() -> None:
+        backend._completed_turns[("thread-1", "turn-1")] = {
+            "threadId": "thread-1",
+            "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
+        }
+        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id=None)
+
+        backend._completed_turns[("thread-1", "turn-1")] = {
+            "threadId": "thread-1",
+            "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
+        }
+        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id="thread-1")
+
+    asyncio.run(run())
+
+    assert [method for method, _ in backend.requests] == [
+        "thread/start",
+        "turn/start",
+        "thread/resume",
+        "turn/start",
+    ]
+    for _, params in backend.requests:
+        assert params["approvalPolicy"] == "on-request"
+        assert params["approvalsReviewer"] == "auto_review"
+
+
+class RecordingAppServerBackend(CodexAppServerBackend):
+    def __init__(self, config: NyanpasuConfig) -> None:
+        super().__init__(config)
+        self.requests: list[tuple[str, dict[str, Any]]] = []
+
+    async def _ensure_started(self) -> None:
+        return None
+
+    async def _request(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+        assert params is not None
+        self.requests.append((method, params))
+        if method in {"thread/start", "thread/resume"}:
+            return {"thread": {"id": "thread-1"}}
+        if method == "turn/start":
+            return {"turn": {"id": "turn-1"}}
+        raise AssertionError(f"unexpected request: {method}")
