@@ -63,7 +63,7 @@ uv run nyanpasu-github-reviewer poll
 uv run nyanpasu-github-reviewer review owner/repo 123
 ```
 
-The current poller uses GitHub repository events. The first run records the current repo event cursor and does not process older events; later runs process filtered events after that cursor. Already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` processes every matching event in the poll window; a positive value is an explicit cap.
+The poller combines repository events, PR state polling, and PR timeline polling into one event journal. The first run records the current cursors and snapshots without processing older work; later runs process filtered events after those cursors. Already journaled events and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` dispatches every matching journal event in the poll window; a positive value is an explicit per-cycle cap.
 
 ## Webhook-Like Polling Design
 
@@ -117,7 +117,7 @@ base_ref changed                     -> pull_request.edited or policy skip
 
 This source is required to detect fork PR commits reliably. A changed `head_sha` should synthesize `pull_request.synchronize` even when repository events did not expose one.
 
-`pr_timeline_poll` reads the timeline for PRs that changed recently or already have an active Nyanpasu context. It generates canonical events for user-visible conversation:
+`pr_timeline_poll` reads the timeline for PRs that changed recently. It generates canonical events for user-visible conversation:
 
 ```text
 IssueComment                  -> issue_comment.created/edited

@@ -160,7 +160,7 @@ def parse_github_event(
                 after_sha=pr.head_sha,
                 raw=raw,
             )
-        if action_name in {"opened", "reopened", "ready_for_review", "synchronize"} and not pr.draft:
+        if action_name in {"opened", "reopened", "ready_for_review", "synchronize", "edited"} and not pr.draft:
             raw = _with_nyanpasu_context(
                 payload,
                 trigger=f"pull_request_{action_name}",

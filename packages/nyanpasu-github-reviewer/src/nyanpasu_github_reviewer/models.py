@@ -61,6 +61,69 @@ class PollEventCursor(GitHubReviewerModel):
     updated_at: float
 
 
+class PullRequestUpdatedCursor(GitHubReviewerModel):
+    repo: str
+    last_updated_at: str
+    pr_node_ids: tuple[str, ...] = ()
+    initialized_at: float
+    updated_at: float
+
+
+class PullRequestTimelineCursor(GitHubReviewerModel):
+    repo: str
+    pr_number: int
+    last_item_updated_at: str
+    item_ids: tuple[str, ...] = ()
+    initialized_at: float
+    updated_at: float
+
+
+class PullRequestSnapshot(GitHubReviewerModel):
+    repo: str
+    number: int
+    node_id: str
+    url: str
+    state: str
+    draft: bool
+    base_ref: str
+    head_ref: str
+    head_repo: str
+    head_sha: str
+    title_hash: str
+    body_hash: str
+    created_at: str
+    updated_at: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.repo}#{self.number}"
+
+
+class GitHubEventJournalStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class GitHubEventJournalRecord(GitHubReviewerModel):
+    delivery_id: str
+    dedupe_key: str
+    source: str
+    repo: str
+    pr_number: int | None = None
+    github_event: str
+    action: ReviewAction
+    event_created_at: str
+    event: ReviewEvent
+    status: GitHubEventJournalStatus = GitHubEventJournalStatus.PENDING
+    result_json: str | None = None
+    error: str | None = None
+    created_at: float
+    updated_at: float
+
+
 class PollCycleResult(GitHubReviewerModel):
     submitted: int
     duplicates: int
