@@ -88,7 +88,7 @@ Instruction documents are task-scoped. A plugin can attach files such as `SOUL.m
 
 Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. For GitHub, `token_env` is preferred over writing a token directly in TOML. If neither `token` nor `token_env` is set, GitHub plugins fall back to the ambient `gh auth` state.
 
-Agentic GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
+Agent-driven GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
 
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 

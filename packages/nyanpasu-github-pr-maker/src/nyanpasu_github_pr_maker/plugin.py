@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from nyanpasu_github.agentic import (
+from nyanpasu_github.agent_tasks import (
     GitHubRepoConfigError,
     branch_agent_task,
     configured_branch_context,
-    parse_agentic_pull_request_outcome,
+    parse_pull_request_task_outcome,
 )
 from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.pulls import fetch_pull_request_view
@@ -179,14 +179,14 @@ class GitHubPrMakerPlugin:
                 error=result.error or "agent task did not complete",
             )
             return
-        outcome = parse_agentic_pull_request_outcome(
+        outcome = parse_pull_request_task_outcome(
             result.final_message,
             existing_pr_url=publish.existing_pr_url,
             existing_pr_number=publish.existing_pr_number,
             dry_run=publish.dry_run,
         )
         result_payload = {
-            "agentic": True,
+            "agent_driven": True,
             "final_message": result.final_message,
             "thread_id": result.thread_id,
             "turn_id": result.turn_id,

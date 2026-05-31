@@ -31,7 +31,7 @@ class GitHubBranchTaskContext(GitHubModel):
     instruction_docs: tuple[InstructionDocument, ...] = ()
 
 
-class AgenticPullRequestOutcome(GitHubModel):
+class PullRequestTaskOutcome(GitHubModel):
     status: PullRequestOutcomeStatus
     pr_url: str | None = None
     pr_number: int | None = None
@@ -95,28 +95,28 @@ def branch_agent_task(
     )
 
 
-def parse_agentic_pull_request_outcome(
+def parse_pull_request_task_outcome(
     final_message: str,
     *,
     existing_pr_url: str | None = None,
     existing_pr_number: int | None = None,
     dry_run: bool = False,
-) -> AgenticPullRequestOutcome:
+) -> PullRequestTaskOutcome:
     pr_url = existing_pr_url or _extract_pr_url(final_message)
     pr_number = existing_pr_number or pull_request_number_from_url(pr_url)
     no_pr_reason = _extract_no_pr_reason(final_message)
     if dry_run:
-        return AgenticPullRequestOutcome(
+        return PullRequestTaskOutcome(
             status="dry_run",
             pr_url=pr_url,
             pr_number=pr_number,
             no_pr_reason=no_pr_reason,
         )
     if pr_url and pr_number is not None:
-        return AgenticPullRequestOutcome(status="published", pr_url=pr_url, pr_number=pr_number)
+        return PullRequestTaskOutcome(status="published", pr_url=pr_url, pr_number=pr_number)
     if no_pr_reason is not None:
-        return AgenticPullRequestOutcome(status="no_changes", no_pr_reason=no_pr_reason)
-    return AgenticPullRequestOutcome(status="failed", error="agent final message did not include `PR: <url>`")
+        return PullRequestTaskOutcome(status="no_changes", no_pr_reason=no_pr_reason)
+    return PullRequestTaskOutcome(status="failed", error="agent final message did not include `PR: <url>`")
 
 
 def _extract_pr_url(text: str) -> str | None:

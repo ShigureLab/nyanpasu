@@ -33,7 +33,7 @@ base_branches = ["main"]
 
 `[integrations.github]` is provided by `nyanpasu-github`, not by the core runtime. `token_env` lets plugin-side `gh` helpers run without relying on global `gh auth`; if no token is configured, they fall back to ambient `gh` authentication state.
 
-PR creation itself is agentic: Codex runs `git` and `gh` inside the worktree. If you use `token_env`, expose the same variable to Codex with `codex.pass_env`. Nyanpasu stores the variable name in prompts and task metadata, not the token value. `git_author_*` is optional guidance for commits created by the agent.
+PR creation itself is agent-driven: Codex runs `git` and `gh` inside the worktree. If you use `token_env`, expose the same variable to Codex with `codex.pass_env`. Nyanpasu stores the variable name in prompts and task metadata, not the token value. `git_author_*` is optional guidance for commits created by the agent.
 
 ## API
 
