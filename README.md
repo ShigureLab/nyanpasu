@@ -2,7 +2,7 @@
 
 Nyanpasu is a plugin-oriented Codex agent service. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses persistent Codex threads per context, records state in SQLite, and runs Codex under a constrained runtime policy.
 
-GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and PR publishing without coupling those features to the core runtime.
+GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 
 ## Core Responsibilities
 
