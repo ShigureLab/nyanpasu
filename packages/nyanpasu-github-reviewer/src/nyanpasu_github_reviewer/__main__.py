@@ -75,15 +75,23 @@ def poll(
 
     async def run() -> None:
         agent = AgentService(core_config)
+        state_store = StateStore(core_config.db_path)
         plugin = GitHubReviewerPlugin().bind_for_conversion(
             config=plugin_config,
-            context_lookup=StateStore(core_config.db_path).get_context,
+            context_lookup=state_store.get_context,
+            active_context_task_lookup=lambda context_key, exclude_task_id: (
+                state_store.active_task_for_context(
+                    context_key,
+                    exclude_task_id=exclude_task_id,
+                )
+                is not None
+            ),
         )
         poller = GitHubEventsPoller(
             plugin_config,
             store=GitHubReviewerStore(core_config.db_path),
             agent=_PluginPollAgent(plugin, agent),
-            event_status=StateStore(core_config.db_path).task_status,
+            event_status=state_store.task_status,
         )
         try:
             if once or rebaseline:

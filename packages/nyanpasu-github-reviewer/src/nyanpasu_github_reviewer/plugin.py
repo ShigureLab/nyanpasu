@@ -14,7 +14,7 @@ from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_f
 from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
-from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, TaskAction, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, TaskAction, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import (
@@ -78,9 +78,11 @@ class GitHubReviewerPlugin:
         *,
         config: GitHubReviewerConfig,
         context_lookup: Callable[[str], AgentContext | None] | None = None,
+        active_context_task_lookup: Callable[[str, str], bool] | None = None,
     ) -> GitHubReviewerPlugin:
         self.config = config
         self._context_lookup = context_lookup
+        self._active_context_task_lookup = active_context_task_lookup
         return self
 
     async def shutdown(self) -> None:
@@ -141,7 +143,8 @@ class GitHubReviewerPlugin:
                 raise ValueError("review event has no pull request")
             instruction_docs = self._instruction_docs_for_pr(pr)
             existing = self.runtime_store_context(context_key)
-            review_mode = "initial_review" if existing is None else "followup_review"
+            has_active_context_task = self.runtime_active_context_task(context_key, exclude_task_id=event.delivery_id)
+            review_mode = "initial_review" if existing is None and not has_active_context_task else "followup_review"
             previous_head_sha = existing.get("revision") if existing else None
             event = self._with_coalesced_event_context(event)
             prompt = build_review_prompt(
@@ -205,6 +208,19 @@ class GitHubReviewerPlugin:
             "workspace_key": context.workspace_key,
             "revision": context.revision,
         }
+
+    def runtime_active_context_task(self, context_key: str, *, exclude_task_id: str) -> bool:
+        active_lookup = getattr(self, "_active_context_task_lookup", None)
+        if active_lookup is not None:
+            return bool(active_lookup(context_key, exclude_task_id))
+        if self.runtime is None:
+            return False
+        active = StateStore(self.runtime.config.db_path).active_task_for_context(
+            context_key,
+            exclude_task_id=exclude_task_id,
+            statuses=(TaskStatus.QUEUED.value, TaskStatus.RUNNING.value),
+        )
+        return active is not None
 
     def _workspace_for_pr(self, pr: PullRequestRef | None) -> WorkspaceRef | None:
         if pr is None or self.config is None:

@@ -1554,10 +1554,12 @@ def _raw_updated_at(raw: dict[str, Any] | None) -> str:
 def _dedupe_key(event: ReviewEvent) -> str:
     context = event.raw.get("nyanpasu")
     if event.github_event == "pull_request" and event.pr is not None:
-        trigger = str(context.get("trigger") or event.raw.get("action") or "") if isinstance(context, dict) else ""
-        if trigger == "pull_request_synchronize" or event.raw.get("action") == "synchronize":
+        action = _pull_request_action(event)
+        if action == "synchronize":
             return f"pull_request:synchronize:{event.pr.key}:{event.after_sha}"
-        return f"pull_request:{event.raw.get('action')}:{event.pr.key}:{event.delivery_id}"
+        if action == "opened":
+            return f"pull_request:{action}:{event.pr.key}:{event.after_sha or event.pr.head_sha}"
+        return f"pull_request:{action}:{event.pr.key}:{event.delivery_id}"
     if isinstance(context, dict):
         for field, prefix in (
             ("comment_id", event.github_event),
@@ -1568,6 +1570,14 @@ def _dedupe_key(event: ReviewEvent) -> str:
             if value:
                 return f"{prefix}:{value}"
     return event.delivery_id
+
+
+def _pull_request_action(event: ReviewEvent) -> str:
+    context = event.raw.get("nyanpasu")
+    trigger = str(context.get("trigger") or "") if isinstance(context, dict) else ""
+    if trigger.startswith("pull_request_"):
+        return trigger.removeprefix("pull_request_")
+    return str(event.raw.get("action") or event.github_event)
 
 
 def _event_created_at(event: dict[str, Any]) -> str:

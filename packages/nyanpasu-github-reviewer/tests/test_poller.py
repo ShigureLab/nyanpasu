@@ -638,6 +638,54 @@ async def test_pr_state_poll_synthesizes_synchronize_for_fork_head_update(tmp_pa
 
 
 @pytest.mark.anyio
+async def test_pr_state_opened_dedupes_repo_event_opened_for_same_head(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    store.upsert_poll_event_cursor(
+        "ExampleOrg/ExampleRepo",
+        last_event_created_at="2026-05-30T09:59:00Z",
+        cursor_event_ids=(),
+    )
+    store.upsert_pr_updated_cursor(
+        "ExampleOrg/ExampleRepo",
+        last_updated_at="2026-05-30T09:59:00Z",
+        pr_node_ids=(),
+    )
+    repo_events = [
+        _repo_event(
+            1,
+            "PullRequestEvent",
+            created_at="2026-05-30T10:00:00Z",
+            payload=_pr_payload("opened", sha="new"),
+        )
+    ]
+    pull_requests = [
+        _pull_request_api_item(
+            1,
+            sha="new",
+            created_at="2026-05-30T10:00:00Z",
+            updated_at="2026-05-30T10:01:00Z",
+        )
+    ]
+
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: repo_events,
+        list_pull_requests=lambda *_: pull_requests,
+        list_pull_request_timeline=lambda *_: [],
+    )
+
+    result = await poller.run_once()
+
+    assert result.submitted == 1
+    assert result.duplicates == 1
+    assert [event.delivery_id for event in agent.events] == ["events-poll-ExampleOrg-ExampleRepo-1"]
+
+
+@pytest.mark.anyio
 async def test_pr_state_poll_does_not_open_old_pr_first_seen_after_cursor(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = GitHubReviewerStore(tmp_path / "state.sqlite3")
