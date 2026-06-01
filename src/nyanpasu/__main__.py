@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import TYPE_CHECKING, Annotated, Any
+from pathlib import Path
+from typing import Annotated, Any
 
 import anyio
 import typer
@@ -15,10 +16,8 @@ from nyanpasu.models import AgentTask
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 app = typer.Typer(no_args_is_help=True)
+PathArgument = Path
 LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS Z}</green> | "
     "<level>{level: <8}</level> | "
@@ -41,7 +40,7 @@ def serve() -> None:
 
 
 @app.command()
-def run_task(path: Annotated[Path, typer.Argument(help="Path to a JSON task file.")]) -> None:
+def run_task(path: Annotated[PathArgument, typer.Argument(help="Path to a JSON task file.")]) -> None:
     configure_logging()
     resolved = load_config()
     ensure_state_dirs(resolved)
