@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.config import NyanpasuConfig
+from nyanpasu.models import AgentTask, TaskAction, TaskRunResult
 from nyanpasu.plugins import PluginRegistry
+from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
-
-if TYPE_CHECKING:
-    from nyanpasu.models import AgentTask, TaskRunResult
 
 
 class FakeAgent:
@@ -85,3 +84,34 @@ async def test_app_tasks_and_contexts_endpoints(tmp_path) -> None:
     assert tasks.json() == {"tasks": []}
     assert contexts.status_code == 200
     assert contexts.json() == {"contexts": []}
+
+
+@pytest.mark.anyio
+async def test_app_dashboard_endpoints(tmp_path) -> None:
+    config = NyanpasuConfig(state_dir=tmp_path / "state")
+    store = StateStore(config.db_path)
+    assert store.record_task(
+        AgentTask(
+            task_id="task-1",
+            action=TaskAction.RUN,
+            context_key="demo:1",
+            prompt="do work",
+            dedupe_key="task-1",
+            metadata={"plugin_id": "demo", "request": {"title": "Demo task", "repo": "owner/repo"}},
+        )
+    )
+    app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
+
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        api = await client.get("/api/dashboard")
+        page = await client.get("/dashboard")
+
+    assert api.status_code == 200
+    data = api.json()
+    assert data["totals"]["total"] == 1
+    assert data["totals"]["queued"] == 1
+    assert data["plugins"][0]["plugin_id"] == "demo"
+    assert data["backlog"][0]["title"] == "Demo task"
+    assert page.status_code == 200
+    assert "Nyanpasu Dashboard" in page.text
+    assert "/dashboard/assets/index-" in page.text

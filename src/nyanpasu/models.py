@@ -146,6 +146,54 @@ class ContextLease(NyanpasuModel):
     expires_at: float
 
 
+class DashboardTotals(NyanpasuModel):
+    total: int
+    queued: int
+    running: int
+    completed: int
+    failed: int
+    backlog: int
+    contexts: int
+    active_leases: int
+
+
+class DashboardPluginSummary(NyanpasuModel):
+    plugin_id: str
+    total: int = 0
+    queued: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    last_updated_at: float | None = None
+
+
+class DashboardTaskItem(NyanpasuModel):
+    task_id: str
+    dedupe_key: str | None = None
+    plugin_id: str
+    action: str
+    status: str
+    context_key: str
+    title: str
+    source: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    error: str | None = None
+    created_at: float
+    updated_at: float
+    age_seconds: float
+
+
+class DashboardSnapshot(NyanpasuModel):
+    generated_at: float
+    totals: DashboardTotals
+    status_counts: dict[str, int]
+    action_counts: dict[str, int]
+    plugins: tuple[DashboardPluginSummary, ...]
+    backlog: tuple[DashboardTaskItem, ...]
+    recent: tuple[DashboardTaskItem, ...]
+
+
 def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=_json_default)
 

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
 
 
-def _task(task_id: str, *, context_key: str = "demo:1") -> AgentTask:
+def _task(
+    task_id: str,
+    *,
+    context_key: str = "demo:1",
+    metadata: dict[str, Any] | None = None,
+) -> AgentTask:
     return AgentTask(
         task_id=task_id,
         action=TaskAction.RUN,
@@ -20,6 +26,7 @@ def _task(task_id: str, *, context_key: str = "demo:1") -> AgentTask:
             revision="abc",
         ),
         dedupe_key=task_id,
+        metadata=metadata or {},
     )
 
 
@@ -164,3 +171,75 @@ def test_release_context_leases_for_owner(tmp_path: Path) -> None:
     assert store.get_context_lease("demo:1") is None
     assert store.get_context_lease("demo:2") is None
     assert store.get_context_lease("demo:3") is not None
+
+
+def test_dashboard_snapshot_groups_plugin_backlog_and_recent_tasks(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    queued = _task(
+        "task-1",
+        context_key="repo:queued",
+        metadata={
+            "plugin_id": "github_pr_maker",
+            "request": {"repo": "owner/repo", "title": "Implement dashboard"},
+        },
+    )
+    running = _task(
+        "task-2",
+        context_key="repo:running",
+        metadata={
+            "plugin_id": "github_reviewer",
+            "pull_request": {"repo": "owner/repo", "number": 12},
+            "github_event": "pull_request",
+            "review_mode": "followup_review",
+        },
+    )
+    failed = _task("task-3", context_key="repo:failed", metadata={"plugin_id": "github_reviewer"})
+    done = _task("task-4", context_key="repo:done")
+
+    assert store.record_task(queued)
+    assert store.record_task(running)
+    assert store.record_task(failed)
+    assert store.record_task(done)
+    store.mark_task_running("task-2", None)
+    store.mark_task_failed("task-3", "boom")
+    store.mark_task_done(
+        TaskRunResult(
+            task_id="task-4",
+            status=TaskStatus.COMPLETED,
+            thread_id="thread-1",
+            turn_id="turn-1",
+            final_message="done",
+            raw_events=[],
+        )
+    )
+    store.upsert_context(
+        AgentContext(
+            context_key="repo:running",
+            thread_id="thread-1",
+            session_worktree=tmp_path / "wt",
+            workspace_key="owner/repo",
+            revision="abc",
+        )
+    )
+    assert store.try_acquire_context_lease("repo:running", owner_id="owner", task_id="task-2", ttl_seconds=60)
+
+    snapshot = store.dashboard_snapshot()
+
+    assert snapshot.totals.total == 4
+    assert snapshot.totals.queued == 1
+    assert snapshot.totals.running == 1
+    assert snapshot.totals.failed == 1
+    assert snapshot.totals.completed == 1
+    assert snapshot.totals.backlog == 2
+    assert snapshot.totals.contexts == 1
+    assert snapshot.totals.active_leases == 1
+    assert snapshot.backlog[0].task_id == "task-2"
+    assert snapshot.backlog[0].status == "running"
+    assert snapshot.backlog[1].title == "Implement dashboard"
+    assert snapshot.backlog[1].source == "owner/repo"
+    plugins = {plugin.plugin_id: plugin for plugin in snapshot.plugins}
+    assert plugins["github_reviewer"].total == 2
+    assert plugins["github_reviewer"].running == 1
+    assert plugins["github_reviewer"].failed == 1
+    assert plugins["github_pr_maker"].queued == 1
+    assert plugins["core"].completed == 1

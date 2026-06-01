@@ -1,0 +1,299 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1f2328;
+  --muted: #59636e;
+  --line: #d8dee4;
+  --blue: #0969da;
+  --green: #1a7f37;
+  --amber: #9a6700;
+  --red: #cf222e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.bar,
+main {
+  width: min(1440px, calc(100% - 32px));
+  margin: 0 auto;
+}
+
+.bar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.subtle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #8c959f;
+  background: #f3f4f6;
+}
+
+main {
+  padding: 20px 0 40px;
+}
+
+section {
+  margin-top: 20px;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.metric,
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.metric {
+  min-height: 86px;
+  padding: 12px;
+  display: grid;
+  align-content: space-between;
+  gap: 8px;
+}
+
+.metric .label {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.metric .value {
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric.queued .value {
+  color: var(--amber);
+}
+
+.metric.running .value {
+  color: var(--blue);
+}
+
+.metric.completed .value {
+  color: var(--green);
+}
+
+.metric.failed .value {
+  color: var(--red);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.35fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.plugins table {
+  min-width: 560px;
+}
+
+th,
+td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #eaeef2;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #f6f8fa;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  z-index: 1;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.title {
+  max-width: 520px;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 78px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  justify-content: center;
+}
+
+.status.queued {
+  color: var(--amber);
+  background: #fff8c5;
+  border-color: #eac54f;
+}
+
+.status.running {
+  color: var(--blue);
+  background: #ddf4ff;
+  border-color: #80ccff;
+}
+
+.status.completed {
+  color: var(--green);
+  background: #dafbe1;
+  border-color: #7ee787;
+}
+
+.status.failed {
+  color: var(--red);
+  background: #ffebe9;
+  border-color: #ffaba8;
+}
+
+.empty {
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+@media (width <= 1100px) {
+  .metrics {
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (width <= 640px) {
+  .bar,
+  main {
+    width: min(100% - 20px, 1440px);
+  }
+
+  .bar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 0;
+  }
+
+  .toolbar {
+    justify-content: flex-start;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric {
+    min-height: 78px;
+  }
+}

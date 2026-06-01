@@ -11,6 +11,11 @@ from nyanpasu.models import (
     AgentTask,
     CoalescedTaskRecord,
     ContextLease,
+    DashboardPluginSummary,
+    DashboardSnapshot,
+    DashboardTaskItem,
+    DashboardTotals,
+    TaskAction,
     TaskRunResult,
     TaskRunSummary,
     TaskStatus,
@@ -402,6 +407,71 @@ class StateStore:
             ).fetchall()
         return [_task_summary_from_row(row) for row in rows]
 
+    def dashboard_snapshot(self, *, recent_limit: int = 50, backlog_limit: int = 100) -> DashboardSnapshot:
+        now = time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_id, dedupe_key, context_key, action, status, event_worktree, thread_id, turn_id, error,
+                    created_at, updated_at, task_json
+                FROM task_runs
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+            context_count = int(conn.execute("SELECT COUNT(*) AS count FROM agent_contexts").fetchone()["count"])
+            active_lease_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM context_leases WHERE expires_at > ?",
+                    (now,),
+                ).fetchone()["count"]
+            )
+
+        items = [_dashboard_task_from_row(row, now=now) for row in rows]
+        status_counts = {status.value: 0 for status in TaskStatus}
+        action_counts = {action.value: 0 for action in TaskAction}
+        plugin_counts: dict[str, DashboardPluginSummary] = {}
+        for item in items:
+            status_counts[item.status] = status_counts.get(item.status, 0) + 1
+            action_counts[item.action] = action_counts.get(item.action, 0) + 1
+            current = plugin_counts.get(item.plugin_id)
+            if current is None:
+                current = DashboardPluginSummary(plugin_id=item.plugin_id)
+            plugin_counts[item.plugin_id] = current.model_copy(
+                update={
+                    "total": current.total + 1,
+                    item.status: getattr(current, item.status, 0) + 1,
+                    "last_updated_at": max(current.last_updated_at or 0, item.updated_at),
+                }
+            )
+
+        queued = status_counts.get(TaskStatus.QUEUED.value, 0)
+        running = status_counts.get(TaskStatus.RUNNING.value, 0)
+        completed = status_counts.get(TaskStatus.COMPLETED.value, 0)
+        failed = status_counts.get(TaskStatus.FAILED.value, 0)
+        backlog = sorted(
+            [item for item in items if item.status in {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value}],
+            key=lambda item: (item.status != TaskStatus.RUNNING.value, item.created_at),
+        )[:backlog_limit]
+        plugins = tuple(sorted(plugin_counts.values(), key=lambda item: item.last_updated_at or 0, reverse=True))
+        return DashboardSnapshot(
+            generated_at=now,
+            totals=DashboardTotals(
+                total=len(items),
+                queued=queued,
+                running=running,
+                completed=completed,
+                failed=failed,
+                backlog=queued + running,
+                contexts=context_count,
+                active_leases=active_lease_count,
+            ),
+            status_counts=status_counts,
+            action_counts=action_counts,
+            plugins=plugins,
+            backlog=tuple(backlog),
+            recent=tuple(items[:recent_limit]),
+        )
+
     def _update_task(
         self,
         task_id: str,
@@ -441,6 +511,94 @@ def replace_context(context: AgentContext, **changes: Any) -> AgentContext:
 
 def _task_summary_from_row(row: sqlite3.Row) -> TaskRunSummary:
     return TaskRunSummary.model_validate(dict(row))
+
+
+def _dashboard_task_from_row(row: sqlite3.Row, *, now: float) -> DashboardTaskItem:
+    task = _json_object(row["task_json"])
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    assert isinstance(metadata, dict)
+    return DashboardTaskItem(
+        task_id=str(row["task_id"]),
+        dedupe_key=str(row["dedupe_key"]) if row["dedupe_key"] is not None else None,
+        plugin_id=_dashboard_plugin_id(metadata),
+        action=str(row["action"]),
+        status=str(row["status"]),
+        context_key=str(row["context_key"]),
+        title=_dashboard_title(task, metadata),
+        source=_dashboard_source(metadata),
+        thread_id=str(row["thread_id"]) if row["thread_id"] is not None else None,
+        turn_id=str(row["turn_id"]) if row["turn_id"] is not None else None,
+        error=str(row["error"]) if row["error"] is not None else None,
+        created_at=float(row["created_at"]),
+        updated_at=float(row["updated_at"]),
+        age_seconds=max(0.0, now - float(row["created_at"])),
+    )
+
+
+def _json_object(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _dashboard_plugin_id(metadata: dict[str, Any]) -> str:
+    plugin_id = metadata.get("plugin_id")
+    if isinstance(plugin_id, str) and plugin_id.strip():
+        return plugin_id.strip()
+    return "core"
+
+
+def _dashboard_title(task: dict[str, Any], metadata: dict[str, Any]) -> str:
+    request = metadata.get("request")
+    if isinstance(request, dict):
+        title = request.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+        task_text = request.get("task")
+        if isinstance(task_text, str) and task_text.strip():
+            return _first_line(task_text)
+    pull_request = metadata.get("pull_request")
+    if isinstance(pull_request, dict):
+        repo = pull_request.get("repo")
+        number = pull_request.get("number")
+        event = metadata.get("github_event")
+        mode = metadata.get("review_mode")
+        parts = [str(repo) if repo else "GitHub PR", f"#{number}" if number else ""]
+        suffix = " ".join(str(value) for value in (event, mode) if isinstance(value, str) and value)
+        return f"{' '.join(part for part in parts if part).strip()} {suffix}".strip()
+    prompt = task.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return _first_line(prompt)
+    task_id = task.get("task_id")
+    return str(task_id) if task_id else "Task"
+
+
+def _dashboard_source(metadata: dict[str, Any]) -> str | None:
+    request = metadata.get("request")
+    if isinstance(request, dict):
+        repo = request.get("repo")
+        if isinstance(repo, str) and repo:
+            return repo
+    pull_request = metadata.get("pull_request")
+    if isinstance(pull_request, dict):
+        repo = pull_request.get("repo")
+        number = pull_request.get("number")
+        if repo and number:
+            return f"{repo}#{number}"
+        if repo:
+            return str(repo)
+    return None
+
+
+def _first_line(value: str) -> str:
+    line = " ".join(value.strip().splitlines()[0].split())
+    if len(line) > 140:
+        return line[:137] + "..."
+    return line or "Task"
 
 
 def _task_to_json(task: AgentTask) -> dict[str, Any]:

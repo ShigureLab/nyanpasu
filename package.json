@@ -1,0 +1,23 @@
+{
+  "name": "nyanpasu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend workspace for Nyanpasu dashboard assets.",
+  "type": "module",
+  "scripts": {
+    "build": "vp build",
+    "check": "vp check frontend/dashboard vite.config.ts tsconfig.json",
+    "test": "vp test run"
+  },
+  "devDependencies": {
+    "@voidzero-dev/vite-plus-core": "^0.1.23",
+    "@voidzero-dev/vite-plus-test": "^0.1.23",
+    "happy-dom": "^20.9.0",
+    "typescript": "^6.0.3",
+    "vite-plus": "^0.1.23"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.23",
+    "vitest": "npm:@voidzero-dev/vite-plus-test@0.1.23"
+  }
+}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from fastapi import APIRouter, FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from nyanpasu.agent import AgentService, PostProcessHook
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
@@ -73,6 +76,9 @@ def create_app(
     app.state.config = resolved_config
     app.state.agent = resolved_agent
     runtime.app = app
+    static_dir = dashboard_static_dir()
+    if static_dir is not None:
+        app.mount("/dashboard/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -103,11 +109,58 @@ def create_app(
             ]
         }
 
+    @app.get("/api/dashboard")
+    async def dashboard_api(recent_limit: int = 50, backlog_limit: int = 100) -> dict[str, Any]:
+        store = StateStore(resolved_config.db_path)
+        snapshot = store.dashboard_snapshot(
+            recent_limit=max(1, min(recent_limit, 200)),
+            backlog_limit=max(1, min(backlog_limit, 500)),
+        )
+        return snapshot.model_dump(mode="json")
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard_page() -> HTMLResponse:
+        return HTMLResponse(dashboard_html())
+
     return app
 
 
 def app_from_env() -> FastAPI:
     return create_app(load_config())
+
+
+DASHBOARD_STATIC_DIR = Path(__file__).parent / "dashboard_static"
+
+
+def dashboard_html() -> str:
+    index = DASHBOARD_STATIC_DIR / "index.html"
+    if index.exists():
+        return index.read_text(encoding="utf-8")
+    return _dashboard_missing_html()
+
+
+def dashboard_static_dir() -> Path | None:
+    if not (DASHBOARD_STATIC_DIR / "index.html").is_file():
+        return None
+    return DASHBOARD_STATIC_DIR
+
+
+def _dashboard_missing_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nyanpasu Dashboard</title>
+  </head>
+  <body>
+    <main>
+      <h1>Nyanpasu Dashboard</h1>
+      <p>Dashboard assets are not built. Run <code>vp build</code> from the repository root.</p>
+    </main>
+  </body>
+</html>
+"""
 
 
 app = app_from_env()

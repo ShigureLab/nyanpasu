@@ -109,6 +109,20 @@ curl http://127.0.0.1:8765/tasks
 curl http://127.0.0.1:8765/contexts
 ```
 
+Open the dashboard to inspect task dispatch, backlog, completion, failures, plugin totals, and recent tasks:
+
+```text
+http://127.0.0.1:8765/dashboard
+```
+
+The dashboard frontend is built with Vite+. During development, use:
+
+```bash
+npm run check
+npm run test
+npm run build
+```
+
 The GitHub reviewer plugin mounts its webhook at:
 
 ```text
