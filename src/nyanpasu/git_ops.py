@@ -107,10 +107,48 @@ class WorktreeManager:
         return self.event_snapshot_path(task)
 
     def _reset_worktree(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
+        if self._is_managed_clone(path):
+            self._sync_clone(workspace, path, ref)
+            return
         if path.exists():
             self._remove_worktree_unlocked(workspace, path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._run(["git", "worktree", "add", "--detach", str(path), ref], workspace.local_path)
+        self._clone_workspace(workspace, path)
+        self._sync_clone(workspace, path, ref)
+
+    def _is_managed_clone(self, path: Path) -> bool:
+        return (path / ".git").is_dir()
+
+    def _clone_workspace(self, workspace: WorkspaceRef, path: Path) -> None:
+        self._run(["git", "clone", "--no-checkout", str(workspace.local_path), str(path)], Path.cwd())
+        if workspace.remote:
+            self._run(["git", "remote", "set-url", "origin", workspace.remote], path)
+
+    def _sync_clone(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
+        if workspace.remote:
+            self._run(["git", "remote", "set-url", "origin", workspace.remote], path)
+
+        target = self._fetch_clone_target(workspace, path, ref)
+        self._run(["git", "checkout", "--detach", "--force", target], path)
+        self._run(["git", "reset", "--hard", target], path)
+        self._run(["git", "clean", "-ffd"], path)
+
+    def _fetch_clone_target(self, workspace: WorkspaceRef, path: Path, ref: str) -> str:
+        if workspace.ref is not None:
+            try:
+                self._run(["git", "fetch", "--force", "origin", workspace.ref], path)
+            except subprocess.CalledProcessError:
+                if workspace.revision is None:
+                    raise
+        if workspace.revision is not None:
+            try:
+                self._run(["git", "cat-file", "-e", f"{workspace.revision}^{{commit}}"], path)
+            except subprocess.CalledProcessError:
+                self._run(["git", "fetch", "--force", "origin", workspace.revision], path)
+            return workspace.revision
+        if workspace.ref is not None:
+            return "FETCH_HEAD"
+        return ref
 
     def _remove_worktree_unlocked(self, workspace: WorkspaceRef, path: Path) -> None:
         with suppress(subprocess.CalledProcessError):

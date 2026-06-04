@@ -140,12 +140,10 @@ class CodexAppServerBackend:
                 {
                     "threadId": thread_id,
                     "cwd": str(cwd),
-                    "runtimeWorkspaceRoots": [str(cwd)],
                     "approvalPolicy": self.config.codex.approval_policy,
                     "approvalsReviewer": self.config.codex.approvals_reviewer,
                     "sandbox": self.config.codex.sandbox,
                     "model": self.config.codex.model,
-                    "persistExtendedHistory": False,
                 },
             )
             active_thread_id = str(thread["thread"]["id"])
@@ -154,13 +152,10 @@ class CodexAppServerBackend:
                 "thread/start",
                 {
                     "cwd": str(cwd),
-                    "runtimeWorkspaceRoots": [str(cwd)],
                     "approvalPolicy": self.config.codex.approval_policy,
                     "approvalsReviewer": self.config.codex.approvals_reviewer,
                     "sandbox": self.config.codex.sandbox,
                     "model": self.config.codex.model,
-                    "experimentalRawEvents": False,
-                    "persistExtendedHistory": False,
                 },
             )
             active_thread_id = str(thread["thread"]["id"])
@@ -171,7 +166,6 @@ class CodexAppServerBackend:
                 "threadId": active_thread_id,
                 "input": [{"type": "text", "text": prompt, "text_elements": []}],
                 "cwd": str(cwd),
-                "runtimeWorkspaceRoots": [str(cwd)],
                 "approvalPolicy": self.config.codex.approval_policy,
                 "approvalsReviewer": self.config.codex.approvals_reviewer,
                 "sandboxPolicy": self._sandbox_policy(cwd),
@@ -275,6 +269,9 @@ class CodexAppServerBackend:
         self._proc.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8"))
         await self._proc.stdin.drain()
 
+    async def _respond(self, request_id: int, result: dict[str, Any]) -> None:
+        await self._write({"id": request_id, "result": result})
+
     async def _read_loop(self) -> None:
         assert self._proc is not None
         assert self._proc.stdout is not None
@@ -314,6 +311,51 @@ class CodexAppServerBackend:
             self._handle_item_completed(message.get("params", {}))
         elif message.get("type") == "event_msg":
             self._handle_event_payload(message.get("payload", {}))
+        elif "id" in message:
+            self._handle_server_request(message)
+
+    def _handle_server_request(self, message: dict[str, Any]) -> None:
+        try:
+            request_id = int(message["id"])
+        except (TypeError, ValueError):
+            return
+        method = str(message.get("method") or "")
+        if method in {"execCommandApproval", "applyPatchApproval"}:
+            self._schedule_response(request_id, {"decision": "denied"})
+        elif method == "item/commandExecution/requestApproval":
+            self._schedule_response(request_id, {"decision": "decline"})
+        elif method == "item/fileChange/requestApproval":
+            self._schedule_response(request_id, {"decision": "decline"})
+        elif method == "item/tool/requestUserInput":
+            self._schedule_response(request_id, {"answers": {}})
+        elif method == "item/tool/call":
+            self._schedule_response(
+                request_id,
+                {
+                    "success": False,
+                    "contentItems": [{"type": "inputText", "text": "Dynamic tools are not available in Nyanpasu."}],
+                },
+            )
+        elif method == "item/permissions/requestApproval":
+            self._schedule_response(
+                request_id,
+                {
+                    "permissions": {
+                        "network": {"enabled": False},
+                        "fileSystem": {"read": [], "write": []},
+                    },
+                    "scope": "turn",
+                    "strictAutoReview": True,
+                },
+            )
+        else:
+            self._schedule_error(request_id, -32601, f"unsupported app-server request: {method}")
+
+    def _schedule_response(self, request_id: int, result: dict[str, Any]) -> None:
+        asyncio.create_task(self._respond(request_id, result))
+
+    def _schedule_error(self, request_id: int, code: int, message: str) -> None:
+        asyncio.create_task(self._write({"id": request_id, "error": {"code": code, "message": message}}))
 
     def _handle_turn_completed(self, params: Any) -> None:
         if not isinstance(params, dict):

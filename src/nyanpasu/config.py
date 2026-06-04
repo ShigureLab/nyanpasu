@@ -12,14 +12,14 @@ CONFIG_FILE_NAME = "config.toml"
 
 
 class CodexConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     backend: Literal["app-server", "exec"] = "app-server"
     bin: str = "codex"
     model: str | None = None
     sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
-    approval_policy: Literal["untrusted", "on-failure", "on-request", "never"] = "on-request"
-    approvals_reviewer: Literal["user", "auto_review", "guardian_subagent"] = "auto_review"
+    approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
+    approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
     command_timeout_seconds: int = 60 * 60
     pass_env: tuple[str, ...] = ()
 
@@ -30,14 +30,14 @@ class CodexConfig(BaseModel):
 
 
 class ServerConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     host: str = "127.0.0.1"
     port: int = 8765
 
 
 class RuntimeConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     concurrency: int = 4
     coalesce_window_seconds: int = 600
@@ -48,7 +48,7 @@ class RuntimeConfig(BaseModel):
 
 
 class NyanpasuConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     state_dir: Path = Field(default_factory=lambda: nyanpasu_home())
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -92,8 +92,7 @@ def load_config() -> NyanpasuConfig:
             raise ValueError("state_dir is not configurable; set NYANPASU_HOME to choose the Nyanpasu home directory")
         raw = parsed
 
-    normalized = _normalize_legacy_flat_config(raw)
-    normalized = _merge_env(normalized)
+    normalized = _merge_env(raw)
     return NyanpasuConfig.model_validate(normalized)
 
 
@@ -109,44 +108,6 @@ def ensure_state_dirs(config: NyanpasuConfig) -> None:
     config.state_dir.mkdir(parents=True, exist_ok=True)
     config.worktrees_dir.mkdir(parents=True, exist_ok=True)
     config.logs_dir.mkdir(parents=True, exist_ok=True)
-
-
-def _normalize_legacy_flat_config(raw: dict[str, Any]) -> dict[str, Any]:
-    data = dict(raw)
-    codex = dict(data.get("codex") or {})
-    server = dict(data.get("server") or {})
-    runtime = dict(data.get("runtime") or {})
-    for old, new in {
-        "codex_backend": "backend",
-        "codex_bin": "bin",
-        "model": "model",
-        "sandbox": "sandbox",
-        "approval_policy": "approval_policy",
-        "approvals_reviewer": "approvals_reviewer",
-        "command_timeout_seconds": "command_timeout_seconds",
-        "pass_env": "pass_env",
-    }.items():
-        if old in data and new not in codex:
-            codex[new] = data.pop(old)
-    for key in ("host", "port"):
-        if key in data and key not in server:
-            server[key] = data.pop(key)
-    for old, new in {
-        "concurrency": "concurrency",
-        "poll_interval_seconds": "coalesce_window_seconds",
-        "clean_event_worktrees": "clean_event_snapshots",
-    }.items():
-        if old in data and new not in runtime:
-            runtime[new] = data.pop(old)
-        if old in runtime and new not in runtime:
-            runtime[new] = runtime.pop(old)
-    if codex:
-        data["codex"] = codex
-    if server:
-        data["server"] = server
-    if runtime:
-        data["runtime"] = runtime
-    return data
 
 
 def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:

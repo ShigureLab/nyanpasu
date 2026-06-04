@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from nyanpasu.config import default_config_path, load_config, nyanpasu_home
 
 if TYPE_CHECKING:
@@ -93,7 +95,7 @@ port = 9998
     assert config.server.port == 9998
 
 
-def test_load_config_accepts_legacy_clean_event_worktrees(tmp_path: Path, monkeypatch) -> None:
+def test_load_config_rejects_legacy_runtime_keys(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
     config_path = tmp_path / "home" / "config.toml"
     config_path.parent.mkdir()
@@ -105,9 +107,18 @@ clean_event_worktrees = false
         encoding="utf-8",
     )
 
-    config = load_config()
+    with pytest.raises(ValueError, match="clean_event_worktrees"):
+        load_config()
 
-    assert config.runtime.clean_event_snapshots is False
+
+def test_load_config_rejects_legacy_flat_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
+    config_path = tmp_path / "home" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text('approval_policy = "on-request"', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="approval_policy"):
+        load_config()
 
 
 def test_load_config_rejects_state_dir_in_toml(tmp_path: Path, monkeypatch) -> None:

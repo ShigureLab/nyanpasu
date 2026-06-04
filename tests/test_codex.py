@@ -128,12 +128,41 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
     for _, params in backend.requests:
         assert params["approvalPolicy"] == "on-request"
         assert params["approvalsReviewer"] == "auto_review"
+        assert "runtimeWorkspaceRoots" not in params
+        assert "persistExtendedHistory" not in params
+        assert "experimentalRawEvents" not in params
+
+
+def test_app_server_server_requests_are_answered_for_daemon_mode(tmp_path: Path) -> None:
+    config = NyanpasuConfig(state_dir=tmp_path / "state")
+    backend = RecordingAppServerBackend(config)
+
+    async def run() -> None:
+        backend._handle_message({"id": 1, "method": "item/commandExecution/requestApproval", "params": {}})
+        backend._handle_message({"id": 2, "method": "item/tool/requestUserInput", "params": {}})
+        backend._handle_message({"id": 3, "method": "item/tool/call", "params": {}})
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    assert backend.responses == [
+        {"id": 1, "result": {"decision": "decline"}},
+        {"id": 2, "result": {"answers": {}}},
+        {
+            "id": 3,
+            "result": {
+                "success": False,
+                "contentItems": [{"type": "inputText", "text": "Dynamic tools are not available in Nyanpasu."}],
+            },
+        },
+    ]
 
 
 class RecordingAppServerBackend(CodexAppServerBackend):
     def __init__(self, config: NyanpasuConfig) -> None:
         super().__init__(config)
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.responses: list[dict[str, Any]] = []
 
     async def _ensure_started(self) -> None:
         return None
@@ -146,3 +175,6 @@ class RecordingAppServerBackend(CodexAppServerBackend):
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         raise AssertionError(f"unexpected request: {method}")
+
+    async def _write(self, message: dict[str, Any]) -> None:
+        self.responses.append(message)

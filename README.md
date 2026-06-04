@@ -7,7 +7,7 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 ## Core Responsibilities
 
 - Async task execution with per-context serialization and bounded concurrency.
-- Context workspace management. By default, one `context_key` owns one reusable worktree that is reset to the task revision before each run.
+- Context workspace management. By default, one `context_key` owns one reusable managed clone that is reset to the task revision before each run.
 - Optional event snapshots for plugins that explicitly need per-event isolation.
 - Persistent task, thread, and context state.
 - Codex backend management through `codex app-server` or `codex exec`.
@@ -20,7 +20,7 @@ Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh
 
 Nyanpasu uses TOML and Pydantic models. Core config lives at the top level; plugin config lives under `plugins.<plugin_id>`.
 
-Nyanpasu has one user-facing home directory. Set `NYANPASU_HOME` to choose it; otherwise it defaults to `~/.nyanpasu`. Config is always read from `$NYANPASU_HOME/config.toml`, and runtime state, logs, SQLite, and managed worktrees also live under `$NYANPASU_HOME`.
+Nyanpasu has one user-facing home directory. Set `NYANPASU_HOME` to choose it; otherwise it defaults to `~/.nyanpasu`. Config is always read from `$NYANPASU_HOME/config.toml`, and runtime state, logs, SQLite, and managed workspaces also live under `$NYANPASU_HOME`.
 
 `state_dir` is intentionally not a TOML option. To move both config and state, move `NYANPASU_HOME`.
 
@@ -189,4 +189,4 @@ AgentTask(
 
 Core executes the task and calls post-process hooks registered for `metadata["plugin_id"]`.
 
-By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context worktree to `workspace.revision` or `workspace.ref`, runs Codex there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event worktree.
+By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs Codex there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.

@@ -47,6 +47,7 @@ def test_prepare_context_reuses_context_key_path_and_resets_revision(tmp_path: P
 
     assert first_context.session_worktree == second_context.session_worktree
     assert second_context.session_worktree is not None
+    assert (second_context.session_worktree / ".git").is_dir()
     assert (second_context.session_worktree / "README.md").read_text(encoding="utf-8") == "hello again\n"
 
 
@@ -80,7 +81,42 @@ def test_prepare_event_snapshot_can_replace_existing_path_when_opted_in(tmp_path
 
     assert first == second
     assert second is not None
+    assert (second / ".git").is_dir()
     assert (second / "README.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_prepare_context_replaces_legacy_git_worktree_with_clone(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    _git(["init", str(repo_path)], tmp_path)
+    _git(["config", "user.email", "nyanpasu@example.invalid"], repo_path)
+    _git(["config", "user.name", "Nyanpasu"], repo_path)
+    (repo_path / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(["add", "README.md"], repo_path)
+    _git(["commit", "-m", "initial"], repo_path)
+    head_sha = _git(["rev-parse", "HEAD"], repo_path).stdout.strip()
+
+    task = AgentTask(
+        task_id="delivery-1",
+        action=TaskAction.RUN,
+        context_key="github:ExampleOrg/ExampleRepo#123",
+        prompt="review",
+        workspace=WorkspaceRef(
+            key="ExampleOrg/ExampleRepo",
+            local_path=repo_path,
+            revision=head_sha,
+        ),
+        dedupe_key="delivery-1",
+    )
+    manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
+    legacy_path = manager.session_worktree_path(task)
+    legacy_path.parent.mkdir(parents=True)
+    _git(["worktree", "add", "--detach", str(legacy_path), head_sha], repo_path)
+
+    context = manager.prepare_context(task, None)
+
+    assert context.session_worktree == legacy_path
+    assert (legacy_path / ".git").is_dir()
+    assert (legacy_path / "README.md").read_text(encoding="utf-8") == "hello\n"
 
 
 def test_fetch_revision_uses_configured_remote_name(tmp_path: Path) -> None:
