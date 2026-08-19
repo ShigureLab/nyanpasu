@@ -13,7 +13,7 @@
     "@voidzero-dev/vite-plus-core": "^0.2.9",
     "@voidzero-dev/vite-plus-test": "^0.1.24",
     "happy-dom": "^20.11.2",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vite-plus": "^0.2.9"
   },
   "overrides": {
