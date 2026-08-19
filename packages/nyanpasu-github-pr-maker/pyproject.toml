@@ -18,5 +18,5 @@ license = "MIT"
 github_pr_maker = "nyanpasu_github_pr_maker:plugin"
 
 [build-system]
-requires = ["uv_build>=0.11.2,<0.12.0"]
+requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
