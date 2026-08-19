@@ -39,14 +39,14 @@ nyanpasu = "nyanpasu.__main__:app"
 
 [dependency-groups]
 dev = [
-  "httpx>=0.28.0",
+  "httpx>=0.28.1",
   "nyanpasu-github",
   "nyanpasu-github-pr-maker",
   "nyanpasu-github-reviewer",
-  "ty>=0.0.39",
-  "ruff>=0.15.14",
-  "pytest>=9.0.3",
-  "pytest-rerunfailures>=16.3",
+  "ty>=0.0.72",
+  "ruff>=0.16.3",
+  "pytest>=9.1.1",
+  "pytest-rerunfailures>=16.6",
 ]
 
 [tool.uv.workspace]
