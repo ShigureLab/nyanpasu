@@ -156,8 +156,7 @@ class MyPlugin:
         runtime.add_post_process_hook(self.id, self.after_task)
         await runtime.submit(task)
 
-    async def shutdown(self):
-        ...
+    async def shutdown(self): ...
 ```
 
 Plugins send work to the core by creating `AgentTask`:
