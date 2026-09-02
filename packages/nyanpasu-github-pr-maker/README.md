@@ -43,10 +43,10 @@ POST /plugins/github-pr-maker/tasks
 
 ```json
 {
-  "repo": "owner/repo",
-  "task": "Implement the requested change and update tests.",
-  "base_branch": "main",
-  "title": "Implement requested change"
+   "repo": "owner/repo",
+   "task": "Implement the requested change and update tests.",
+   "base_branch": "main",
+   "title": "Implement requested change"
 }
 ```
 
