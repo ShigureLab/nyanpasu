@@ -43,10 +43,10 @@ dev = [
   "nyanpasu-github",
   "nyanpasu-github-pr-maker",
   "nyanpasu-github-reviewer",
-  "ty>=0.0.77",
-  "ruff>=0.16.5",
+  "ty>=0.0.78",
+  "ruff>=0.16.6",
   "pytest>=9.1.1",
-  "pytest-rerunfailures>=16.6",
+  "pytest-rerunfailures>=16.6.1",
 ]
 
 [tool.uv.workspace]
