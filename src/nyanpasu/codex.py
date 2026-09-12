@@ -5,9 +5,11 @@ import codecs
 import contextlib
 import json
 import os
+import subprocess
 import tempfile
 from collections import deque
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
@@ -15,7 +17,9 @@ import anyio
 from nyanpasu.models import CodexRunResult
 
 if TYPE_CHECKING:
-    from nyanpasu.config import NyanpasuConfig
+    from collections.abc import Mapping
+
+    from nyanpasu.config import EnvCommand, NyanpasuConfig
     from nyanpasu.transcript.capture import EventObserver
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
@@ -42,6 +46,7 @@ def backend_from_config(config: NyanpasuConfig) -> CodexBackend:
 class CodexExecBackend:
     def __init__(self, config: NyanpasuConfig) -> None:
         self.config = config
+        self._env = MappingProxyType(safe_codex_env(config))
 
     async def run_turn(
         self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
@@ -57,7 +62,7 @@ class CodexExecBackend:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
-                env=safe_codex_env(self.config),
+                env=self._env,
                 limit=SUBPROCESS_BUFFER_LIMIT,
             )
             parsed_thread_id, turn_id = thread_id, None
@@ -148,7 +153,7 @@ class CodexExecBackend:
         return None
 
     async def cleanup_thread(self, thread_id: str) -> None:
-        archiver = CodexAppServerBackend(self.config)
+        archiver = CodexAppServerBackend(self.config, env=self._env)
         try:
             await archiver.cleanup_thread(thread_id)
         finally:
@@ -156,8 +161,9 @@ class CodexExecBackend:
 
 
 class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig) -> None:
+    def __init__(self, config: NyanpasuConfig, *, env: Mapping[str, str] | None = None) -> None:
         self.config = config
+        self._env = MappingProxyType(safe_codex_env(config) if env is None else dict(env))
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -257,7 +263,7 @@ class CodexAppServerBackend:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=safe_codex_env(self.config),
+                env=self._env,
                 limit=SUBPROCESS_BUFFER_LIMIT,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
@@ -556,6 +562,7 @@ def _message_thread_id(message: dict[str, Any]) -> str | None:
 
 
 def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
+    inherited = dict(os.environ)
     allowed = {
         "ALL_PROXY",
         "CODEX_HOME",
@@ -582,7 +589,39 @@ def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
         "no_proxy",
     }
     allowed.update(config.codex.pass_env)
-    return {key: value for key in allowed if (value := os.environ.get(key))}
+    env = {key: value for key in allowed if (value := inherited.get(key))}
+    for key, source in config.codex.env.items():
+        env[key] = (
+            source if isinstance(source, str) else _env_from_command(key, source, cwd=config.state_dir, env=inherited)
+        )
+    return env
+
+
+def _env_from_command(key: str, source: EnvCommand, *, cwd: Path, env: Mapping[str, str]) -> str:
+    try:
+        result = subprocess.run(
+            source.cmd,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"codex.env.{key}: command timed out after 10 seconds") from None
+    except OSError as exc:
+        raise ValueError(f"codex.env.{key}: could not start command ({type(exc).__name__})") from None
+    if result.returncode:
+        raise ValueError(f"codex.env.{key}: command exited with status {result.returncode}")
+    try:
+        value = result.stdout.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        raise ValueError(f"codex.env.{key}: command output is not UTF-8") from None
+    if not value or "\0" in value:
+        raise ValueError(f"codex.env.{key}: command output must be nonempty and contain no NUL")
+    return value
 
 
 async def json_lines(stream: asyncio.StreamReader):

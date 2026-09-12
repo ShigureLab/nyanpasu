@@ -90,9 +90,26 @@ Integration config is generic core data. Nyanpasu core stores `integrations` as 
 
 Agent-driven GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
 
+To define environment variables specifically for Codex, use `codex.env`. A string is a literal value; a `cmd` table reads a value from a command's stdout:
+
+```toml
+[codex.env]
+TZ = "Asia/Shanghai"
+GH_PROMPT_DISABLED = "1"
+GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
+```
+
+For a static value, use `GH_TOKEN = "your-token"` instead. Values in `codex.env` override the base environment and `codex.pass_env`; their names do not need to appear in `pass_env`.
+
+Commands run once when the service is created, with the original service environment and `NYANPASU_HOME` as the working directory. Arguments are passed directly without a shell, and commands cannot reference other `codex.env` entries. Only trailing CR/LF characters are removed from stdout. A command that cannot start, exits unsuccessfully, exceeds 10 seconds, or returns empty, invalid UTF-8, or NUL-containing output prevents startup. Errors identify the variable and failure without including command output. Resolved values stay in memory and are reused for every Codex turn, including app-server restarts; restart Nyanpasu to refresh them.
+
+`codex.env` only affects Codex child processes. It does not modify the service environment or configure plugin-side GitHub credentials: `integrations.github.token_env` still reads the service's environment. Pinning `GH_TOKEN` this way prevents local `gh auth switch` from changing the account used by Codex.
+
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 
 ## Run
+
+For direct Uvicorn use, load the application factory with `uvicorn nyanpasu.web:app_from_env --factory`.
 
 Create `$NYANPASU_HOME/config.toml` from `examples/config.toml`, then start the agent service:
 

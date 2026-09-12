@@ -185,6 +185,3 @@ def _dashboard_missing_html() -> str:
   </body>
 </html>
 """
-
-
-app = app_from_env()

@@ -11,8 +11,21 @@ DEFAULT_HOME = Path("~/.nyanpasu")
 CONFIG_FILE_NAME = "config.toml"
 
 
+class EnvCommand(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    cmd: tuple[str, ...] = Field(min_length=1, repr=False)
+
+    @field_validator("cmd")
+    @classmethod
+    def _valid_command(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value[0] or any("\0" in arg for arg in value):
+            raise ValueError("cmd requires a nonempty executable and arguments without NUL")
+        return value
+
+
 class CodexConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     backend: Literal["app-server", "exec"] = "app-server"
     bin: str = "codex"
@@ -22,11 +35,22 @@ class CodexConfig(BaseModel):
     approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
     command_timeout_seconds: int = 60 * 60
     pass_env: tuple[str, ...] = ()
+    env: dict[str, str | EnvCommand] = Field(default_factory=dict, repr=False)
 
     @field_validator("pass_env", mode="before")
     @classmethod
     def _pass_env_tuple(cls, value: Any) -> tuple[str, ...]:
         return _as_str_tuple(value)
+
+    @field_validator("env")
+    @classmethod
+    def _valid_env(cls, value: dict[str, str | EnvCommand]) -> dict[str, str | EnvCommand]:
+        for key, source in value.items():
+            if not key or "=" in key or "\0" in key:
+                raise ValueError("environment variable names must be nonempty and contain neither '=' nor NUL")
+            if isinstance(source, str) and "\0" in source:
+                raise ValueError("environment variable values must not contain NUL")
+        return value
 
 
 class ServerConfig(BaseModel):
@@ -48,7 +72,7 @@ class RuntimeConfig(BaseModel):
 
 
 class NyanpasuConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     state_dir: Path = Field(default_factory=lambda: nyanpasu_home())
     server: ServerConfig = Field(default_factory=ServerConfig)

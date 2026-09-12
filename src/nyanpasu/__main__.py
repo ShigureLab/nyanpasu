@@ -16,7 +16,7 @@ from nyanpasu.models import AgentTask
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
 
-app = typer.Typer(no_args_is_help=True)
+app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 PathArgument = Path
 LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS Z}</green> | "

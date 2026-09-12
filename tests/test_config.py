@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from nyanpasu.config import default_config_path, load_config, nyanpasu_home
+from nyanpasu.config import CodexConfig, EnvCommand, default_config_path, load_config, nyanpasu_home
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,6 +27,10 @@ backend = "exec"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 pass_env = ["GH_TOKEN"]
+
+[codex.env]
+TZ = "Asia/Shanghai"
+GH_TOKEN = { cmd = ["missing-command", "--user", "review-bot"] }
 
 [runtime]
 concurrency = 2
@@ -54,6 +58,10 @@ poll_interval_seconds = 600
     assert config.codex.approval_policy == "on-request"
     assert config.codex.approvals_reviewer == "auto_review"
     assert config.codex.pass_env == ("GH_TOKEN",)
+    assert config.codex.env == {
+        "TZ": "Asia/Shanghai",
+        "GH_TOKEN": EnvCommand(cmd=("missing-command", "--user", "review-bot")),
+    }
     assert config.runtime.concurrency == 2
     assert config.runtime.coalesce_window_seconds == 60
     assert config.runtime.clean_event_snapshots is False
@@ -61,6 +69,29 @@ poll_interval_seconds = 600
     assert config.integrations["github"]["git_author_name"] == "Bot"
     assert config.enabled_plugins == ("github_reviewer",)
     assert config.plugins["github_reviewer"]["github_login"] == "review-bot"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TOKEN": 123},
+        {"TOKEN": {"cmd": "echo secret"}},
+        {"TOKEN": {"cmd": []}},
+        {"TOKEN": {"cmd": [""]}},
+        {"TOKEN": {"cmd": ["echo", 123]}},
+        {"TOKEN": {"cmd": ["echo", "secret\0"]}},
+        {"TOKEN": {"cmd": ["echo", "secret"], "shell": True}},
+        {"TOKEN": {"value": "secret"}},
+        {"": "secret"},
+        {"BAD=NAME": "secret"},
+        {"BAD\0NAME": "secret"},
+        {"TOKEN": "secret\0"},
+    ],
+)
+def test_codex_env_rejects_invalid_sources_without_showing_values(env) -> None:
+    with pytest.raises(ValueError) as error:
+        CodexConfig(env=env)
+    assert "secret" not in str(error.value)
 
 
 def test_load_config_allows_no_plugins(tmp_path: Path, monkeypatch) -> None:
