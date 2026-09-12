@@ -96,7 +96,7 @@ def test_review_prompt_requires_priority_shields_and_ai_disclosure(tmp_path: Pat
     assert "Every final review body must end with this exact disclosure footer" in prompt
     assert "Do not put it at the beginning, edit it, or translate it" in prompt
     assert '<div align="right">' in prompt
-    assert "Powered by Nyanpasu with gpt-5.5 xhigh" in prompt
+    assert "Powered by Nyanpasu with gpt-6-astra medium" in prompt
     assert "please check the suggestions carefully" in prompt
 
 

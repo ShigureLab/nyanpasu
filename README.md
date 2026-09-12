@@ -115,13 +115,31 @@ Open the dashboard to inspect task dispatch, backlog, completion, failures, plug
 http://127.0.0.1:8765/dashboard
 ```
 
-The dashboard frontend is built with Vite+. During development, use:
+The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
+version pinned in `package.json`. During development, use:
 
 ```bash
-npm run check
-npm run test
-npm run build
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
+
+With `uv run nyanpasu serve` running in another terminal, open
+`http://localhost:5173/dashboard/assets/`. The development server reloads frontend
+changes and proxies `/api` requests to the backend at `127.0.0.1:8765`.
+
+Check, test, and build the dashboard with:
+
+```bash
+pnpm run check
+pnpm run test
+pnpm run build
+```
+
+Generated files in `src/nyanpasu/dashboard_static/` are ignored by Git. For the
+backend-served `/dashboard` page, run `pnpm run build` before starting the service.
+The development server serves frontend source directly and does not need these
+generated files. To build Python distributions with the Dashboard included, run
+`just build`, or run `pnpm run build` followed by `uv build`.
 
 The GitHub reviewer plugin mounts its webhook at:
 

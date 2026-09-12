@@ -20,9 +20,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install prettier
-        run: |
-          npm install -g prettier
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          cache: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1

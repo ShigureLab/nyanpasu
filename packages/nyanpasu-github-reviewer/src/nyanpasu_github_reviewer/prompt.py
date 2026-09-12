@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 ReviewMode = Literal["initial_review", "followup_review"]
 REVIEW_DISCLOSURE_HTML = """<div align="right">
-   <sup>Powered by Nyanpasu with gpt-5.5 xhigh, please check the suggestions carefully.</sup>
+   <sup>Powered by Nyanpasu with gpt-6-astra medium, please check the suggestions carefully.</sup>
 </div>"""
 
 

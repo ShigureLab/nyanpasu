@@ -9,16 +9,17 @@ test:
 
 fmt:
   uv run ruff format .
-  prettier --write '**/*.md'
+  pnpm exec prettier --write '**/*.md'
 
 lint:
   uv run ty check --error-on-warning src/nyanpasu packages/nyanpasu-github-reviewer/src tests packages/nyanpasu-github-reviewer/tests
   uv run ruff check .
 
 fmt-docs:
-  prettier --write '**/*.md'
+  pnpm exec prettier --write '**/*.md'
 
 build:
+  pnpm run build
   uv build
 
 release:
@@ -28,7 +29,7 @@ release:
   git push --tags
 
 publish:
-  uv build
+  just build
   uv publish
   git push --tags
   just clean-builds
@@ -49,7 +50,7 @@ ci-install:
 
 ci-fmt-check:
   uv run ruff format --check --diff .
-  prettier --check '**/*.md'
+  pnpm exec prettier --check '**/*.md'
 
 ci-lint:
   just lint

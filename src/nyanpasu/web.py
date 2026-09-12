@@ -156,7 +156,7 @@ def _dashboard_missing_html() -> str:
   <body>
     <main>
       <h1>Nyanpasu Dashboard</h1>
-      <p>Dashboard assets are not built. Run <code>vp build</code> from the repository root.</p>
+      <p>Dashboard assets are not built. Run <code>pnpm run build</code> from the repository root.</p>
     </main>
   </body>
 </html>
