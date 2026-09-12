@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import json
 import os
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -14,12 +16,15 @@ from nyanpasu.models import CodexRunResult
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
+    from nyanpasu.transcript.capture import EventObserver
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
 
 
 class CodexBackend(Protocol):
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult: ...
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult: ...
 
     async def cleanup_thread(self, thread_id: str) -> None: ...
 
@@ -38,7 +43,9 @@ class CodexExecBackend:
     def __init__(self, config: NyanpasuConfig) -> None:
         self.config = config
 
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult:
         with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as output_file:
             output_path = Path(output_file.name)
         argv = self._argv(cwd=cwd, thread_id=thread_id, output_path=output_path)
@@ -53,26 +60,56 @@ class CodexExecBackend:
                 env=safe_codex_env(self.config),
                 limit=SUBPROCESS_BUFFER_LIMIT,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
-                timeout=self.config.codex.command_timeout_seconds,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    stderr.decode("utf-8", errors="replace").strip() or f"codex exited {proc.returncode}"
-                )
-            parsed_thread_id = thread_id
-            turn_id = None
-            for line in stdout.decode("utf-8", errors="replace").splitlines():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                raw_events.append(event)
+            parsed_thread_id, turn_id = thread_id, None
+            stderr_tail = ""
+
+            def received(event: dict[str, Any], direction: str = "notification") -> None:
+                nonlocal parsed_thread_id, turn_id
                 if event.get("type") == "thread.started":
-                    parsed_thread_id = str(event.get("thread_id"))
-                elif event.get("type") == "turn.started":
-                    turn_id = str(event.get("turn_id")) if event.get("turn_id") else turn_id
+                    parsed_thread_id = event.get("thread_id")
+                if event.get("type") == "turn.started":
+                    turn_id = event.get("turn_id")
+                if observer:
+                    observer(event, direction)
+                else:
+                    raw_events.append(event)
+
+            async def read_stdout() -> None:
+                assert proc.stdout is not None
+                async for event in json_lines(proc.stdout):
+                    received(event)
+
+            async def read_stderr() -> None:
+                nonlocal stderr_tail
+                assert proc.stderr is not None
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                while chunk := await proc.stderr.read(65536):
+                    text = decoder.decode(chunk)
+                    stderr_tail = (stderr_tail + text)[-8192:]
+                    received({"type": "nyanpasu.stderr", "text": text}, "stderr")
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    received({"type": "nyanpasu.stderr", "text": tail}, "stderr")
+
+            async def communicate() -> None:
+                assert proc.stdin is not None
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(read_stdout())
+                    group.create_task(read_stderr())
+                    proc.stdin.write(prompt.encode("utf-8"))
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+                    await proc.wait()
+
+            try:
+                await asyncio.wait_for(communicate(), timeout=self.config.codex.command_timeout_seconds)
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                received({"type": "nyanpasu.process_exit", "exit_code": proc.returncode}, "lifecycle")
+            if proc.returncode != 0:
+                raise RuntimeError(stderr_tail.strip() or f"codex exited {proc.returncode}")
             final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
             if not parsed_thread_id:
                 raise RuntimeError("codex did not report a thread id")
@@ -130,72 +167,82 @@ class CodexAppServerBackend:
         self._thread_events: dict[str, list[dict[str, Any]]] = {}
         self._agent_messages: dict[tuple[str, str], list[str]] = {}
         self._start_lock = asyncio.Lock()
-        self._request_lock = asyncio.Lock()
+        self._request_observers: dict[int, EventObserver] = {}
+        self._thread_observers: dict[str, EventObserver] = {}
+        self._server_requests: dict[int, tuple[EventObserver, str]] = {}
+        self._stderr_task: asyncio.Task[None] | None = None
+        self.diagnostics: deque[dict[str, Any]] = deque(maxlen=100)
 
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
-        await self._ensure_started()
-        if thread_id:
-            thread = await self._request(
-                "thread/resume",
-                {
-                    "threadId": thread_id,
-                    "cwd": str(cwd),
-                    "approvalPolicy": self.config.codex.approval_policy,
-                    "approvalsReviewer": self.config.codex.approvals_reviewer,
-                    "sandbox": self.config.codex.sandbox,
-                    "model": self.config.codex.model,
-                },
-            )
-            active_thread_id = str(thread["thread"]["id"])
-        else:
-            thread = await self._request(
-                "thread/start",
-                {
-                    "cwd": str(cwd),
-                    "approvalPolicy": self.config.codex.approval_policy,
-                    "approvalsReviewer": self.config.codex.approvals_reviewer,
-                    "sandbox": self.config.codex.sandbox,
-                    "model": self.config.codex.model,
-                },
-            )
-            active_thread_id = str(thread["thread"]["id"])
-        self._thread_events[active_thread_id] = []
-        turn = await self._request(
-            "turn/start",
-            {
-                "threadId": active_thread_id,
-                "input": [{"type": "text", "text": prompt, "text_elements": []}],
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult:
+        try:
+            if thread_id and observer:
+                self._thread_observers[thread_id] = observer
+            await self._ensure_started()
+            thread_params: dict[str, Any] = {
                 "cwd": str(cwd),
                 "approvalPolicy": self.config.codex.approval_policy,
                 "approvalsReviewer": self.config.codex.approvals_reviewer,
-                "sandboxPolicy": self._sandbox_policy(cwd),
+                "sandbox": self.config.codex.sandbox,
                 "model": self.config.codex.model,
-            },
-        )
-        turn_id = str(turn["turn"]["id"])
-        key = (active_thread_id, turn_id)
-        completed = self._completed_turns.pop(key, None)
-        if completed is None:
-            waiter = asyncio.get_running_loop().create_future()
-            self._turn_waiters[key] = waiter
-            try:
-                completed = await asyncio.wait_for(waiter, timeout=self.config.codex.command_timeout_seconds)
-            finally:
-                self._turn_waiters.pop(key, None)
-        final_message = self._last_agent_message(completed.get("turn", {}).get("items", []))
-        if not final_message:
-            final_message = "\n".join(self._agent_messages.pop(key, []))
-        raw_events = self._thread_events.pop(active_thread_id, [])
-        status = completed.get("turn", {}).get("status")
-        if status != "completed":
-            error = completed.get("turn", {}).get("error")
-            raise RuntimeError(f"codex turn ended with status {status}: {error}")
-        return CodexRunResult(
-            thread_id=active_thread_id,
-            turn_id=turn_id,
-            final_message=final_message.strip(),
-            raw_events=raw_events,
-        )
+            }
+            if thread_id:
+                thread_params["threadId"] = thread_id
+            thread = await self._request(
+                "thread/resume" if thread_id else "thread/start", thread_params, observer=observer
+            )
+            active_thread_id = str(thread["thread"]["id"])
+            if observer:
+                self._thread_observers[active_thread_id] = observer
+            self._thread_events[active_thread_id] = []
+            turn = await self._request(
+                "turn/start",
+                {
+                    "threadId": active_thread_id,
+                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                    "cwd": str(cwd),
+                    "approvalPolicy": self.config.codex.approval_policy,
+                    "approvalsReviewer": self.config.codex.approvals_reviewer,
+                    "sandboxPolicy": self._sandbox_policy(cwd),
+                    "model": self.config.codex.model,
+                },
+                observer=observer,
+            )
+            turn_id = str(turn["turn"]["id"])
+            key = (active_thread_id, turn_id)
+            completed = self._completed_turns.pop(key, None)
+            if completed is None:
+                waiter = asyncio.get_running_loop().create_future()
+                self._turn_waiters[key] = waiter
+                try:
+                    completed = await asyncio.wait_for(waiter, timeout=self.config.codex.command_timeout_seconds)
+                finally:
+                    self._turn_waiters.pop(key, None)
+            final_message = self._last_agent_message(completed.get("turn", {}).get("items", []))
+            messages = self._agent_messages.pop(key, [])
+            if not final_message:
+                final_message = "\n".join(messages)
+            raw_events = self._thread_events.pop(active_thread_id, [])
+            self._thread_observers.pop(active_thread_id, None)
+            status = completed.get("turn", {}).get("status")
+            if status != "completed":
+                error = completed.get("turn", {}).get("error")
+                raise RuntimeError(f"codex turn ended with status {status}: {error}")
+            return CodexRunResult(
+                thread_id=active_thread_id,
+                turn_id=turn_id,
+                final_message=final_message.strip(),
+                raw_events=raw_events,
+            )
+        finally:
+            if observer:
+                for bound_thread, bound_observer in list(self._thread_observers.items()):
+                    if bound_observer is observer:
+                        self._thread_observers.pop(bound_thread)
+                        self._thread_events.pop(bound_thread, None)
+                        for key in [key for key in self._agent_messages if key[0] == bound_thread]:
+                            self._agent_messages.pop(key)
 
     async def _ensure_started(self) -> None:
         async with self._start_lock:
@@ -214,6 +261,7 @@ class CodexAppServerBackend:
                 limit=SUBPROCESS_BUFFER_LIMIT,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
             await self._request_started(
                 "initialize",
                 {
@@ -223,19 +271,30 @@ class CodexAppServerBackend:
             )
             await self._write({"method": "initialized"})
 
-    async def _request(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    async def _request(
+        self, method: str, params: dict[str, Any] | None, observer: EventObserver | None = None
+    ) -> dict[str, Any]:
         if not await self._process_alive():
             await self._ensure_started()
-        return await self._request_started(method, params)
+        return await self._request_started(method, params, observer)
 
-    async def _request_started(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
-        async with self._request_lock:
-            request_id = self._next_id
-            self._next_id += 1
-            future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-            self._pending[request_id] = future
-            await self._write({"id": request_id, "method": method, "params": params})
-        return await future
+    async def _request_started(
+        self, method: str, params: dict[str, Any] | None, observer: EventObserver | None = None
+    ) -> dict[str, Any]:
+        request_id = self._next_id
+        self._next_id += 1
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        request = {"id": request_id, "method": method, "params": params}
+        try:
+            if observer:
+                self._request_observers[request_id] = observer
+                observer(request, "client_request")
+            await self._write(request)
+            return await asyncio.wait_for(future, self.config.codex.command_timeout_seconds)
+        finally:
+            self._pending.pop(request_id, None)
+            self._request_observers.pop(request_id, None)
 
     async def _process_alive(self) -> bool:
         if self._proc is None:
@@ -262,37 +321,59 @@ class CodexAppServerBackend:
         self._completed_turns.clear()
         self._thread_events.clear()
         self._agent_messages.clear()
+        self._request_observers.clear()
+        self._thread_observers.clear()
+        self._server_requests.clear()
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
 
     async def _write(self, message: dict[str, Any]) -> None:
         if self._proc is None or self._proc.stdin is None:
             raise RuntimeError("codex app-server is not running")
+        request_id = message.get("id")
         self._proc.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8"))
         await self._proc.stdin.drain()
+        if ("result" in message or "error" in message) and request_id in self._server_requests:
+            observer, method = self._server_requests.pop(request_id)
+            observer({**message, "request_method": method}, "client_response")
 
     async def _respond(self, request_id: int, result: dict[str, Any]) -> None:
         await self._write({"id": request_id, "result": result})
 
+    async def _drain_stderr(self) -> None:
+        assert self._proc is not None and self._proc.stderr is not None
+        while chunk := await self._proc.stderr.read(4096):
+            self.diagnostics.append({"type": "stderr", "text": chunk.decode("utf-8", "replace")})
+
     async def _read_loop(self) -> None:
-        assert self._proc is not None
-        assert self._proc.stdout is not None
+        assert self._proc is not None and self._proc.stdout is not None
         try:
-            while True:
-                line = await self._proc.stdout.readline()
-                if not line:
-                    break
-                try:
-                    message = json.loads(line.decode("utf-8"))
-                except json.JSONDecodeError:
-                    continue
+            async for message in json_lines(self._proc.stdout):
                 self._handle_message(message)
-        except Exception as exc:
+            self._fail_pending(RuntimeError("codex app-server closed its output stream"))
+        except (OSError, ValueError) as exc:
             self._fail_pending(exc)
-            raise
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         thread_id = _message_thread_id(message)
-        if thread_id and thread_id in self._thread_events:
+        request_id = message.get("id")
+        is_response = "result" in message or "error" in message
+        observer = (
+            self._request_observers.get(request_id) if is_response else self._thread_observers.get(thread_id or "")
+        )
+        if observer:
+            if thread_id:
+                self._thread_observers[thread_id] = observer
+            direction = "server_response" if is_response else "server_request" if "id" in message else "notification"
+            observer(message, direction)
+            if direction == "server_request":
+                self._server_requests[int(message["id"])] = (observer, str(message.get("method", "")))
+        elif thread_id and thread_id in self._thread_events:
             self._thread_events[thread_id].append(message)
+        elif not is_response:
+            self.diagnostics.append(
+                {"type": message.get("method", message.get("type")), "text": json.dumps(message)[:4096]}
+            )
 
         if "id" in message and ("result" in message or "error" in message):
             request_id = int(message["id"])
@@ -388,7 +469,13 @@ class CodexAppServerBackend:
             turn_id = str(payload.get("turn_id") or payload.get("turnId") or "")
             if not turn_id:
                 return
-            for thread_id in list(self._thread_events):
+            explicit_thread = payload.get("thread_id") or payload.get("threadId")
+            candidates = (
+                [explicit_thread] if explicit_thread else [key[0] for key in self._turn_waiters if key[1] == turn_id]
+            )
+            if len(candidates) != 1:
+                return
+            for thread_id in candidates:
                 key = (thread_id, turn_id)
                 self._complete_turn(
                     key,
@@ -442,7 +529,8 @@ class CodexAppServerBackend:
     async def close(self) -> None:
         if self._proc is None:
             return
-        self._proc.terminate()
+        if self._proc.returncode is None:
+            self._proc.terminate()
         with anyio.move_on_after(5):
             await self._proc.wait()
         if self._proc.returncode is None:
@@ -450,6 +538,9 @@ class CodexAppServerBackend:
             await self._proc.wait()
         if self._reader_task is not None:
             self._reader_task.cancel()
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+        self._fail_pending(RuntimeError("codex app-server closed"))
 
 
 def _message_thread_id(message: dict[str, Any]) -> str | None:
@@ -492,3 +583,44 @@ def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
     }
     allowed.update(config.codex.pass_env)
     return {key: value for key in allowed if (value := os.environ.get(key))}
+
+
+async def json_lines(stream: asyncio.StreamReader):
+    """Read bounded JSONL, retaining malformed/oversized lines as visible records."""
+    pending = bytearray()
+    oversized = False
+    maximum = 16 * 1024 * 1024
+    while chunk := await stream.read(65536):
+        pending.extend(chunk)
+        while b"\n" in pending:
+            raw, _, remainder = pending.partition(b"\n")
+            pending = bytearray(remainder)
+            if oversized:
+                yield {"type": "nyanpasu.invalid_json", "text": raw.decode("utf-8", "replace")}
+                oversized = False
+            elif raw.strip():
+                yield parse_json_line(bytes(raw))
+        if len(pending) > maximum:
+            yield {
+                "type": "nyanpasu.capture_gap",
+                "text": "JSON line exceeded 16 MiB; raw fragments retained, semantic parsing unavailable.",
+            }
+            yield {"type": "nyanpasu.invalid_json", "text": pending.decode("utf-8", "replace")}
+            pending.clear()
+            oversized = True
+    if pending:
+        yield (
+            parse_json_line(bytes(pending))
+            if not oversized
+            else {"type": "nyanpasu.invalid_json", "text": pending.decode("utf-8", "replace")}
+        )
+
+
+def parse_json_line(raw: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("Expected a JSON object")
+        return value
+    except (ValueError, UnicodeDecodeError) as exc:
+        return {"type": "nyanpasu.invalid_json", "text": raw.decode("utf-8", "replace"), "error": str(exc)}

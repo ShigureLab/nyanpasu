@@ -5,13 +5,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from fastapi import APIRouter, FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from nyanpasu.agent import AgentService, PostProcessHook
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
 from nyanpasu.plugins import PluginManager, PluginRegistry
 from nyanpasu.store import StateStore
+from nyanpasu.transcript import TranscriptStore
+from nyanpasu.transcript.api import dashboard_router
+from nyanpasu.transcript.database import RecordNotFound
 
 if TYPE_CHECKING:
     from enum import Enum
@@ -76,6 +79,27 @@ def create_app(
     app.state.config = resolved_config
     app.state.agent = resolved_agent
     runtime.app = app
+    state_store = StateStore(resolved_config.db_path)
+    transcript_store = TranscriptStore(state_store.db_path)
+    transcript_store.import_legacy()
+
+    def runtime_info() -> dict[str, Any]:
+        if isinstance(resolved_agent, AgentService):
+            backend = resolved_agent.codex
+            proc = getattr(backend, "_proc", None)
+            return {
+                "connection": "connected" if proc is not None and proc.returncode is None else "idle",
+                "capture_error": resolved_agent.capture_error,
+                "diagnostics": list(getattr(backend, "diagnostics", [])),
+            }
+        return {"connection": "external", "capture_error": None, "diagnostics": []}
+
+    app.include_router(dashboard_router(resolved_config, transcript_store, runtime_info))
+
+    @app.exception_handler(RecordNotFound)
+    async def missing_record(request, exc: RecordNotFound):
+        return JSONResponse(status_code=404, content={"detail": str(exc.args[0])})
+
     static_dir = dashboard_static_dir()
     if static_dir is not None:
         app.mount("/dashboard/assets", StaticFiles(directory=static_dir), name="dashboard-assets")

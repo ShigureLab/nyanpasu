@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -10,6 +11,9 @@ from nyanpasu.config import NyanpasuConfig, RuntimeConfig
 from nyanpasu.models import AgentContext, AgentTask, CodexRunResult, InstructionDocument, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 
+if TYPE_CHECKING:
+    from nyanpasu.transcript.capture import EventObserver
+
 
 class FakeCodex:
     def __init__(self) -> None:
@@ -17,7 +21,9 @@ class FakeCodex:
         self.prompts: list[str] = []
         self.archived: list[str] = []
 
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult:
         self.prompts.append(prompt)
         self.calls.append((cwd, thread_id))
         return CodexRunResult(
@@ -72,13 +78,15 @@ class SlowCodex(FakeCodex):
         self.release = release
         self.second_started = second_started
 
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult:
         if not self.calls:
             self.started.set()
         elif self.second_started is not None:
             self.second_started.set()
         await self.release.wait()
-        return await super().run_turn(cwd=cwd, prompt=prompt, thread_id=thread_id)
+        return await super().run_turn(cwd=cwd, prompt=prompt, thread_id=thread_id, observer=observer)
 
 
 class CancellableCodex(FakeCodex):
@@ -86,7 +94,9 @@ class CancellableCodex(FakeCodex):
         super().__init__()
         self.started = started
 
-    async def run_turn(self, *, cwd: Path, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_turn(
+        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+    ) -> CodexRunResult:
         _ = cwd, prompt, thread_id
         self.started.set()
         await asyncio.Event().wait()
@@ -321,3 +331,20 @@ async def test_agent_appends_task_instruction_documents(tmp_path: Path) -> None:
     assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.prompts[0]
     assert "Stay precise." in codex.prompts[0]
     assert "--- AGENTS.md ---" in codex.prompts[0]
+
+
+@pytest.mark.anyio
+async def test_transcript_setup_failure_releases_context_lease(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.db_path)
+    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=FakeCodex())
+    begin = agent.transcripts.begin
+
+    def unavailable(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(agent.transcripts, "begin", unavailable)
+    with pytest.raises(OSError, match="disk unavailable"):
+        await agent.run_now(_task("failed-setup"))
+    monkeypatch.setattr(agent.transcripts, "begin", begin)
+    await asyncio.wait_for(agent.run_now(_task("next-task")), 2)

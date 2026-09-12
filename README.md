@@ -109,11 +109,13 @@ curl http://127.0.0.1:8765/tasks
 curl http://127.0.0.1:8765/contexts
 ```
 
-Open the dashboard to inspect task dispatch, backlog, completion, failures, plugin totals, and recent tasks:
+Open the dashboard to read session transcripts, inspect tool input/output and failures, search saved content, and follow related tasks:
 
 ```text
 http://127.0.0.1:8765/dashboard
 ```
+
+Legacy results remain readable with explicit capture gaps; new executions record input and backend events while they run.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
@@ -130,9 +132,17 @@ changes and proxies `/api` requests to the backend at `127.0.0.1:8765`.
 Check, test, and build the dashboard with:
 
 ```bash
+pnpm run types
 pnpm run check
 pnpm run test
 pnpm run build
+```
+
+After `uv sync --dev`, `pnpm run types` regenerates the transcript TypeScript contract from the Python models. To run browser interaction tests with an isolated fixture server:
+
+```bash
+pnpm exec playwright install --with-deps chromium
+pnpm run test:browser
 ```
 
 Generated files in `src/nyanpasu/dashboard_static/` are ignored by Git. For the

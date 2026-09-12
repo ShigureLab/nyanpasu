@@ -17,6 +17,8 @@ from nyanpasu.codex import CodexBackend, backend_from_config
 from nyanpasu.git_ops import WorktreeManager
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus, json_dumps
 from nyanpasu.store import StateStore, replace_context
+from nyanpasu.transcript import TranscriptStore
+from nyanpasu.transcript.capture import Capture
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
@@ -43,6 +45,8 @@ class AgentService:
     ) -> None:
         self.config = config
         self.store = store or StateStore(config.db_path)
+        self.transcripts = TranscriptStore(self.store.db_path)
+        self.capture_error: str | None = None
         self.worktrees = worktrees or WorktreeManager(config)
         self.codex = codex or backend_from_config(config)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
@@ -130,6 +134,9 @@ class AgentService:
             return result
         try:
             return await self._run_task(task)
+        except asyncio.CancelledError:
+            await to_thread.run_sync(self.store.mark_task_interrupted, task.task_id, "Task cancelled")
+            raise
         except Exception as exc:
             logger.exception("task run_now failed task_id={} context={}", task.task_id, task.context_key)
             await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
@@ -160,15 +167,17 @@ class AgentService:
         if task.action is not TaskAction.RUN:
             raise ValueError(f"unsupported task action: {task.action}")
 
-        context_lock = self._lock_for_context(task.context_key)
-        async with context_lock:
-            await self._acquire_context_lease(task)
-            heartbeat = asyncio.create_task(self._heartbeat_context_lease(task))
+        async with self._context_execution(task):
             started_at = time.monotonic()
+            existing = await to_thread.run_sync(self.store.get_context, task.context_key)
+            await to_thread.run_sync(
+                self.transcripts.begin, task, existing.thread_id if existing else None, self.config.codex.backend
+            )
+            capture = Capture(self.transcripts, task.task_id)
+            capture.observe({"type": "nyanpasu.preparing", "state": "running"}, "lifecycle")
             try:
                 await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
                 task = await to_thread.run_sync(self._with_coalesced_task_context, task)
-                existing = await to_thread.run_sync(self.store.get_context, task.context_key)
                 context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
                 if context.session_worktree is None:
                     context = replace_context(context, session_worktree=Path.cwd())
@@ -189,10 +198,39 @@ class AgentService:
                     event_worktree=event_worktree,
                     session_worktree=context.session_worktree,
                 )
+                capture.observe(
+                    {
+                        "type": "nyanpasu.input",
+                        "prompt": task.prompt,
+                        "actual_prompt": prompt,
+                        "cwd": str(context.session_worktree),
+                        "context": {
+                            "revision": task.workspace.revision if task.workspace else context.revision,
+                            "workspace": str(context.session_worktree),
+                            "instructions": [doc.model_dump(mode="json") for doc in task.instruction_docs],
+                            "coalesced_tasks": task.metadata.get("coalesced_tasks", []),
+                        },
+                    },
+                    "lifecycle",
+                )
+                await capture.flush()
+                capture.observe({"type": "nyanpasu.running", "state": "running"}, "lifecycle")
                 result = await self.codex.run_turn(
                     cwd=context.session_worktree or Path.cwd(),
                     prompt=prompt,
                     thread_id=context.thread_id,
+                    observer=capture.observe,
+                )
+                await capture.flush()
+                await to_thread.run_sync(self.transcripts.finish_message, task.task_id, result.final_message)
+                capture.observe(
+                    {
+                        "type": "nyanpasu.backend_completed",
+                        "state": "completed",
+                        "thread_id": result.thread_id,
+                        "turn_id": result.turn_id,
+                    },
+                    "lifecycle",
                 )
                 context = replace_context(
                     context,
@@ -219,11 +257,39 @@ class AgentService:
                     result.turn_id,
                     time.monotonic() - started_at,
                 )
+                capture.observe({"type": "nyanpasu.post_process", "state": "running"}, "lifecycle")
                 await self._run_post_process_hooks(task, run_result)
+                capture.observe({"type": "nyanpasu.post_process_completed", "state": "completed"}, "lifecycle")
                 if task.workspace_policy == "event_snapshot" and self.config.runtime.clean_event_snapshots:
                     await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, event_worktree)
                     logger.info("task event snapshot removed task_id={} path={}", task.task_id, event_worktree)
+                capture.observe({"type": "nyanpasu.completed", "state": "completed"}, "lifecycle")
                 return run_result
+            except asyncio.CancelledError:
+                capture.observe(
+                    {
+                        "type": "nyanpasu.interrupted",
+                        "state": "interrupted",
+                        "text": "Task cancelled; unfinished items have no recorded terminal status.",
+                    },
+                    "lifecycle",
+                )
+                raise
+            except Exception as exc:
+                capture.observe({"type": "nyanpasu.failed", "state": "failed", "text": str(exc)}, "lifecycle")
+                raise
+            finally:
+                await asyncio.shield(capture.close())
+                if capture.error:
+                    self.capture_error = capture.error
+
+    @contextlib.asynccontextmanager
+    async def _context_execution(self, task: AgentTask):
+        async with self._lock_for_context(task.context_key):
+            await self._acquire_context_lease(task)
+            heartbeat = asyncio.create_task(self._heartbeat_context_lease(task))
+            try:
+                yield
             finally:
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -238,48 +304,33 @@ class AgentService:
                 )
 
     async def _cleanup_context(self, task: AgentTask) -> TaskRunResult:
-        context_lock = self._lock_for_context(task.context_key)
-        async with context_lock:
-            await self._acquire_context_lease(task)
-            heartbeat = asyncio.create_task(self._heartbeat_context_lease(task))
+        async with self._context_execution(task):
             logger.info("task cleanup started task_id={} context={}", task.task_id, task.context_key)
-            try:
-                await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
-                context = await to_thread.run_sync(self.store.delete_context, task.context_key)
-                if context is not None:
-                    if context.thread_id:
-                        await self.codex.cleanup_thread(context.thread_id)
-                    await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, context.session_worktree)
-                result = TaskRunResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.COMPLETED,
-                    thread_id=context.thread_id if context else None,
-                    turn_id=None,
-                    final_message="",
-                    raw_events=[],
-                    session_worktree=context.session_worktree if context else None,
-                )
-                await to_thread.run_sync(self.store.mark_task_done, result)
-                logger.info(
-                    "task cleanup finished task_id={} context={} had_context={}",
-                    task.task_id,
-                    task.context_key,
-                    context is not None,
-                )
-                await self._run_post_process_hooks(task, result)
-                return result
-            finally:
-                heartbeat.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await heartbeat
-                await to_thread.run_sync(
-                    functools.partial(
-                        self.store.release_context_lease,
-                        task.context_key,
-                        owner_id=self._owner_id,
-                        task_id=task.task_id,
-                    )
-                )
+            await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
+            context = await to_thread.run_sync(self.store.delete_context, task.context_key)
+            await to_thread.run_sync(self.transcripts.close_context, task.context_key)
+            if context is not None:
+                if context.thread_id:
+                    await self.codex.cleanup_thread(context.thread_id)
+                await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, context.session_worktree)
+            result = TaskRunResult(
+                task_id=task.task_id,
+                status=TaskStatus.COMPLETED,
+                thread_id=context.thread_id if context else None,
+                turn_id=None,
+                final_message="",
+                raw_events=[],
+                session_worktree=context.session_worktree if context else None,
+            )
+            await to_thread.run_sync(self.store.mark_task_done, result)
+            logger.info(
+                "task cleanup finished task_id={} context={} had_context={}",
+                task.task_id,
+                task.context_key,
+                context is not None,
+            )
+            await self._run_post_process_hooks(task, result)
+            return result
 
     async def _run_post_process_hooks(self, task: AgentTask, result: TaskRunResult) -> None:
         plugin_id = task.metadata.get("plugin_id")

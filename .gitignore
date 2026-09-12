@@ -125,3 +125,7 @@ dmypy.json
 
 # logs
 log
+
+# Browser test reports
+/test-results/
+/playwright-report/

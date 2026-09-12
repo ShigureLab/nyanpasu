@@ -9,6 +9,8 @@ from nyanpasu.config import CodexConfig, NyanpasuConfig
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from nyanpasu.transcript.capture import EventObserver
+
 
 def test_safe_codex_env_filters_by_default_and_honors_pass_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PATH", "/usr/bin")
@@ -167,7 +169,9 @@ class RecordingAppServerBackend(CodexAppServerBackend):
     async def _ensure_started(self) -> None:
         return None
 
-    async def _request(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    async def _request(
+        self, method: str, params: dict[str, Any] | None, observer: EventObserver | None = None
+    ) -> dict[str, Any]:
         assert params is not None
         self.requests.append((method, params))
         if method in {"thread/start", "thread/resume"}:
