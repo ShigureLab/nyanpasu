@@ -6,7 +6,7 @@ import pytest
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
-from nyanpasu.config import NyanpasuConfig
+from nyanpasu.config import CodexConfig, NyanpasuConfig
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 
@@ -88,3 +88,16 @@ async def test_app_tasks_and_contexts_endpoints(tmp_path) -> None:
     assert tasks.json() == {"tasks": []}
     assert contexts.status_code == 200
     assert contexts.json() == {"contexts": []}
+
+
+@pytest.mark.anyio
+async def test_runtime_exposes_configured_model_and_effort(tmp_path) -> None:
+    config = NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(model="configured-model", reasoning_effort="medium"))
+    app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            runtime = await client.get("/api/runtime")
+
+    assert runtime.status_code == 200
+    assert runtime.json()["model"] == "configured-model"
+    assert runtime.json()["reasoning_effort"] == "medium"

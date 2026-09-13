@@ -30,6 +30,8 @@ interface Plugin {
 interface Runtime {
   connection: string;
   backend: string;
+  model: string | null;
+  reasoning_effort: string | null;
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
   diagnostics: Diagnostic[];
@@ -481,8 +483,9 @@ function RuntimeView({
               <h2>{data.data.concurrency}</h2>
             </article>
             <article>
-              <span>Session source</span>
-              <h2>Codex</h2>
+              <span>Configured model</span>
+              <h2>{data.data.model ?? 'Codex default'}</h2>
+              <span>Reasoning: {data.data.reasoning_effort ?? 'Codex default'}</span>
             </article>
           </div>
           <h2>Context leases</h2>

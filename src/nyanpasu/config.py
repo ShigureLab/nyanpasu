@@ -30,12 +30,23 @@ class CodexConfig(BaseModel):
     backend: Literal["app-server", "exec"] = "app-server"
     bin: str = "codex"
     model: str | None = None
+    reasoning_effort: str | None = None
     sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
     approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
     command_timeout_seconds: int = 60 * 60
     pass_env: tuple[str, ...] = ()
     env: dict[str, str | EnvCommand] = Field(default_factory=dict, repr=False)
+
+    @field_validator("model", "reasoning_effort")
+    @classmethod
+    def _model_setting(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or "\0" in value:
+            raise ValueError("model settings must be nonempty and contain no NUL")
+        return value
 
     @field_validator("pass_env", mode="before")
     @classmethod
@@ -149,6 +160,7 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
         "NYANPASU_CODEX_BACKEND": "backend",
         "NYANPASU_CODEX_BIN": "bin",
         "NYANPASU_CODEX_MODEL": "model",
+        "NYANPASU_CODEX_REASONING_EFFORT": "reasoning_effort",
         "NYANPASU_CODEX_SANDBOX": "sandbox",
         "NYANPASU_CODEX_APPROVAL": "approval_policy",
         "NYANPASU_CODEX_APPROVALS_REVIEWER": "approvals_reviewer",

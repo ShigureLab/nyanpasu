@@ -33,6 +33,8 @@ port = 8765
 
 [codex]
 backend = "app-server"
+model = "gpt-6-astra"
+reasoning_effort = "medium"
 sandbox = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
@@ -98,6 +100,8 @@ token = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "y
 Token commands follow the same execution, validation, and error reporting rules as `codex.env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
 
 Agent-driven GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
+
+Set `codex.model` and `codex.reasoning_effort` to pin Nyanpasu's model independently of your interactive Codex configuration. Both `app-server` and `exec` apply these settings to every turn, including resumed sessions. `NYANPASU_CODEX_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` override the TOML values. An omitted setting inherits Codex's defaults; use a reasoning effort supported by the selected model. Restart Nyanpasu after changing the configuration. The Dashboard's Runtime page shows the configured values, and the reviewer's disclosure footer uses the same configuration.
 
 To define environment variables specifically for Codex, use `codex.env`. A string is a literal value; a `cmd` table reads a value from a command's stdout:
 

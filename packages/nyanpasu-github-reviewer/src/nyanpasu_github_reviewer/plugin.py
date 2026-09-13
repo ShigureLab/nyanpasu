@@ -153,6 +153,7 @@ class GitHubReviewerPlugin:
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
     ) -> AgentTask:
         assert self.config is not None
+        assert self.runtime is not None
         queued_pr = PullRequestRef.model_validate(task.metadata["pull_request"])
         pr = _fetch_pr(self.config, queued_pr.repo, queued_pr.number)
         triggers = tuple(
@@ -186,6 +187,7 @@ class GitHubReviewerPlugin:
                     self.config,
                     pr,
                     "{{NYANPASU_WORKTREE}}",
+                    codex=self.runtime.config.codex,
                     triggers=triggers,
                     has_session=bool(context and context.thread_id),
                     previous_task_head=context.revision if context else None,

@@ -155,17 +155,19 @@ class CodexExecBackend:
             argv = [self.config.codex.bin, "exec", "-", "-C", str(cwd)]
         if self.config.codex.model:
             argv.extend(["--model", self.config.codex.model])
+        if self.config.codex.reasoning_effort:
+            argv.extend(["-c", f"model_reasoning_effort={json.dumps(self.config.codex.reasoning_effort)}"])
         if developer_instructions:
             argv.extend(["-c", f"developer_instructions={json.dumps(developer_instructions, ensure_ascii=False)}"])
         argv.extend(
             [
                 "-c",
                 f'approvals_reviewer="{self.config.codex.approvals_reviewer}"',
+                "-c",
+                f'sandbox_mode="{self.config.codex.sandbox}"',
+                "-c",
+                f'approval_policy="{self.config.codex.approval_policy}"',
                 "--json",
-                "--sandbox",
-                self.config.codex.sandbox,
-                "--ask-for-approval",
-                self.config.codex.approval_policy,
                 "--output-last-message",
                 str(output_path),
             ]
@@ -223,6 +225,8 @@ class CodexAppServerBackend:
                 thread_params["threadId"] = thread_id
             if developer_instructions:
                 thread_params["developerInstructions"] = developer_instructions
+            if self.config.codex.reasoning_effort:
+                thread_params["config"] = {"model_reasoning_effort": self.config.codex.reasoning_effort}
             thread = await self._request("thread/resume" if thread_id else "thread/start", thread_params)
             active_thread_id = str(thread["thread"]["id"])
             if on_started:
@@ -237,6 +241,7 @@ class CodexAppServerBackend:
                     "approvalsReviewer": self.config.codex.approvals_reviewer,
                     "sandboxPolicy": self._sandbox_policy(cwd),
                     "model": self.config.codex.model,
+                    "effort": self.config.codex.reasoning_effort,
                 },
             )
             turn_id = str(turn["turn"]["id"])

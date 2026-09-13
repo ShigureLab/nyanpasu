@@ -21,10 +21,4 @@ Use REQUEST_CHANGES only when enabled and supported by blocking P0/P1 evidence. 
 
 Submit at most one final review per turn. Use a body file or stdin, wait for writes to succeed, and inspect uncertain outcomes before retrying. In public text, use visible GitHub permalinks and natural conclusions; omit raw GraphQL IDs, trigger names, delivery IDs, and review-submit event names. Do not add priority shields to neutral status text or invent findings to fill a format.
 
-Every final review body must end with this exact footer, after all other review content, without translating or editing it:
-
-```html
-<div align="right">
-   <sup>Powered by Nyanpasu with gpt-6-astra medium, please check the suggestions carefully.</sup>
-</div>
-```
+Every final review body must end with the exact disclosure footer supplied in the current turn input, after all other review content, without translating or editing it. The footer is generated from Nyanpasu's model configuration; do not copy an older review's model declaration.

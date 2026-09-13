@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 
+from nyanpasu.config import CodexConfig, NyanpasuConfig
 from nyanpasu.models import AgentContext, TaskAction
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings
@@ -15,13 +17,17 @@ if TYPE_CHECKING:
 
 
 def _plugin(tmp_path: Path) -> GitHubReviewerPlugin:
-    return GitHubReviewerPlugin(
+    plugin = GitHubReviewerPlugin(
         GitHubReviewerConfig(
             repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path / "repo", base_branches=("main",))},
             github_login="review-bot",
             dry_run=True,
         )
     )
+    plugin.runtime = Mock(
+        config=NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(model="runtime-model", reasoning_effort="high"))
+    )
+    return plugin
 
 
 def _pr_payload(action: str, sha: str = "head-a") -> dict[str, object]:
@@ -95,6 +101,7 @@ async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path
     assert "head-a" not in prepared.prompt
     assert "Additional coalesced task context" not in prepared.prompt
     assert "gh-slate" in prepared.developer_instructions
+    assert "Powered by Nyanpasu with runtime-model high" in prepared.prompt
 
 
 @pytest.mark.anyio

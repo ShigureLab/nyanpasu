@@ -11,6 +11,10 @@ Each PR maps to one Nyanpasu context key, so follow-up events reuse the same Cod
 ```toml
 enabled_plugins = ["github_reviewer"]
 
+[codex]
+model = "gpt-6-astra"
+reasoning_effort = "medium"
+
 [plugins.github_reviewer]
 github_login = "your-github-login"
 review_language = "Chinese"
@@ -40,9 +44,9 @@ required = false
 
 ## Session Instructions And Turn Input
 
-The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the Codex session. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and the disclosure footer. Tool procedures come from the `github-conversation` and `gh-slate` skills.
+The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the Codex session. Each execution renders its disclosure footer from the core `codex.model` and `codex.reasoning_effort` configuration. If the model is unset, the footer names Codex without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
 
-Every execution prepares one short user message containing the target head, worktree, publication mode, and trigger summaries or request links. The previous task head is a navigation hint, not proof that a review was completed. Existing GitHub reviews and threads remain the evidence for prior review coverage.
+Every execution prepares one short user message containing the target head, worktree, publication mode, the current model's disclosure footer, and trigger summaries or request links. Supplying the footer in each turn also updates the declaration when an existing session resumes with a different model. The previous task head is a navigation hint, not proof that a review was completed. Existing GitHub reviews and threads remain the evidence for prior review coverage.
 
 The plugin prepares the task after the core acquires its context lease. It refreshes the PR from GitHub, checks that it remains eligible, and uses the same head for the workspace and turn input. Merged events preserve their request context without embedding other prompts. Events arriving while a task is running are handled by a later turn, which reads the context left by the preceding task.
 

@@ -280,20 +280,32 @@ small {
   justify-content: space-between;
   align-items: start;
   gap: 16px;
-  padding: 24px 30px 14px;
+  padding: 14px 25px 4px;
 }
 .session-heading h1 {
-  font-size: 20px;
+  font-size: 18px;
+  margin: 0;
+  min-width: 0;
   max-width: 850px;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
-.session-heading p {
-  color: var(--muted);
-  font-size: 11px;
-  margin: 0;
+.session-details {
+  border: 0;
+  flex-shrink: 0;
 }
-.session-heading code {
-  font-size: 11px;
+.session-details > summary {
+  padding: 6px 25px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .status {
   white-space: nowrap;
@@ -834,10 +846,13 @@ dd code {
     font-size: 11px;
   }
   .session-heading {
-    padding: 16px;
+    padding: 12px 12px 4px;
   }
   .session-heading h1 {
-    font-size: 18px;
+    font-size: 16px;
+  }
+  .session-details > summary {
+    padding-inline: 12px;
   }
   .transcript-toolbar,
   .transcript-search {
@@ -952,6 +967,10 @@ dd code {
 .session-metadata button {
   font-size: 10px;
 }
+.session-metadata {
+  max-height: min(35dvh, 260px);
+  overflow: auto;
+}
 .task-metadata {
   padding: 18px 0;
 }
@@ -1022,9 +1041,7 @@ dd code {
     grid-template-columns: minmax(0, 1fr);
   }
   .session-metadata {
-    padding-inline: 16px;
-    max-height: 160px;
-    overflow: auto;
+    padding-inline: 12px;
   }
   .entry-heading {
     flex-wrap: wrap;

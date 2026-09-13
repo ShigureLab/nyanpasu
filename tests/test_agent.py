@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 
@@ -430,6 +431,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
     )
     backend = codex or FakeCodex()
     agent = AgentService(_config(tmp_path), worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=backend)
+    plugin.runtime = Mock(config=agent.config)
     agent.add_task_preparer(plugin.id, plugin.prepare_task)
     return agent, plugin, backend, head
 

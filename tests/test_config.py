@@ -24,6 +24,8 @@ port = 9999
 
 [codex]
 backend = "exec"
+model = "configured-model"
+reasoning_effort = "medium"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 pass_env = ["GH_TOKEN"]
@@ -55,6 +57,8 @@ poll_interval_seconds = 600
     assert config.server.host == "0.0.0.0"
     assert config.server.port == 9999
     assert config.codex.backend == "exec"
+    assert config.codex.model == "configured-model"
+    assert config.codex.reasoning_effort == "medium"
     assert config.codex.approval_policy == "on-request"
     assert config.codex.approvals_reviewer == "auto_review"
     assert config.codex.pass_env == ("GH_TOKEN",)
@@ -69,6 +73,25 @@ poll_interval_seconds = 600
     assert config.integrations["github"]["git_author_name"] == "Bot"
     assert config.enabled_plugins == ("github_reviewer",)
     assert config.plugins["github_reviewer"]["github_login"] == "review-bot"
+
+
+def test_model_environment_overrides_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[codex]\nmodel = "file-model"\nreasoning_effort = "high"\n')
+    monkeypatch.setenv("NYANPASU_CODEX_MODEL", "environment-model")
+    monkeypatch.setenv("NYANPASU_CODEX_REASONING_EFFORT", "medium")
+
+    config = load_config()
+
+    assert config.codex.model == "environment-model"
+    assert config.codex.reasoning_effort == "medium"
+
+
+@pytest.mark.parametrize("field", ["model", "reasoning_effort"])
+@pytest.mark.parametrize("value", ["", "  ", "value\0"])
+def test_model_settings_reject_empty_or_invalid_values(field, value) -> None:
+    with pytest.raises(ValueError, match="model settings"):
+        CodexConfig.model_validate({field: value})
 
 
 @pytest.mark.parametrize(
@@ -104,6 +127,8 @@ def test_load_config_allows_no_plugins(tmp_path: Path, monkeypatch) -> None:
 
     assert config.plugins == {}
     assert config.enabled_plugins == ()
+    assert config.codex.model is None
+    assert config.codex.reasoning_effort is None
 
 
 def test_load_config_uses_nyanpasu_home_config_by_default(tmp_path: Path, monkeypatch) -> None:

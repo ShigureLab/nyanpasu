@@ -200,6 +200,8 @@ def dashboard_router(
             leases = [dict(row) for row in conn.execute("SELECT * FROM context_leases ORDER BY expires_at DESC")]
         return {
             "backend": config.codex.backend,
+            "model": config.codex.model,
+            "reasoning_effort": config.codex.reasoning_effort,
             "concurrency": config.runtime.concurrency,
             "leases": leases,
             "generated_at": time.time(),

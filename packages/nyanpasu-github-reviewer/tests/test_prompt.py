@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nyanpasu.config import CodexConfig
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.prompt import INSTRUCTIONS_DIR, build_review_instructions, build_review_prompt
 
@@ -52,6 +53,7 @@ def test_ordinary_turn_contains_only_current_facts_and_trigger(tmp_path: Path) -
         _config(tmp_path),
         _pr(),
         "/tmp/worktree",
+        codex=CodexConfig(),
         triggers=(ReviewTrigger(kind="pull_request_synchronize", summary="New commits."),),
         has_session=True,
         previous_task_head="old-head",
@@ -62,7 +64,8 @@ def test_ordinary_turn_contains_only_current_facts_and_trigger(tmp_path: Path) -
     assert "Previous task head (not proof of completed review): old-head" in prompt
     assert "/tmp/worktree" in prompt and "New commits." in prompt
     assert "Explicit request: no" in prompt
-    assert "github-conversation" not in prompt and "Powered by" not in prompt
+    assert "github-conversation" not in prompt
+    assert "Powered by Nyanpasu with Codex" in prompt
     assert len(prompt) < 1000
 
 
@@ -75,7 +78,7 @@ def test_merged_explicit_requests_are_preserved_without_truncation(tmp_path: Pat
         )
         for index in range(12)
     )
-    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", triggers=triggers)
+    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", codex=CodexConfig(), triggers=triggers)
 
     assert "Explicit request: yes" in prompt
     for trigger in triggers:
@@ -89,7 +92,7 @@ def test_read_only_policy_covers_session_and_current_turn(tmp_path: Path, overri
     config = _config(tmp_path, **overrides)
     for text in (
         build_review_instructions(config, _pr()),
-        build_review_prompt(config, _pr(), "/tmp/worktree", triggers=()),
+        build_review_prompt(config, _pr(), "/tmp/worktree", codex=CodexConfig(), triggers=()),
     ):
         assert "read-only; do not write to GitHub, including reviews, replies, or the dashboard" in text
 
@@ -104,9 +107,24 @@ def test_request_changes_policy_and_output_reference(tmp_path: Path) -> None:
     assert "**优先级：P1**" in output
     assert "`suggestion`" in output
     assert "非行级：<reason>" in output
+    assert "disclosure footer supplied in the current turn input" in output
+
+
+@pytest.mark.parametrize(
+    ("codex", "description"),
+    [
+        (CodexConfig(model="gpt-6-astra", reasoning_effort="medium"), "gpt-6-astra medium"),
+        (CodexConfig(model="another-model", reasoning_effort="high"), "another-model high"),
+        (CodexConfig(model="configured-model"), "configured-model"),
+        (CodexConfig(), "Codex"),
+        (CodexConfig(model="custom&model"), "custom&amp;model"),
+    ],
+)
+def test_disclosure_uses_the_configured_model_and_effort(tmp_path: Path, codex, description) -> None:
+    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", codex=codex, triggers=(), has_session=True)
+
     assert (
-        """<div align="right">
-   <sup>Powered by Nyanpasu with gpt-6-astra medium, please check the suggestions carefully.</sup>
-</div>"""
-        in output
-    )
+        f'<div align="right">\n   <sup>Powered by Nyanpasu with {description}, '
+        "please check the suggestions carefully.</sup>\n</div>"
+    ) in prompt
+    assert "Disclosure footer for this turn" in prompt

@@ -251,63 +251,66 @@ export function Transcript({
   return (
     <section className="session-workspace">
       <header className="session-heading">
-        <div>
-          <span className="eyebrow">SESSION TRANSCRIPT</span>
-          <h1>{detail.data?.title ?? 'Loading session…'}</h1>
-        </div>
+        <h1 title={detail.data?.title}>{detail.data?.title ?? 'Loading session…'}</h1>
         {detail.data && (
           <Status state={detail.data.execution_uncertain ? 'unconfirmed' : detail.data.state} />
         )}
       </header>
-      <dl className="session-metadata">
-        <div>
-          <dt>Codex session ID</dt>
-          <dd>
-            <code>{session}</code>
-            <Copy text={session} label="Copy session ID" />
-          </dd>
-        </div>
-        <div>
-          <dt>Context key</dt>
-          <dd>
-            <button
-              className="quiet"
-              onClick={() => navigate({ context: detail.data?.context_key ?? null })}
-            >
-              <code>{detail.data?.context_key ?? 'Loading…'}</code>
-            </button>
-          </dd>
-        </div>
-        {detail.data?.codex && (
-          <>
-            <div>
-              <dt>Model</dt>
-              <dd>
-                {detail.data.codex.model ?? 'Unavailable'}{' '}
-                <span className="subtle">{detail.data.codex.reasoning_effort}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Workspace</dt>
-              <dd>
-                <code>{detail.data.codex.cwd ?? 'Unavailable'}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Created</dt>
-              <dd>
-                <Time value={detail.data.codex.created_at} />
-              </dd>
-            </div>
-            <div>
-              <dt>Updated</dt>
-              <dd>
-                <Time value={detail.data.codex.updated_at} />
-              </dd>
-            </div>
-          </>
-        )}
-      </dl>
+      <details className="session-details">
+        <summary>
+          Session details
+          {detail.data && <span className="subtle"> · {detail.data.context_key}</span>}
+        </summary>
+        <dl className="session-metadata">
+          <div>
+            <dt>Codex session ID</dt>
+            <dd>
+              <code>{session}</code>
+              <Copy text={session} label="Copy session ID" />
+            </dd>
+          </div>
+          <div>
+            <dt>Context key</dt>
+            <dd>
+              <button
+                className="quiet"
+                onClick={() => navigate({ context: detail.data?.context_key ?? null })}
+              >
+                <code>{detail.data?.context_key ?? 'Loading…'}</code>
+              </button>
+            </dd>
+          </div>
+          {detail.data?.codex && (
+            <>
+              <div>
+                <dt>Model</dt>
+                <dd>
+                  {detail.data.codex.model ?? 'Unavailable'}{' '}
+                  <span className="subtle">{detail.data.codex.reasoning_effort}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Workspace</dt>
+                <dd>
+                  <code>{detail.data.codex.cwd ?? 'Unavailable'}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Created</dt>
+                <dd>
+                  <Time value={detail.data.codex.created_at} />
+                </dd>
+              </div>
+              <div>
+                <dt>Updated</dt>
+                <dd>
+                  <Time value={detail.data.codex.updated_at} />
+                </dd>
+              </div>
+            </>
+          )}
+        </dl>
+      </details>
       {detail.error && (
         <p className="notice error" role="alert">
           {detail.error}
