@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -96,6 +97,47 @@ def test_github_integration_config_resolves_auth_env(monkeypatch) -> None:
     assert config.resolved_token == "env-token"
     assert config.gh_env() == {"GH_TOKEN": "env-token", "GITHUB_TOKEN": "env-token"}
     assert config.git_author_name == "Bot"
+    monkeypatch.setenv("NYANPASU_TEST_GH_TOKEN", "changed-token")
+    assert config.resolved_token == "env-token"
+
+
+def test_github_integration_command_resolves_once_in_config_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GH_TOKEN", "inherited")
+    config = github_integration_from_config(
+        {"token": {"cmd": [sys.executable, "-c", "open('count', 'a').write('1'); print('fixed-token')"]}},
+        cwd=tmp_path,
+    )
+    monkeypatch.setenv("GH_TOKEN", "changed")
+    assert config.gh_env() == {"GH_TOKEN": "fixed-token", "GITHUB_TOKEN": "fixed-token"}
+    assert config.resolved_token == "fixed-token"
+    assert (tmp_path / "count").read_text() == "1"
+    assert "fixed-token" not in repr(config)
+
+
+@pytest.mark.parametrize("settings", [{"token_env": "MISSING_NYANPASU_TOKEN"}, {"token": ""}])
+def test_explicit_github_auth_never_falls_back_to_ambient(settings, monkeypatch) -> None:
+    monkeypatch.delenv("MISSING_NYANPASU_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "unrelated-token")
+    with pytest.raises(ValueError):
+        github_integration_from_config(settings)
+
+
+def test_github_integration_rejects_ambiguous_auth_without_executing_command(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="either token or token_env"):
+        github_integration_from_config(
+            {"token": {"cmd": ["touch", "unexpected"]}, "token_env": "GH_TOKEN"}, cwd=tmp_path
+        )
+    assert not (tmp_path / "unexpected").exists()
+
+
+def test_github_integration_command_failure_hides_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ambient-token")
+    with pytest.raises(ValueError, match="integrations.github.token: command exited with status 3") as error:
+        github_integration_from_config(
+            {"token": {"cmd": [sys.executable, "-c", "import sys; print('private-secret'); sys.exit(3)"]}},
+            cwd=tmp_path,
+        )
+    assert "private-secret" not in str(error.value)
 
 
 def test_configured_branch_context_builds_workspace_and_docs(tmp_path: Path, monkeypatch) -> None:

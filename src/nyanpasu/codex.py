@@ -5,7 +5,6 @@ import codecs
 import contextlib
 import json
 import os
-import subprocess
 import tempfile
 from collections import deque
 from pathlib import Path
@@ -14,12 +13,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
 
+from nyanpasu.environment import resolve_env_value
 from nyanpasu.models import CodexRunResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from nyanpasu.config import EnvCommand, NyanpasuConfig
+    from nyanpasu.config import NyanpasuConfig
     from nyanpasu.transcript.capture import EventObserver
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
@@ -591,37 +591,8 @@ def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
     allowed.update(config.codex.pass_env)
     env = {key: value for key in allowed if (value := inherited.get(key))}
     for key, source in config.codex.env.items():
-        env[key] = (
-            source if isinstance(source, str) else _env_from_command(key, source, cwd=config.state_dir, env=inherited)
-        )
+        env[key] = resolve_env_value(source, name=f"codex.env.{key}", cwd=config.state_dir, env=inherited)
     return env
-
-
-def _env_from_command(key: str, source: EnvCommand, *, cwd: Path, env: Mapping[str, str]) -> str:
-    try:
-        result = subprocess.run(
-            source.cmd,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"codex.env.{key}: command timed out after 10 seconds") from None
-    except OSError as exc:
-        raise ValueError(f"codex.env.{key}: could not start command ({type(exc).__name__})") from None
-    if result.returncode:
-        raise ValueError(f"codex.env.{key}: command exited with status {result.returncode}")
-    try:
-        value = result.stdout.decode("utf-8").rstrip("\r\n")
-    except UnicodeDecodeError:
-        raise ValueError(f"codex.env.{key}: command output is not UTF-8") from None
-    if not value or "\0" in value:
-        raise ValueError(f"codex.env.{key}: command output must be nonempty and contain no NUL")
-    return value
 
 
 async def json_lines(stream: asyncio.StreamReader):

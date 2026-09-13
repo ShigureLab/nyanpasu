@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import ReviewAction
 
@@ -132,6 +134,15 @@ def test_issue_comment_without_mention_is_ignored() -> None:
         agent_login="review-bot",
     )
 
+    assert event.action is ReviewAction.IGNORED
+
+
+@pytest.mark.parametrize("action", ["created", "edited"])
+def test_issue_comment_by_agent_is_ignored_even_with_self_mention(action: str) -> None:
+    payload = issue_comment_payload("@review-bot please review")
+    payload["action"] = action
+    payload["comment"]["user"]["login"] = "REVIEW-BOT"
+    event = parse_github_event("issue_comment", "self-comment", payload, agent_login="review-bot")
     assert event.action is ReviewAction.IGNORED
 
 

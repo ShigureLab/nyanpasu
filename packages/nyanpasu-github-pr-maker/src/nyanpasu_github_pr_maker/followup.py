@@ -5,7 +5,7 @@ import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from nyanpasu_github.models import GitHubIntegrationConfig
+from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.pulls import PullRequestView, fetch_pull_request_view
 from nyanpasu_github.workspace import branch_workspace_ref
 
@@ -26,11 +26,14 @@ class GitHubPrMakerFollowUpPoller:
         *,
         store: GitHubPrMakerStore,
         runtime: PluginRuntime,
+        github: GitHubIntegrationConfig | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.runtime = runtime
-        self.github = GitHubIntegrationConfig.model_validate(runtime.config.integrations.get("github") or {})
+        self.github = github or github_integration_from_config(
+            runtime.config.integrations.get("github"), cwd=runtime.config.state_dir
+        )
         self._stop = asyncio.Event()
 
     async def run_forever(self) -> None:

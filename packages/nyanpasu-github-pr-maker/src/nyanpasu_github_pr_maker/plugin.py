@@ -51,13 +51,17 @@ class GitHubPrMakerPlugin:
         if not isinstance(config, GitHubPrMakerConfig):
             config = GitHubPrMakerConfig.model_validate(config)
         self.runtime = runtime
-        self.github = github_integration_from_config(runtime.config.integrations.get("github"))
+        self.github = github_integration_from_config(
+            runtime.config.integrations.get("github"), cwd=runtime.config.state_dir
+        )
         self.config = config
         self.store = GitHubPrMakerStore(runtime.config.db_path)
         runtime.add_router(self._router(), prefix="/plugins/github-pr-maker", tags=["github-pr-maker"])
         runtime.add_post_process_hook(self.id, self._post_process)
         if config.follow_up_enabled:
-            self.follow_up_poller = GitHubPrMakerFollowUpPoller(config, store=self.store, runtime=runtime)
+            self.follow_up_poller = GitHubPrMakerFollowUpPoller(
+                config, store=self.store, runtime=runtime, github=self.github
+            )
             self.follow_up_task = asyncio.create_task(self.follow_up_poller.run_forever())
         logger.info("github pr maker plugin started repos={}", ",".join(config.repos))
 

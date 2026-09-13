@@ -52,13 +52,14 @@ class GitHubReviewerPlugin:
     async def setup(self, runtime: PluginRuntime, config: BaseModel | dict[str, Any]) -> None:
         if not isinstance(config, GitHubReviewerConfig):
             config = GitHubReviewerConfig.model_validate(config)
-        self.github = github_integration_from_config(runtime.config.integrations.get("github"))
+        self.github = github_integration_from_config(
+            runtime.config.integrations.get("github"), cwd=runtime.config.state_dir
+        )
         config = config.model_copy(update={"gh_env": self.github.gh_env()})
         self.config = config
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
         runtime.add_router(self._router(), prefix="/plugins/github-reviewer", tags=["github-reviewer"])
-        runtime.add_post_process_hook(self.id, self._post_process)
         if config.poll_enabled:
             self.poller = GitHubEventsPoller(
                 config,
@@ -95,9 +96,6 @@ class GitHubReviewerPlugin:
         if self.poller is not None:
             await self.poller.shutdown()
         logger.info("github reviewer plugin shutdown finished")
-
-    async def _post_process(self, task: AgentTask, result) -> None:
-        _ = task, result
 
     def _router(self) -> APIRouter:
         router = APIRouter()

@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from nyanpasu.config import EnvCommand
+from nyanpasu.environment import resolve_env_value
 
 
 class GitHubModel(BaseModel):
@@ -12,17 +15,31 @@ class GitHubModel(BaseModel):
 
 
 class GitHubIntegrationConfig(GitHubModel):
-    token: str | None = None
+    """GitHub settings with credentials resolved when the plugin starts."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+
+    token: str | None = Field(default=None, repr=False)
     token_env: str | None = None
     git_author_name: str | None = None
     git_author_email: str | None = None
+
+    @field_validator("token", "token_env")
+    @classmethod
+    def _nonempty_credential(cls, value: str | None) -> str | None:
+        if value is not None and (not value or "\0" in value):
+            raise ValueError("GitHub credential settings must be nonempty and contain no NUL")
+        return value
 
     @property
     def resolved_token(self) -> str | None:
         if self.token:
             return self.token
         if self.token_env:
-            return os.getenv(self.token_env)
+            token = os.getenv(self.token_env)
+            if not token:
+                raise ValueError(f"integrations.github.token_env: {self.token_env} is missing or empty")
+            return token
         return None
 
     def gh_env(self) -> dict[str, str] | None:
@@ -47,8 +64,7 @@ class GitHubIntegrationConfig(GitHubModel):
         if self.token:
             return (
                 "A GitHub token is configured for plugin-side GitHub API calls, but token values are not embedded in "
-                "agent prompts. Use ambient `gh auth` for agent GitHub writes, or configure `token_env` and "
-                "`codex.pass_env`.",
+                "agent prompts. Configure `codex.env` or `codex.pass_env` for agent GitHub writes.",
             )
         return ("Use ambient `gh auth` for GitHub CLI writes. If authentication is missing, stop and report it.",)
 
@@ -129,8 +145,21 @@ def repo_configs_from_settings(repos: dict[str, GitHubRepoSettings]) -> dict[str
     }
 
 
-def github_integration_from_config(raw: dict[str, Any] | None) -> GitHubIntegrationConfig:
-    return GitHubIntegrationConfig.model_validate(raw or {})
+def github_integration_from_config(raw: dict[str, Any] | None, *, cwd: Path | None = None) -> GitHubIntegrationConfig:
+    settings = dict(raw or {})
+    source = settings.get("token")
+    if source is not None and settings.get("token_env") is not None:
+        raise ValueError("integrations.github: configure either token or token_env")
+    command = EnvCommand.model_validate(source) if isinstance(source, dict) else None
+    if command is not None:
+        settings["token"] = None
+    config = GitHubIntegrationConfig.model_validate(settings)
+    token = (
+        resolve_env_value(command, name="integrations.github.token", cwd=cwd or Path.cwd(), env=dict(os.environ))
+        if command is not None
+        else config.resolved_token
+    )
+    return config.model_copy(update={"token": token})
 
 
 def as_str_tuple(value: Any) -> tuple[str, ...]:

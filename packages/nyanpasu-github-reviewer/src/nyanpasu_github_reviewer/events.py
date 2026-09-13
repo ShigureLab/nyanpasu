@@ -196,6 +196,15 @@ def parse_github_event(
                 raw=payload,
             )
         pr = _issue_pr_ref(payload)
+        if agent_login and _comment_author(payload).casefold() == agent_login.casefold():
+            return ReviewEvent(
+                delivery_id=delivery_id,
+                github_event=github_event,
+                action=ReviewAction.IGNORED,
+                pr=pr,
+                after_sha=None,
+                raw=payload,
+            )
         body = str(comment.get("body") or "") if isinstance(comment, dict) else ""
         if action_name in {"created", "edited"} and _mentions_login(body, agent_login):
             raw = _comment_context(

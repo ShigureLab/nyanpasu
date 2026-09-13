@@ -86,7 +86,16 @@ base_branches = ["main"]
 
 Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking Codex. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
 
-Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. For GitHub, `token_env` is preferred over writing a token directly in TOML. If neither `token` nor `token_env` is set, GitHub plugins fall back to the ambient `gh auth` state.
+Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. GitHub plugins accept a literal `token`, a command-backed `token`, or `token_env`. Configure only one source. Credentials are resolved when each plugin starts and reused for its lifetime. A configured environment variable that is missing or empty prevents startup. If neither `token` nor `token_env` is set, GitHub plugins use the ambient `gh auth` state.
+
+To pin plugin-side API calls to one locally authenticated account without storing a token in TOML:
+
+```toml
+[integrations.github]
+token = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
+```
+
+Token commands follow the same execution, validation, and error reporting rules as `codex.env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
 
 Agent-driven GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
 
@@ -103,7 +112,7 @@ For a static value, use `GH_TOKEN = "your-token"` instead. Values in `codex.env`
 
 Commands run once when the service is created, with the original service environment and `NYANPASU_HOME` as the working directory. Arguments are passed directly without a shell, and commands cannot reference other `codex.env` entries. Only trailing CR/LF characters are removed from stdout. A command that cannot start, exits unsuccessfully, exceeds 10 seconds, or returns empty, invalid UTF-8, or NUL-containing output prevents startup. Errors identify the variable and failure without including command output. Resolved values stay in memory and are reused for every Codex turn, including app-server restarts; restart Nyanpasu to refresh them.
 
-`codex.env` only affects Codex child processes. It does not modify the service environment or configure plugin-side GitHub credentials: `integrations.github.token_env` still reads the service's environment. Pinning `GH_TOKEN` this way prevents local `gh auth switch` from changing the account used by Codex.
+`codex.env` only affects Codex child processes. It does not modify the service environment or configure plugin-side GitHub credentials: `integrations.github.token_env` reads the service's environment at plugin startup. Configure both `codex.env.GH_TOKEN` and `integrations.github.token` for the same account when the agent and plugin need to publish as one bot. Pinning credentials this way prevents local `gh auth switch` from changing the account used by a running service.
 
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
 
@@ -175,6 +184,8 @@ POST /plugins/github-reviewer/webhook
 ```
 
 The plugin can also start its poller during plugin setup. GitHub reviewer polling combines repository events, PR state polling, and PR timeline polling into one event journal: the first poll records current cursors and PR snapshots without handling older work, later polls process matching events after those cursors, and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` means dispatch every matching journal event in the poll window; set it to a positive number only when you intentionally want a per-cycle cap.
+
+The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain a named PR dashboard comment with review status, conclusions, and links to finding threads. See the [review dashboard workflow](packages/nyanpasu-github-reviewer/README.md#review-dashboard) for setup and update rules.
 
 The GitHub PR maker plugin mounts:
 

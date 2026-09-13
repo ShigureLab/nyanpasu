@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import anyio
 import typer
@@ -17,7 +17,10 @@ from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_t
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
-app = typer.Typer(no_args_is_help=True)
+if TYPE_CHECKING:
+    from pathlib import Path
+
+app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS Z}</green> | "
     "<level>{level: <8}</level> | "
@@ -38,8 +41,10 @@ def review(
 ) -> None:
     configure_logging()
     core_config = load_config()
-    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}), core_config.integrations)
     ensure_state_dirs(core_config)
+    plugin_config = _plugin_config(
+        core_config.plugins.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
+    )
     task = manual_event_task(plugin_config, repo, pr)
 
     async def run() -> None:
@@ -66,8 +71,10 @@ def poll(
 ) -> None:
     configure_logging()
     core_config = load_config()
-    plugin_config = _plugin_config(core_config.plugins.get("github_reviewer", {}), core_config.integrations)
     ensure_state_dirs(core_config)
+    plugin_config = _plugin_config(
+        core_config.plugins.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
+    )
     repos = tuple(repo or plugin_config.repos)
     unknown = sorted(set(repos) - set(plugin_config.repos))
     if unknown:
@@ -120,8 +127,10 @@ def poll(
     anyio.run(run)
 
 
-def _plugin_config(raw: dict[str, object], integrations: dict[str, dict[str, object]]) -> GitHubReviewerConfig:
-    github = github_integration_from_config(integrations.get("github"))
+def _plugin_config(
+    raw: dict[str, object], integrations: dict[str, dict[str, object]], *, cwd: Path
+) -> GitHubReviewerConfig:
+    github = github_integration_from_config(integrations.get("github"), cwd=cwd)
     return GitHubReviewerConfig.model_validate(raw).model_copy(update={"gh_env": github.gh_env()})
 
 

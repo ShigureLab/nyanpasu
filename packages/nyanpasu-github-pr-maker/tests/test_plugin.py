@@ -43,6 +43,7 @@ class FakeAgent:
 
 @pytest.mark.anyio
 async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NYANPASU_TEST_GH_TOKEN", "test-token")
     agent_tasks_module = importlib.import_module("nyanpasu_github.agent_tasks")
     monkeypatch.setattr(agent_tasks_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     config = NyanpasuConfig(

@@ -369,5 +369,8 @@ def test_review_prompt_does_not_hardcode_repo_specific_authors(tmp_path: Path) -
 def test_review_prompt_dry_run_disables_posting(tmp_path: Path) -> None:
     prompt = build_review_prompt(_config(tmp_path, dry_run=True, post_reviews=False), _event(), "/tmp/worktree")
 
-    assert "DRY RUN: do not run review-comment or review-submit" in prompt
-    assert "report the review you would have posted" in prompt
+    assert (
+        "DRY RUN: do not write to GitHub, including review comments, thread replies, reviews, or the gh-slate dashboard"
+        in prompt
+    )
+    assert "report what you would have posted" in prompt

@@ -86,7 +86,7 @@ def test_command_timeout_is_bounded_and_does_not_expose_output(tmp_path: Path, m
         kwargs["timeout"] = 0.1
         return run(*args, **kwargs)
 
-    monkeypatch.setattr("nyanpasu.codex.subprocess.run", short_timeout)
+    monkeypatch.setattr("nyanpasu.environment.subprocess.run", short_timeout)
     config = NyanpasuConfig(
         state_dir=tmp_path,
         codex=CodexConfig(

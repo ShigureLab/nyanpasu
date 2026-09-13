@@ -65,6 +65,24 @@ uv run nyanpasu-github-reviewer review owner/repo 123
 
 The poller combines repository events, PR state polling, and PR timeline polling into one event journal. The first run records the current cursors and snapshots without processing older work; later runs process filtered events after those cursors. Already journaled events and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` dispatches every matching journal event in the poll window; a positive value is an explicit per-cycle cap.
 
+## Review Dashboard
+
+The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install both in the environment used by Codex, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install), and verify `gh-slate --version`.
+
+```toml
+[codex.env]
+GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
+
+[plugins.github_reviewer]
+github_login = "your-bot-login"
+```
+
+The agent follows the skill to read existing slate data, choose a rendering definition for the first creation, preview changes, publish with the observed revision, and verify the result. It reuses the same comment and definition on follow-up reviews. The dashboard contains the analyzed head SHA, review status and conclusion, and links to canonical finding threads with their resolution status. Detailed findings remain in the review threads.
+
+When a review warrants a visible update, the agent updates the dashboard while reviewing and again with the outcome before finishing. Automatic follow-ups with no new code, evidence, finding status, or explicit request leave it unchanged. `dry_run = true` or `post_reviews = false` prohibits all GitHub writes, including dashboard updates. Comments authored by the bot are ignored by event handling, preventing self-triggered review tasks.
+
+Publication receipts and failures are available through the agent's tool output and final message in the session transcript. If the agent is interrupted before updating the dashboard, inspect its task record; the service does not publish on its behalf.
+
 ## Webhook-Like Polling Design
 
 Webhook delivery is the reference behavior for this plugin. A GitHub webhook gives every event a concrete event type, action, payload, and delivery id. Polling must approximate that event stream before handing work to Nyanpasu; it should not directly dispatch raw poll results.
