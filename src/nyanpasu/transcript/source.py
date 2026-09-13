@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from nyanpasu.transcript.adapters import display, item_snapshot
+import anyio.to_thread as to_thread
+
+from nyanpasu.transcript.adapters import item_snapshot
 from nyanpasu.transcript.content import PREVIEW_BYTES, content_ref, fingerprint, redact
 from nyanpasu.transcript.models import Coverage, Source, TranscriptBlock, TranscriptEntry
 
@@ -25,6 +29,39 @@ def iso_time(timestamp: float | None = None) -> str:
     return value.isoformat()
 
 
+def item_times(thread: dict[str, Any]) -> dict[tuple[str, str], dict[str, str | None]]:
+    """Read timing annotations from Codex's own rollout, without copying its journal."""
+    path = thread.get("path")
+    if path is None:
+        return {}
+    times = {}
+    try:
+        with Path(path).open(encoding="utf-8") as rollout:
+            for line in rollout:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    if not line.endswith("\n"):
+                        break  # Codex may still be appending the last record.
+                    raise
+                payload = record.get("payload", {})
+                if record.get("type") != "event_msg" or payload.get("type") not in {"item_started", "item_completed"}:
+                    continue
+                if payload.get("thread_id") != thread["id"]:
+                    continue
+                started, completed = payload.get("started_at_ms"), payload.get("completed_at_ms")
+                times[(payload["turn_id"], payload["item"]["id"])] = {
+                    "started_at": iso_time(started / 1000) if started is not None else None,
+                    "completed_at": iso_time(completed / 1000) if completed is not None else None,
+                    "recorded_at": record["timestamp"],
+                }
+    except OSError:
+        # Ephemeral sessions and a rollout being archived can have no readable path.
+        # The UI marks unavailable times rather than substituting the page read time.
+        return {}
+    return times
+
+
 @dataclass(frozen=True)
 class Snapshot:
     """A request-local view of Codex data. Nothing here is written to disk."""
@@ -33,7 +70,6 @@ class Snapshot:
     turns: tuple[dict[str, Any], ...]
     entries: tuple[TranscriptEntry, ...]
     contents: dict[str, str]
-    originals: dict[str, str]
     read_at: str
 
     @property
@@ -62,16 +98,20 @@ class Snapshot:
 
 
 def make_snapshot(
-    thread: dict[str, Any], turns: list[dict[str, Any]], task_by_turn: dict[str, str], read_at: str
+    thread: dict[str, Any],
+    turns: list[dict[str, Any]],
+    task_by_turn: dict[str, str],
+    read_at: str,
+    times: dict[tuple[str, str], dict[str, str | None]],
 ) -> Snapshot:
     entries: list[TranscriptEntry] = []
     contents: dict[str, str] = {}
-    originals: dict[str, str] = {}
     session_id = thread["id"]
     for turn in turns:
         for original in turn["items"]:
             item = redact(original)
             update = item_snapshot(item)
+            timing = times.get((turn["id"], item["id"]), {})
             entry = TranscriptEntry(
                 entry_id=item["id"],
                 session_id=session_id,
@@ -79,10 +119,13 @@ def make_snapshot(
                 task_id=task_by_turn.get(turn["id"]),
                 turn_id=turn["id"],
                 first_seq=str(len(entries) + 1),
-                revision_seq=fingerprint(item),
+                revision_seq=fingerprint([item, timing]),
                 kind=update.kind or "unknown",
                 title=update.title or "Codex item",
                 observed_at=read_at,
+                started_at=timing.get("started_at"),
+                completed_at=timing.get("completed_at"),
+                recorded_at=timing.get("recorded_at"),
                 source=Source(backend="codex", version=thread.get("cliVersion"), origin="codex"),
                 coverage=Coverage(redacted=item != original, source_truncated=update.source_truncated),
             ).model_copy(update=update.fields())
@@ -101,12 +144,8 @@ def make_snapshot(
                         recorded_bytes=len(data),
                     )
                 )
-            raw = display({"turnId": turn["id"], "item": item})
-            raw_ref = content_ref(session_id, entry.entry_id, "source", raw)
-            contents[raw_ref] = raw
-            originals[entry.entry_id] = raw_ref
             entries.append(entry)
-    return Snapshot(redact(thread), tuple(redact(turns)), tuple(entries), contents, originals, read_at)
+    return Snapshot(redact(thread), tuple(redact(turns)), tuple(entries), contents, read_at)
 
 
 async def read_snapshot(source: CodexSessionSource, thread_id: str, task_by_turn: dict[str, str]) -> Snapshot:
@@ -121,6 +160,7 @@ async def read_snapshot(source: CodexSessionSource, thread_id: str, task_by_turn
             cursor = page.get("nextCursor")
             if cursor is None:
                 break
+        times = await to_thread.run_sync(item_times, thread)
     except (OSError, RuntimeError, TimeoutError) as exc:
         raise SourceUnavailable(f"Cannot read this session from Codex: {exc}") from exc
-    return make_snapshot(thread, turns, task_by_turn, read_at)
+    return make_snapshot(thread, turns, task_by_turn, read_at, times)

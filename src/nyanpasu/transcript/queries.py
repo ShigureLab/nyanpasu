@@ -138,7 +138,7 @@ class TranscriptReader:
             "previous_session_id": None,
         }
 
-    def session(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    async def session(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
         tasks = self._tasks(session_id)
         data = self._session(session_id, tasks)
         data["tasks"] = []
@@ -153,17 +153,38 @@ class TranscriptReader:
                     "state": row["status"],
                     "cwd": row["event_worktree"],
                     "revision": workspace.get("revision"),
-                    "started_at": iso_time(row["created_at"]),
+                    "created_at": iso_time(row["created_at"]),
                     "ended_at": iso_time(row["updated_at"]) if row["status"] in {"completed", "failed"} else None,
                 }
             )
         data["has_more_tasks"] = offset + limit < len(tasks)
+        try:
+            thread = await self.source.read_thread(session_id)
+            data["codex"] = {
+                "id": thread["id"],
+                "cwd": thread.get("cwd"),
+                "model": thread.get("model"),
+                "provider": thread.get("modelProvider"),
+                "reasoning_effort": thread.get("reasoningEffort"),
+                "cli_version": thread.get("cliVersion"),
+                "created_at": iso_time(thread["createdAt"]),
+                "updated_at": iso_time(thread["updatedAt"]) if thread.get("updatedAt") else None,
+            }
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            data["codex"] = None
+            data["history_error"] = str(exc)
         return redact(data)
 
     @staticmethod
     def _change_position(snapshot: Snapshot) -> dict[str, Any]:
         latest = snapshot.turns[-1] if snapshot.turns else None
-        return {"turn": latest["id"] if latest else None, "revision": fingerprint(latest), "offset": 0}
+        return {
+            "turn": latest["id"] if latest else None,
+            "revision": fingerprint(
+                [latest, [entry.revision_seq for entry in snapshot.entries if latest and entry.turn_id == latest["id"]]]
+            ),
+            "offset": 0,
+        }
 
     async def window(
         self,
@@ -227,7 +248,7 @@ class TranscriptReader:
         unchanged = state == latest
         ids = {turn["id"] for turn in turns}
         candidates = [] if unchanged else [entry for entry in snapshot.entries if entry.turn_id in ids]
-        revision = fingerprint(turns)
+        revision = fingerprint([turns, [entry.revision_seq for entry in snapshot.entries if entry.turn_id in ids]])
         if state.get("page_revision") != revision:
             offset = 0
         values = take(candidates[offset:], limit)
@@ -263,45 +284,6 @@ class TranscriptReader:
 
     async def download(self, session_id: str, ref: str) -> str:
         return await self._content(session_id, ref)
-
-    async def events(
-        self,
-        session_id: str,
-        *,
-        after: str | None = None,
-        entry_id: str | None = None,
-        around: int | None = None,
-        limit: int = 50,
-        q: str = "",
-    ) -> dict[str, Any]:
-        snapshot = await self.snapshot(session_id)
-        purpose = "source:" + json.dumps([entry_id, q])
-        start = position(after, session_id, purpose) if after else max(0, (around or 1) - 1)
-        if not isinstance(start, int) or start < 0:
-            raise CursorError("Invalid source item cursor")
-        matches = []
-        for entry in snapshot.entries:
-            ref = snapshot.originals[entry.entry_id]
-            raw = snapshot.contents[ref]
-            if (not entry_id or entry.entry_id == entry_id) and (not q or q.casefold() in raw.casefold()):
-                matches.append(
-                    {
-                        "seq": entry.first_seq,
-                        "type": entry.title,
-                        "direction": "codex",
-                        "observed_at": snapshot.read_at,
-                        "entry_id": entry.entry_id,
-                        "content_ref": ref,
-                        "preview": raw.encode()[:4096].decode(errors="ignore"),
-                    }
-                )
-        values = [item for item in matches if int(item["seq"]) > start][:limit]
-        end = int(values[-1]["seq"]) if values else start
-        return {
-            "items": values,
-            "has_more": any(int(item["seq"]) > end for item in matches),
-            "next_cursor": cursor(session_id, purpose, end),
-        }
 
     async def search(
         self,
@@ -343,14 +325,17 @@ class TranscriptReader:
 
     async def export(self, session_id: str, format: str, task_id: str | None = None) -> str:
         snapshot = await self.snapshot(session_id)
+        if format == "jsonl":
+            turns = {entry.turn_id for entry in snapshot.entries if not task_id or entry.task_id == task_id}
+            return "".join(
+                json.dumps({"turnId": turn["id"], "item": item}, ensure_ascii=False) + "\n"
+                for turn in snapshot.turns
+                if turn["id"] in turns
+                for item in turn["items"]
+            )
         output = []
         for entry in snapshot.entries:
             if task_id and entry.task_id != task_id:
-                continue
-            if format == "jsonl":
-                output.append(
-                    json.dumps(json.loads(snapshot.contents[snapshot.originals[entry.entry_id]]), ensure_ascii=False)
-                )
                 continue
             output.append(f"## {entry.title}\n\nTurn: {entry.turn_id}\n")
             for block in entry.blocks:
@@ -360,4 +345,4 @@ class TranscriptReader:
                 else:
                     fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
                     output.append(f"{fence}\n{text}\n{fence}")
-        return ("\n" if format == "jsonl" else "\n\n").join(output) + "\n"
+        return "\n\n".join(output) + "\n"

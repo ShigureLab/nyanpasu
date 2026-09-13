@@ -141,7 +141,7 @@ Open the dashboard to read session transcripts, inspect tool input/output and fa
 http://127.0.0.1:8765/dashboard
 ```
 
-Codex is the source for conversation history. Nyanpasu stores task scheduling metadata and thread/turn references; the dashboard reads messages and tool results through the Codex app-server API without a second conversation database. Tasks sharing a Codex thread appear in one session. Startup migrates existing task references and removes the old transcript tables and stored result bodies.
+Codex is the source for conversation history. Nyanpasu stores task scheduling metadata and thread/turn references; the dashboard reads messages and tool results through the Codex app-server API, and step timestamps from the native rollout referenced by Codex, without a second conversation database. Earlier and later entries load into the current conversation while preserving the reading position. Session metadata and task dates are visible, and runtime diagnostics are shown as timestamped log messages. Tasks sharing a Codex thread appear in one session. Startup migrates existing task references and removes the old transcript tables and stored result bodies.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:

@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from './api-types';
+import type { TranscriptEntry, TranscriptWindow } from './api-types';
 
 export function mergeEntries(
   current: readonly TranscriptEntry[],
@@ -53,10 +53,43 @@ export function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): voi
       entry.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset;
 }
 
+export type WindowBounds = Pick<
+  TranscriptWindow,
+  'generation' | 'before_cursor' | 'after_window_cursor' | 'has_older' | 'has_newer'
+>;
 export interface TranscriptState {
   entries: TranscriptEntry[];
   unread: Set<string>;
-  reloadWindow: boolean;
+  bounds: WindowBounds | null;
+}
+
+export function applyWindow(
+  state: TranscriptState,
+  page: TranscriptWindow,
+  mode: 'replace' | 'older' | 'newer',
+): TranscriptState {
+  const { generation, before_cursor, after_window_cursor, has_older, has_newer } = page;
+  const bounds = { generation, before_cursor, after_window_cursor, has_older, has_newer };
+  if (mode === 'replace' || !state.bounds) {
+    return {
+      entries: mergeEntries(
+        page.entries,
+        state.entries.filter((entry) =>
+          page.entries.some((item) => item.entry_id === entry.entry_id),
+        ),
+      ),
+      unread: state.unread,
+      bounds,
+    };
+  }
+  return {
+    ...state,
+    entries: mergeEntries(state.entries, page.entries),
+    bounds:
+      mode === 'older'
+        ? { ...state.bounds, before_cursor, has_older }
+        : { ...state.bounds, after_window_cursor, has_newer },
+  };
 }
 
 export function applyChanges(
@@ -65,15 +98,15 @@ export function applyChanges(
   follow: boolean,
 ): TranscriptState {
   const updates = countUpdates(state.entries, incoming);
+  if (updates.length === 0) return state;
   const visible = follow
     ? incoming
     : incoming.filter((entry) =>
         state.entries.some((current) => current.entry_id === entry.entry_id),
       );
-  const merged = mergeEntries(state.entries, visible);
   return {
-    entries: merged.slice(-300),
+    ...state,
+    entries: mergeEntries(state.entries, visible),
     unread: follow ? state.unread : new Set([...state.unread, ...updates]),
-    reloadWindow: follow && merged.length > 300,
   };
 }

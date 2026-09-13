@@ -45,8 +45,8 @@ def dashboard_router(
         return reader.sessions(q, state, context, offset, limit)
 
     @router.get("/sessions/{session_id}")
-    def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):
-        return reader.session(session_id, offset, limit)
+    async def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):
+        return await reader.session(session_id, offset, limit)
 
     @router.get("/sessions/{session_id}/transcript", response_model=TranscriptWindow | TranscriptChanges)
     async def transcript(
@@ -69,20 +69,6 @@ def dashboard_router(
     @router.get("/sessions/{session_id}/entries/{entry_id}", response_model=TranscriptEntry)
     async def entry(session_id: str, entry_id: str):
         return await reader.entry(session_id, entry_id)
-
-    @router.get("/sessions/{session_id}/events")
-    async def events(
-        session_id: str,
-        after: str | None = None,
-        entry: str | None = None,
-        around: Annotated[int | None, Query(ge=1)] = None,
-        limit: PageSize = 50,
-        q: Search = "",
-    ):
-        try:
-            return await reader.events(session_id, after=after, entry_id=entry, around=around, limit=limit, q=q)
-        except CursorError as exc:
-            raise HTTPException(exc.status, str(exc)) from exc
 
     @router.get("/sessions/{session_id}/search")
     async def search(
@@ -122,7 +108,6 @@ def dashboard_router(
 
     @router.get("/sessions/{session_id}/export")
     async def export(session_id: str, format: Literal["markdown", "jsonl"] = "markdown", task: str | None = None):
-        reader.session(session_id, limit=1)
         return Response(
             await reader.export(session_id, format, task),
             media_type="text/plain",

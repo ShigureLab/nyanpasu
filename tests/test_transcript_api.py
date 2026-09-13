@@ -34,8 +34,6 @@ async def test_search_download_export_and_validation_use_native_content(tmp_path
         assert hit["entry_id"] == "tool"
         content = await client.get(f"{base}/content/{hit['content_ref']}", params={"offset": hit["offset"]})
         assert content.json()["text"].startswith("NEEDLE")
-        raw_search = await client.get(f"{base}/events", params={"q": "NEEDLE"})
-        assert raw_search.json()["items"][0]["entry_id"] == "tool"
         downloaded = await client.get(f"{base}/content/{hit['content_ref']}?download=true")
         assert downloaded.text == text
         exported = await client.get(f"{base}/export?format=jsonl")
@@ -44,7 +42,7 @@ async def test_search_download_export_and_validation_use_native_content(tmp_path
         assert (await client.get("/api/tasks/task")).json()["entry_id"] == "tool"
         assert (await client.get("/api/sessions/missing")).status_code == 404
         assert (await client.get(f"{base}/transcript", params={"limit": 10000})).status_code == 422
-        assert (await client.get(f"{base}/events", params={"after": "invalid"})).status_code == 400
+        assert (await client.get(f"{base}/events")).status_code == 404
         assert (await client.get(f"{base}/content/invalid")).status_code == 400
         source.turns[0]["items"][0]["aggregatedOutput"] = "changed at source"
         assert (await client.get(f"{base}/content/{hit['content_ref']}")).status_code == 409

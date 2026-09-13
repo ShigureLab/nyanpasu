@@ -36,7 +36,7 @@ async def test_sessions_group_native_threads_and_read_every_source_page(history)
         state.bind_task_execution(task_id, "thread", f"turn-{index}")
         source.turns.append(turn(f"turn-{index}", tool(f"item-{index}", str(index))))
     assert reader.sessions()["total"] == 1
-    assert reader.session("thread")["task_count"] == 4
+    assert (await reader.session("thread"))["task_count"] == 4
     window = TranscriptWindow.model_validate(await reader.window("thread"))
     assert window.session_id == "thread"
     assert len(window.entries) == 4
@@ -138,3 +138,36 @@ async def test_source_redaction_and_unknown_items_remain_inspectable(history):
     assert window["coverage"]["redacted"]
     exported = await reader.export("thread", "jsonl")
     assert "ghp_" not in exported and "newCodexItem" in exported
+
+
+@pytest.mark.anyio
+async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visible(history, tmp_path: Path):
+    _, source, reader = history
+    path = tmp_path / "rollout.jsonl"
+    source.metadata = {"path": str(path), "cwd": "/native/worktree", "model": "native-model"}
+    initial = await reader.window("thread")
+    assert initial["entries"][0]["started_at"] is None
+    record = {
+        "timestamp": "2026-09-14T00:00:02Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "thread_id": "thread",
+            "turn_id": "turn-1",
+            "item": {"id": "a"},
+            "started_at_ms": 1789344000123,
+            "completed_at_ms": 1789344002456,
+        },
+    }
+    path.write_text(json.dumps(record) + '\n{"partial":')
+    changes = await reader.window("thread", after=initial["change_cursor"])
+    entry = changes["changes"][0]["upserts"][0]
+    assert entry["started_at"] == "2026-09-14T00:00:00.123000+00:00"
+    assert entry["completed_at"] == "2026-09-14T00:00:02.456000+00:00"
+    assert entry["recorded_at"] != entry["observed_at"]
+    detail = await reader.session("thread")
+    assert detail["codex"]["model"] == "native-model"
+    assert detail["codex"]["cwd"] == "/native/worktree"
+    record["payload"]["thread_id"] = "other-thread"
+    path.write_text(json.dumps(record) + "\n")
+    assert (await reader.entry("thread", "a"))["started_at"] is None

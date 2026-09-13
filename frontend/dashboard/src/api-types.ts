@@ -37,6 +37,9 @@ export interface TranscriptEntry {
   state: string;
   raw_state: string | null;
   observed_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  recorded_at: string | null;
   source: Source;
   source_item_id: string | null;
   blocks: TranscriptBlock[];

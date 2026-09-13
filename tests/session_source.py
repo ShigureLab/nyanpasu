@@ -7,13 +7,14 @@ from typing import Any
 class MemorySessionSource:
     """A stand-in for the external Codex API; the application never writes it."""
 
-    def __init__(self, turns: list[dict[str, Any]] | None = None):
+    def __init__(self, turns: list[dict[str, Any]] | None = None, *, metadata: dict[str, Any] | None = None):
         self.turns = turns or []
+        self.metadata = metadata or {}
         self.calls: list[tuple[str, str, str | None]] = []
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.calls.append(("read", thread_id, None))
-        return {"id": thread_id, "createdAt": 1, "cliVersion": "test"}
+        return {"id": thread_id, "createdAt": 1, "cliVersion": "test", **self.metadata}
 
     async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict[str, Any]:
         self.calls.append(("turns", thread_id, cursor))

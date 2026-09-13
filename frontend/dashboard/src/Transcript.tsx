@@ -4,17 +4,17 @@ import {
   get,
   query,
   useResource,
-  type EventPage,
   type Navigate,
   type Page,
   type SearchHit,
   type SessionDetail,
 } from './api';
 import { ContentBlock, Copy, Entry, Status } from './Entry';
+import { Time } from './Time';
 import {
   applyChanges,
   type TranscriptState,
-  mergeEntries,
+  applyWindow,
   readAnchor,
   restoreAnchor,
   type ScrollAnchor,
@@ -37,12 +37,11 @@ export function Transcript({
 }) {
   const base = `/api/sessions/${session}`;
   const detail = useResource<SessionDetail>(base, live, refresh);
-  const [{ entries, unread, reloadWindow }, setTranscript] = useState<TranscriptState>({
+  const [{ entries, unread, bounds: window }, setTranscript] = useState<TranscriptState>({
     entries: [],
     unread: new Set(),
-    reloadWindow: false,
+    bounds: null,
   });
-  const [window, setWindow] = useState<TranscriptWindow | null>(null);
   const [error, setError] = useState('');
   const [received, setReceived] = useState('');
   const [busy, setBusy] = useState(true);
@@ -51,8 +50,9 @@ export function Transcript({
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOffset, setSearchOffset] = useState(0);
-  const [historyVersion, setHistoryVersion] = useState(0);
   const container = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const loadingHistory = useRef(false);
   const anchor = useRef<ScrollAnchor | null>(readingPositions.get(session) ?? null);
   const returnAnchor = useRef<ScrollAnchor | null>(null);
   const following = useRef(follow);
@@ -62,11 +62,8 @@ export function Transcript({
   const historyRequest = useRef(0);
   const active = useRef(true);
   const selected = selection.get('entry');
-  const mode = selection.get('mode') ?? 'conversation';
   const searchResults = useResource<Page<SearchHit>>(
-    searchQuery && mode === 'conversation'
-      ? query(`${base}/search`, { q: searchQuery, offset: searchOffset, kind })
-      : null,
+    searchQuery ? query(`${base}/search`, { q: searchQuery, offset: searchOffset, kind }) : null,
     false,
     refresh,
   );
@@ -76,26 +73,13 @@ export function Transcript({
     refresh,
     1000,
   );
-  const [eventCursor, setEventCursor] = useState<string | null>(null);
-  const eventPage = useResource<EventPage>(
-    mode === 'events'
-      ? query(`${base}/events`, {
-          after: eventCursor,
-          around: eventCursor ? null : selection.get('event'),
-          q: searchQuery,
-        })
-      : null,
-    live,
-    refresh,
-    1000,
-  );
-
   async function loadWindow(
     params: Record<string, string | null> = {},
     initial = false,
     position?: ScrollAnchor,
   ) {
     const request = ++historyRequest.current;
+    loadingHistory.current = true;
     setBusy(true);
     try {
       const value = await get<TranscriptWindow>(query(`${base}/transcript`, params));
@@ -105,28 +89,23 @@ export function Transcript({
       } else if (generation !== value.generation)
         throw new Error('Transcript generation changed. Reload this session.');
       if (container.current && !following.current) anchor.current = readAnchor(container.current);
-      setTranscript((current) => ({
-        entries:
-          initial && generation !== value.generation
-            ? value.entries
-            : mergeEntries(
-                value.entries,
-                current.entries.filter((entry) =>
-                  value.entries.some((loaded) => loaded.entry_id === entry.entry_id),
-                ),
-              ),
-        unread: current.unread,
-        reloadWindow: false,
-      }));
-      setWindow(value);
-      setHistoryVersion((version) => version + 1);
+      setTranscript((current) =>
+        applyWindow(
+          current,
+          value,
+          params.before ? 'older' : params.after_window ? 'newer' : 'replace',
+        ),
+      );
       setReceived(value.generated_at);
       setError('');
       if (params.around) anchor.current = position ?? { entryId: params.around, offset: 12 };
     } catch (error) {
       if (active.current && request === historyRequest.current) setError(String(error));
     } finally {
-      if (active.current && request === historyRequest.current) setBusy(false);
+      if (active.current && request === historyRequest.current) {
+        loadingHistory.current = false;
+        setBusy(false);
+      }
     }
   }
 
@@ -143,9 +122,14 @@ export function Transcript({
     };
   }, [session]);
 
-  useEffect(() => {
-    if (reloadWindow) void loadWindow();
-  }, [reloadWindow]);
+  function loadMore(direction: 'older' | 'newer') {
+    if (loadingHistory.current || !window) return;
+    const value = direction === 'older' ? window.before_cursor : window.after_window_cursor;
+    if (!value) return;
+    following.current = false;
+    setFollow(false);
+    void loadWindow(direction === 'older' ? { before: value } : { after_window: value });
+  }
 
   const previousRefresh = useRef(refresh);
   useEffect(() => {
@@ -216,10 +200,20 @@ export function Transcript({
   }, [selected, window !== null]);
 
   useLayoutEffect(() => {
-    if (!container.current) return;
-    if (following.current) container.current.scrollTop = container.current.scrollHeight;
-    else if (anchor.current) restoreAnchor(container.current, anchor.current);
-  }, [entries, historyVersion]);
+    const list = container.current;
+    const body = content.current;
+    if (!list || !body) return;
+    const restore = () => {
+      if (following.current && !document.getSelection()?.toString())
+        list.scrollTop = list.scrollHeight;
+      else if (anchor.current) restoreAnchor(list, anchor.current);
+    };
+    restore();
+    const observer = new ResizeObserver(restore);
+    observer.observe(body);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [entries]);
 
   useEffect(() => {
     if (!selected) return;
@@ -260,28 +254,60 @@ export function Transcript({
         <div>
           <span className="eyebrow">SESSION TRANSCRIPT</span>
           <h1>{detail.data?.title ?? 'Loading session…'}</h1>
-          <p>
-            <button
-              className="quiet"
-              onClick={() => navigate({ context: detail.data?.context_key ?? null })}
-            >
-              <code>{detail.data?.context_key ?? session}</code>
-            </button>{' '}
-            <span>· {detail.data?.backend}</span>
-          </p>
         </div>
         {detail.data && (
           <Status state={detail.data.execution_uncertain ? 'unconfirmed' : detail.data.state} />
         )}
       </header>
-      {detail.data?.previous_session_id && (
-        <button
-          className="quiet"
-          onClick={() => navigate({ session: detail.data!.previous_session_id, entry: null })}
-        >
-          ← Previous session in this context
-        </button>
-      )}
+      <dl className="session-metadata">
+        <div>
+          <dt>Codex session ID</dt>
+          <dd>
+            <code>{session}</code>
+            <Copy text={session} label="Copy session ID" />
+          </dd>
+        </div>
+        <div>
+          <dt>Context key</dt>
+          <dd>
+            <button
+              className="quiet"
+              onClick={() => navigate({ context: detail.data?.context_key ?? null })}
+            >
+              <code>{detail.data?.context_key ?? 'Loading…'}</code>
+            </button>
+          </dd>
+        </div>
+        {detail.data?.codex && (
+          <>
+            <div>
+              <dt>Model</dt>
+              <dd>
+                {detail.data.codex.model ?? 'Unavailable'}{' '}
+                <span className="subtle">{detail.data.codex.reasoning_effort}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Workspace</dt>
+              <dd>
+                <code>{detail.data.codex.cwd ?? 'Unavailable'}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>
+                <Time value={detail.data.codex.created_at} />
+              </dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd>
+                <Time value={detail.data.codex.updated_at} />
+              </dd>
+            </div>
+          </>
+        )}
+      </dl>
       {detail.error && (
         <p className="notice error" role="alert">
           {detail.error}
@@ -295,17 +321,6 @@ export function Transcript({
         </p>
       )}
       <div className="transcript-toolbar">
-        <div className="segmented" aria-label="Reading mode">
-          {['conversation', 'events'].map((value) => (
-            <button
-              key={value}
-              aria-pressed={mode === value}
-              onClick={() => navigate({ mode: value })}
-            >
-              {value === 'conversation' ? 'Conversation' : 'Source items'}
-            </button>
-          ))}
-        </div>
         <select
           aria-label="Go to task or turn"
           value={selection.get('task') ?? ''}
@@ -381,7 +396,6 @@ export function Transcript({
           event.preventDefault();
           setSearchOffset(0);
           setSearchQuery(search);
-          setEventCursor(null);
           setFollow(false);
         }}
       >
@@ -397,7 +411,6 @@ export function Transcript({
             type="button"
             onClick={() => {
               setSearchQuery('');
-              setEventCursor(null);
               setSearch('');
             }}
           >
@@ -408,7 +421,7 @@ export function Transcript({
           {received ? `Read ${new Date(received).toLocaleTimeString()}` : 'Loading…'}
         </span>
       </form>
-      {searchQuery && mode === 'conversation' && (
+      {searchQuery && (
         <div className="search-results">
           {searchResults.error && <p role="alert">{searchResults.error}</p>}
           {searchResults.data?.items.map((hit) => (
@@ -448,82 +461,61 @@ export function Transcript({
           tabIndex={0}
           aria-label="Session transcript"
           onWheel={(event) => {
-            if (event.deltaY < 0) setFollow(false);
+            if (event.deltaY < 0) {
+              following.current = false;
+              setFollow(false);
+            }
           }}
           onPointerDown={() => setFollow(false)}
-          onScroll={() => {
-            if (container.current) anchor.current = readAnchor(container.current);
+          onScroll={(event) => {
+            const list = event.currentTarget;
+            anchor.current = readAnchor(list);
+            if (following.current || loadingHistory.current || kind) return;
+            if (list.scrollTop < 80 && window?.has_older) loadMore('older');
+            else if (
+              list.scrollHeight - list.scrollTop - list.clientHeight < 80 &&
+              window?.has_newer
+            )
+              loadMore('newer');
           }}
         >
-          {mode === 'events' ? (
-            <div className="event-list">
-              {eventPage.error && <p className="notice error">{eventPage.error}</p>}
-              {eventPage.data?.items.map((event) => (
-                <article className="event" key={event.seq}>
-                  <div>
-                    <code>#{event.seq}</code> <strong>{event.type}</strong>{' '}
-                    <span>{event.direction}</span>
-                    <button onClick={() => navigate({ entry: event.entry_id, event: event.seq })}>
-                      Inspect
-                    </button>
+          <div className="transcript-content" ref={content}>
+            {window?.has_older && (
+              <button className="page-control" disabled={busy} onClick={() => loadMore('older')}>
+                {busy ? 'Loading…' : '↑ Load earlier entries'}
+              </button>
+            )}
+            {!window && busy && <p className="empty">Loading transcript…</p>}
+            {window && entries.length === 0 && (
+              <p className="empty">Codex has no conversation items for this session.</p>
+            )}
+            {visible.map((entry, index) => (
+              <div key={entry.entry_id}>
+                {(index === 0 || visible[index - 1]?.turn_id !== entry.turn_id) && (
+                  <div className="turn-divider">
+                    <span>
+                      {detail.data?.tasks.find((task) => task.task_id === entry.task_id)?.title ??
+                        entry.task_id ??
+                        'Codex turn'}
+                    </span>
+                    <code>{entry.turn_id ?? 'Turn ID not recorded'}</code>
                   </div>
-                  <pre>{event.preview}</pre>
-                  <a href={`${base}/content/${event.content_ref}?download=true`}>Full event ↓</a>
-                </article>
-              ))}
-              {eventPage.data?.has_more && (
-                <button onClick={() => setEventCursor(eventPage.data!.next_cursor)}>
-                  Next events
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="transcript-content">
-              {window?.has_older && (
-                <button
-                  className="page-control"
-                  onClick={() => {
-                    setFollow(false);
-                    void loadWindow({ before: window.before_cursor });
-                  }}
-                >
-                  ↑ Earlier entries
-                </button>
-              )}
-              {!window && busy && <p className="empty">Loading transcript…</p>}
-              {window && entries.length === 0 && (
-                <p className="empty">Codex has no conversation items for this session.</p>
-              )}
-              {visible.map((entry, index) => (
-                <div key={entry.entry_id}>
-                  {(index === 0 || visible[index - 1]?.task_id !== entry.task_id) && (
-                    <div className="turn-divider">
-                      <span>
-                        {detail.data?.tasks.find((task) => task.task_id === entry.task_id)?.title ??
-                          entry.task_id}
-                      </span>
-                      <code>{entry.turn_id ?? 'Turn ID not recorded'}</code>
-                    </div>
-                  )}
-                  <Entry
-                    entry={entry}
-                    navigate={navigate}
-                    selected={selected === entry.entry_id}
-                    expand={selected === entry.entry_id}
-                    focus={selected === entry.entry_id ? focus : undefined}
-                  />
-                </div>
-              ))}
-              {window?.has_newer && (
-                <button
-                  className="page-control"
-                  onClick={() => void loadWindow({ after_window: window.after_window_cursor })}
-                >
-                  Later entries ↓
-                </button>
-              )}
-            </div>
-          )}
+                )}
+                <Entry
+                  entry={entry}
+                  navigate={navigate}
+                  selected={selected === entry.entry_id}
+                  expand={selected === entry.entry_id}
+                  focus={selected === entry.entry_id ? focus : undefined}
+                />
+              </div>
+            ))}
+            {window?.has_newer && (
+              <button className="page-control" disabled={busy} onClick={() => loadMore('newer')}>
+                {busy ? 'Loading…' : 'Load later entries ↓'}
+              </button>
+            )}
+          </div>
         </div>
         {selected && (
           <aside className="inspector" role="dialog" aria-label="Entry details">
@@ -546,7 +538,9 @@ export function Transcript({
                     Thread: inspected.data.thread_id,
                     Turn: inspected.data.turn_id,
                     Source: inspected.data.source.origin,
-                    Observed: inspected.data.observed_at,
+                    Started: inspected.data.started_at,
+                    Completed: inspected.data.completed_at,
+                    Recorded: inspected.data.recorded_at,
                     Revision: inspected.data.revision_seq,
                   }).map(([key, value]) => (
                     <div key={key}>
@@ -559,14 +553,6 @@ export function Transcript({
                 </dl>
                 <Copy text={location.href} label="Copy link" />{' '}
                 <Copy text={JSON.stringify(inspected.data, null, 2)} label="Copy entry JSON" />
-                <button
-                  onClick={() => {
-                    setEventCursor(null);
-                    navigate({ mode: 'events', event: inspected.data!.first_seq });
-                  }}
-                >
-                  Original Codex item
-                </button>
                 {inspected.data.blocks.map((block) => (
                   <details key={block.block_id}>
                     <summary>{block.block_id}</summary>

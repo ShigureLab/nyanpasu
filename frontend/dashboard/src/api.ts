@@ -13,6 +13,7 @@ export interface Session {
   thread_id: string | null;
   state: string;
   backend: string;
+  created_at: string;
   updated_at: string;
   task_count: number;
   execution_uncertain: boolean;
@@ -27,13 +28,24 @@ export interface Turn {
   state: string;
   cwd: string | null;
   revision: string | null;
-  started_at: string;
+  created_at: string;
   ended_at: string | null;
 }
 export interface SessionDetail extends Session {
   tasks: Turn[];
   task_count: number;
   has_more_tasks: boolean;
+  codex: {
+    id: string;
+    cwd: string | null;
+    model: string | null;
+    provider: string | null;
+    reasoning_effort: string | null;
+    cli_version: string | null;
+    created_at: string;
+    updated_at: string | null;
+  } | null;
+  history_error?: string;
 }
 export interface Task {
   task_id: string;
@@ -45,7 +57,21 @@ export interface Task {
   coalesced_into: string | null;
   error: string | null;
   plugin_id: string;
+  created_at: number;
   updated_at: number;
+}
+export interface TaskDetail extends Omit<Task, 'title' | 'plugin_id'> {
+  entry_id: string | null;
+  turn_id: string | null;
+  event_worktree: string | null;
+  task: unknown;
+  history_error?: string;
+}
+export interface Diagnostic {
+  timestamp: string;
+  level: string;
+  target: string | null;
+  message: string;
 }
 export interface SearchHit {
   entry_id: string;
@@ -55,18 +81,6 @@ export interface SearchHit {
   block_id: string;
   content_ref: string;
   offset: number;
-}
-export interface EventRecord {
-  seq: string;
-  type: string;
-  direction: string;
-  observed_at: string;
-  entry_id: string;
-  content_ref: string;
-  preview: string;
-}
-export interface EventPage extends Page<EventRecord> {
-  next_cursor: string;
 }
 export interface ContentPage {
   text: string;

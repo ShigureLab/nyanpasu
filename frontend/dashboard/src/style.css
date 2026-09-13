@@ -334,23 +334,6 @@ small {
 .transcript-toolbar select {
   max-width: 200px;
 }
-.segmented {
-  display: flex;
-  margin-right: auto;
-}
-.segmented button {
-  border-radius: 0;
-}
-.segmented button:first-child {
-  border-radius: 5px 0 0 5px;
-}
-.segmented button:last-child {
-  border-radius: 0 5px 5px 0;
-}
-.segmented button[aria-pressed='true'] {
-  background: var(--hover);
-  color: var(--accent);
-}
 .transcript-search {
   display: flex;
   align-items: center;
@@ -670,30 +653,6 @@ dd code {
 .search-focus {
   box-shadow: inset 3px 0 var(--warning);
 }
-.event-list {
-  padding: 10px 25px;
-}
-.event {
-  margin-bottom: 16px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 12px;
-  background: var(--surface);
-  font-size: 11px;
-}
-.event > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-.event pre {
-  max-height: 220px;
-  padding: 10px 0;
-}
-.event span {
-  color: var(--muted);
-}
 .empty {
   padding: 28px 16px;
   color: var(--muted);
@@ -938,4 +897,146 @@ dd code {
 }
 .diff-hunk {
   color: var(--warning);
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.entry-timing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.entry-timing small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.session-metadata,
+.task-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  margin: 0;
+  padding: 0 25px 16px;
+  font-size: 11px;
+}
+.session-metadata > div,
+.task-metadata > div {
+  min-width: 0;
+}
+.session-metadata dt,
+.task-metadata dt {
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.session-metadata dd,
+.task-metadata dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.session-metadata code,
+.task-metadata code {
+  font-size: 11px;
+}
+.session-metadata .quiet {
+  padding: 0;
+  text-align: left;
+}
+.session-metadata button {
+  font-size: 10px;
+}
+.task-metadata {
+  padding: 18px 0;
+}
+.task-row > .task-times {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 5px;
+}
+.task-times > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.task-times span {
+  width: 44px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.diagnostics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 28px;
+}
+.diagnostics-heading h2 {
+  margin: 0;
+}
+.diagnostic-list {
+  margin-top: 16px;
+}
+.diagnostic {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.diagnostic header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.diagnostic header code {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.diagnostic-level {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.diagnostic-level.error {
+  color: var(--error);
+}
+.diagnostic-level.warn {
+  color: var(--warning);
+}
+.diagnostic-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+@media (max-width: 700px) {
+  .session-metadata,
+  .task-metadata {
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .session-metadata {
+    padding-inline: 16px;
+    max-height: 160px;
+    overflow: auto;
+  }
+  .entry-heading {
+    flex-wrap: wrap;
+  }
+  .entry-timing {
+    align-items: flex-start;
+  }
+  .task-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .task-row > .task-times {
+    flex-basis: 100%;
+  }
 }

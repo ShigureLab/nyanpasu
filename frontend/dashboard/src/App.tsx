@@ -8,9 +8,12 @@ import {
   type Page,
   type Session,
   type Task,
+  type TaskDetail,
+  type Diagnostic,
 } from './api';
 import { Copy, Status } from './Entry';
 import { Transcript } from './Transcript';
+import { Time } from './Time';
 
 interface Overview {
   service: string;
@@ -29,7 +32,7 @@ interface Runtime {
   backend: string;
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
-  diagnostics: unknown[];
+  diagnostics: Diagnostic[];
 }
 
 export function App() {
@@ -157,20 +160,18 @@ export function App() {
                         block: null,
                         content: null,
                         offset: null,
-                        event: null,
                       });
                       setIndexOpen(false);
                     }}
                   >
                     <div>
                       <Status state={item.execution_uncertain ? 'unconfirmed' : item.state} />
-                      <span>{new Date(item.updated_at).toLocaleDateString()}</span>
+                      <Time value={item.updated_at} label="Updated" />
                     </div>
                     <strong>{item.title}</strong>
                     <code>{item.context_key}</code>
                     <small>
-                      {item.task_count} tasks ·{' '}
-                      {item.origin === 'legacy-result' ? 'Imported history' : item.backend}
+                      {item.task_count} tasks · {item.backend}
                     </small>
                   </button>
                 ))}
@@ -252,7 +253,7 @@ function Tasks({
     refresh,
   );
   const taskId = selection.get('task');
-  const detail = useResource<Record<string, unknown>>(
+  const detail = useResource<TaskDetail>(
     taskId ? `/api/tasks/${encodeURIComponent(taskId)}` : null,
     live,
     refresh,
@@ -317,6 +318,16 @@ function Tasks({
               {task.coalesced_into ? ' · coalesced' : ''}
             </span>
             <span>{task.plugin_id}</span>
+            <div className="task-times">
+              <div>
+                <span>Created</span>
+                <Time value={task.created_at} />
+              </div>
+              <div>
+                <span>Updated</span>
+                <Time value={task.updated_at} />
+              </div>
+            </div>
             <span>→</span>
           </button>
         ))}
@@ -360,8 +371,38 @@ function Tasks({
                   Open transcript →
                 </button>
               )}
-              <Copy text={JSON.stringify(detail.data, null, 2)} label="Copy task JSON" />
-              <pre>{JSON.stringify(detail.data, null, 2)}</pre>
+              <dl className="task-metadata">
+                <div>
+                  <dt>Task ID</dt>
+                  <dd>
+                    <code>{detail.data.task_id}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Context key</dt>
+                  <dd>
+                    <code>{detail.data.context_key}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Created</dt>
+                  <dd>
+                    <Time value={detail.data.created_at} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Updated</dt>
+                  <dd>
+                    <Time value={detail.data.updated_at} />
+                  </dd>
+                </div>
+              </dl>
+              {detail.data.error && <p className="notice error">{detail.data.error}</p>}
+              <details>
+                <summary>Task data</summary>
+                <Copy text={JSON.stringify(detail.data, null, 2)} label="Copy task JSON" />
+                <pre>{JSON.stringify(detail.data, null, 2)}</pre>
+              </details>
             </>
           )}
         </section>
@@ -418,6 +459,10 @@ function RuntimeView({
   refresh: number;
 }) {
   const data = useResource<Runtime>('/api/runtime', live, refresh);
+  const [level, setLevel] = useState('');
+  const diagnostics = (data.data?.diagnostics ?? []).filter(
+    (item) => !level || item.level === level,
+  );
   return (
     <section className="full-view">
       <span className="eyebrow">SERVICE OBSERVATIONS</span>
@@ -450,9 +495,37 @@ function RuntimeView({
               </button>
             </div>
           ))}
-          <h2>Backend diagnostics</h2>
-          <p className="subtle">Recent backend diagnostics, held in memory.</p>
-          <pre>{JSON.stringify(data.data.diagnostics, null, 2)}</pre>
+          <div className="diagnostics-heading">
+            <h2>Backend diagnostics</h2>
+            <select
+              aria-label="Diagnostic level"
+              value={level}
+              onChange={(event) => setLevel(event.target.value)}
+            >
+              <option value="">All levels</option>
+              {['error', 'warn', 'info', 'debug', 'trace', 'stderr'].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
+          </div>
+          <p className="subtle">Recent backend log messages. Times use your local timezone.</p>
+          <div className="diagnostic-list">
+            {diagnostics.length === 0 && (
+              <p className="empty">
+                {level ? 'No matching diagnostics.' : 'No backend diagnostics.'}
+              </p>
+            )}
+            {diagnostics.map((item, index) => (
+              <article className="diagnostic" key={`${item.timestamp}:${index}`}>
+                <header>
+                  <Time value={item.timestamp} />
+                  <span className={`diagnostic-level ${item.level}`}>{item.level}</span>
+                  {item.target && <code>{item.target}</code>}
+                </header>
+                <div className="diagnostic-message">{item.message}</div>
+              </article>
+            ))}
+          </div>
         </>
       )}
     </section>

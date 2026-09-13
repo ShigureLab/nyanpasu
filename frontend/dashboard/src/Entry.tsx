@@ -1,3 +1,4 @@
+import { Time, duration } from './Time';
 import { memo, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -254,6 +255,27 @@ export const Entry = memo(function Entry({
           <span aria-hidden="true">{open ? '▾' : '▸'}</span>
         </button>
         <Status state={entry.state} />
+        <div className="entry-timing">
+          <Time
+            value={entry.started_at ?? entry.completed_at ?? entry.recorded_at}
+            label={entry.started_at ? 'Started' : entry.completed_at ? 'Completed' : 'Recorded'}
+          />
+          {(entry.duration_ms != null || (entry.started_at && entry.completed_at)) && (
+            <small
+              title={
+                entry.completed_at
+                  ? `Completed: ${new Date(entry.completed_at).toLocaleString()}`
+                  : undefined
+              }
+            >
+              {duration(
+                entry.duration_ms ??
+                  Date.parse(entry.completed_at!) - Date.parse(entry.started_at!),
+              )}
+              {entry.completed_at ? ' · completed' : ''}
+            </small>
+          )}
+        </div>
         <button
           className="quiet"
           onClick={() =>
@@ -268,7 +290,6 @@ export const Entry = memo(function Entry({
         <div className="entry-meta">
           {entry.cwd && <code>{entry.cwd}</code>}
           <span>exit {entry.exit_code ?? 'unknown'}</span>
-          {entry.duration_ms !== null && <span>{entry.duration_ms} ms</span>}
         </div>
       )}
       {entry.kind === 'attachment' && (

@@ -76,6 +76,9 @@ class TranscriptEntry(ContractModel):
     state: str = "unknown"
     raw_state: str | None = None
     observed_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    recorded_at: str | None = None
     source: Source
     source_item_id: str | None = None
     blocks: list[TranscriptBlock] = Field(default_factory=list)

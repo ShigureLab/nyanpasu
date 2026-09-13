@@ -72,9 +72,7 @@ test('live updates preserve the reading anchor; pause and explicit refresh are i
   await expect(page.getByRole('button', { name: 'Ⅱ Paused', exact: true })).toBeVisible();
 });
 
-test('full-content search, entry deep link and original event remain readable', async ({
-  page,
-}) => {
+test('full-content search, entry deep link and timestamps remain readable', async ({ page }) => {
   await page.goto('/dashboard?context=demo%3Atranscript');
   await page.getByRole('textbox', { name: 'Search complete session' }).fill('SEARCH-NEEDLE');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -85,8 +83,14 @@ test('full-content search, entry deep link and original event remain readable', 
   await page.reload();
   await expect(page.locator('.search-focus')).toContainText('SEARCH-NEEDLE');
   expect(page.url()).toBe(url);
-  await page.getByRole('button', { name: /Original Codex item/ }).click();
-  await expect(page.locator('.event')).not.toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Source items|Original Codex item/ })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole('dialog', { name: 'Entry details' })).toContainText('Started');
+  await expect(page.locator('[data-entry-id] time').first()).toHaveAttribute(
+    'datetime',
+    /2026-09-14/,
+  );
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Entry details' })).toHaveCount(0);
   await page.getByLabel('Theme', { exact: true }).selectOption('dark');
@@ -94,4 +98,101 @@ test('full-content search, entry deep link and original event remain readable', 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: 'Sessions ☰' }).click();
   await expect(page.locator('.session-index')).toBeVisible();
+});
+
+test('earlier history is prepended and asynchronous message expansion preserves the reading anchor', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-thread');
+  await expect(page.locator('[data-entry-id]')).toHaveCount(50);
+  await page.route('**/transcript?before=*', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.continue();
+  });
+  const scroll = page.locator('.transcript-scroll');
+  await scroll.evaluate((element) => {
+    element.scrollTop = 140;
+  });
+  await scroll.hover();
+  const requested = page.waitForRequest((request) => request.url().includes('/transcript?before='));
+  await page.mouse.wheel(0, -100);
+  await requested;
+  const anchor = await scroll.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const entry = [...element.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
+      (item) => item.getBoundingClientRect().bottom > top,
+    )!;
+    return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
+  });
+  await expect(page.locator('[data-entry-id]')).toHaveCount(79);
+  await expect(page.locator('[data-entry-id="message-0"] div.markdown')).toContainText(
+    'EARLIER-END',
+  );
+  const offset = await scroll.evaluate(
+    (element, id) =>
+      element.querySelector(`[data-entry-id="${id}"]`)!.getBoundingClientRect().top -
+      element.getBoundingClientRect().top,
+    anchor.id,
+  );
+  expect(Math.abs(offset - anchor.offset)).toBeLessThan(3);
+  await expect(page.locator('[data-entry-id="final"]')).toHaveCount(1);
+});
+
+test('later history appends to a deep-linked window without losing earlier entries', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-thread&entry=input');
+  await expect(page.locator('[data-entry-id]')).toHaveCount(25);
+  await page.route('**/transcript?after_window=*', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.continue();
+  });
+  const scroll = page.locator('.transcript-scroll');
+  const requested = page.waitForRequest((request) =>
+    request.url().includes('/transcript?after_window='),
+  );
+  await scroll.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await requested;
+  const anchor = await scroll.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const entry = [...element.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
+      (item) => item.getBoundingClientRect().bottom > top,
+    )!;
+    return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
+  });
+  await expect(page.locator('[data-entry-id]')).toHaveCount(75);
+  await expect(page.locator('[data-entry-id="input"]')).toHaveCount(1);
+  const offset = await scroll.evaluate(
+    (element, id) =>
+      element.querySelector(`[data-entry-id="${id}"]`)!.getBoundingClientRect().top -
+      element.getBoundingClientRect().top,
+    anchor.id,
+  );
+  expect(Math.abs(offset - anchor.offset)).toBeLessThan(3);
+});
+
+test('session metadata, task dates and structured backend diagnostics are visible', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-thread');
+  await expect(page.locator('.session-metadata')).toContainText('Codex session ID');
+  await expect(page.locator('.session-metadata')).toContainText('fixture-thread');
+  await expect(page.locator('.session-metadata')).toContainText('demo:transcript');
+  await expect(page.locator('.session-metadata')).toContainText('test-model');
+  await page.getByRole('button', { name: 'Tasks', exact: true }).click();
+  await expect(page.locator('.task-times time')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click();
+  await expect(page.locator('.diagnostic')).toHaveCount(2);
+  await expect(page.locator('.diagnostic').first()).toContainText(
+    'Reconnecting after a network interruption',
+  );
+  await expect(page.locator('.diagnostic').first().locator('time')).toHaveAttribute(
+    'datetime',
+    '2026-09-14T00:00:00.000Z',
+  );
+  await page.getByLabel('Diagnostic level').selectOption('warn');
+  await expect(page.locator('.diagnostic')).toHaveCount(1);
+  await expect(page.locator('.diagnostic pre')).toHaveCount(0);
 });

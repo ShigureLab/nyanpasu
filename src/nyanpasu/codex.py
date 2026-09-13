@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
 
+from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import resolve_env_value
 from nyanpasu.models import CodexRunResult
 
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from nyanpasu.config import NyanpasuConfig
+    from nyanpasu.diagnostics import Diagnostic
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
 ExecutionStarted = Callable[[str, str | None], Awaitable[None]]
@@ -196,7 +198,7 @@ class CodexAppServerBackend:
         self._agent_messages: dict[tuple[str, str], list[str]] = {}
         self._start_lock = asyncio.Lock()
         self._stderr_task: asyncio.Task[None] | None = None
-        self.diagnostics: deque[dict[str, Any]] = deque(maxlen=100)
+        self.diagnostics: deque[Diagnostic] = deque(maxlen=100)
 
     async def run_turn(
         self,
@@ -362,8 +364,8 @@ class CodexAppServerBackend:
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
-        while chunk := await self._proc.stderr.read(4096):
-            self.diagnostics.append({"type": "stderr", "text": chunk.decode("utf-8", "replace")})
+        async for line in self._proc.stderr:
+            self.diagnostics.append(diagnostic(line.decode("utf-8", "replace")))
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
