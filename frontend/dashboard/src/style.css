@@ -256,18 +256,6 @@ small {
 .session-row small {
   font-size: 10px;
 }
-.index-footer {
-  font-size: 10px;
-  color: var(--muted);
-  border-top: 1px solid var(--line);
-  padding: 10px 4px 0;
-}
-.index-footer span {
-  letter-spacing: 1px;
-}
-.index-footer p {
-  margin: 3px 0 0;
-}
 .session-workspace {
   flex: 1;
   min-width: 0;

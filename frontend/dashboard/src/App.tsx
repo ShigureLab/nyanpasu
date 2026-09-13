@@ -193,10 +193,6 @@ export function App() {
                   Next
                 </button>
               </div>
-              <div className="index-footer">
-                <span>READ ONLY</span>
-                <p>Live and Pause control this page. Tasks continue running.</p>
-              </div>
             </aside>
             {session ? (
               <Transcript
