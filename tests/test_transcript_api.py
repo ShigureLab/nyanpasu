@@ -25,7 +25,7 @@ async def test_search_download_export_and_validation_use_native_content(tmp_path
     state.bind_task_execution("task", "thread", "turn")
     text = ("开始🙂\n" * 10000) + "a unique NEEDLE" + ("\nend" * 10000)
     source = MemorySessionSource([turn("turn", tool("tool", text))])
-    app = create_app(config, session_source=source)
+    app = create_app(config, session_sources=lambda _: source)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         base = "/api/sessions/thread"
         search = await client.get(f"{base}/search", params={"q": "NEEDLE"})
@@ -61,7 +61,7 @@ async def test_unavailable_codex_does_not_hide_task_metadata_or_expose_other_thr
         async def read_thread(self, thread_id: str) -> dict:
             raise RuntimeError("Codex offline")
 
-    app = create_app(config, session_source=Unavailable())
+    app = create_app(config, session_sources=lambda _: Unavailable())
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         assert (await client.get("/api/sessions/thread/transcript")).status_code == 503
         assert (await client.get("/api/sessions/unrelated/transcript")).status_code == 404

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TranscriptChanges, TranscriptEntry, TranscriptWindow } from './api-types';
 import {
   get,
+  backendLabel,
   query,
   useResource,
   type Navigate,
@@ -263,11 +264,15 @@ export function Transcript({
         </summary>
         <dl className="session-metadata">
           <div>
-            <dt>Codex session ID</dt>
+            <dt>Native session ID</dt>
             <dd>
-              <code>{session}</code>
-              <Copy text={session} label="Copy session ID" />
+              <code>{detail.data?.thread_id ?? session}</code>
+              <Copy text={detail.data?.thread_id ?? session} label="Copy session ID" />
             </dd>
+          </div>
+          <div>
+            <dt>Backend</dt>
+            <dd>{detail.data ? backendLabel(detail.data.backend) : 'Loading…'}</dd>
           </div>
           <div>
             <dt>Context key</dt>
@@ -280,31 +285,31 @@ export function Transcript({
               </button>
             </dd>
           </div>
-          {detail.data?.codex && (
+          {detail.data?.runtime && (
             <>
               <div>
                 <dt>Model</dt>
                 <dd>
-                  {detail.data.codex.model ?? 'Unavailable'}{' '}
-                  <span className="subtle">{detail.data.codex.reasoning_effort}</span>
+                  {detail.data.runtime.model ?? 'Unavailable'}{' '}
+                  <span className="subtle">{detail.data.runtime.reasoning_effort}</span>
                 </dd>
               </div>
               <div>
                 <dt>Workspace</dt>
                 <dd>
-                  <code>{detail.data.codex.cwd ?? 'Unavailable'}</code>
+                  <code>{detail.data.runtime.cwd ?? 'Unavailable'}</code>
                 </dd>
               </div>
               <div>
                 <dt>Created</dt>
                 <dd>
-                  <Time value={detail.data.codex.created_at} />
+                  <Time value={detail.data.runtime.created_at} />
                 </dd>
               </div>
               <div>
                 <dt>Updated</dt>
                 <dd>
-                  <Time value={detail.data.codex.updated_at} />
+                  <Time value={detail.data.runtime.updated_at} />
                 </dd>
               </div>
             </>
@@ -490,7 +495,7 @@ export function Transcript({
             )}
             {!window && busy && <p className="empty">Loading transcript…</p>}
             {window && entries.length === 0 && (
-              <p className="empty">Codex has no conversation items for this session.</p>
+              <p className="empty">No conversation items are available for this session.</p>
             )}
             {visible.map((entry, index) => (
               <div key={entry.entry_id}>
@@ -499,7 +504,7 @@ export function Transcript({
                     <span>
                       {detail.data?.tasks.find((task) => task.task_id === entry.task_id)?.title ??
                         entry.task_id ??
-                        'Codex turn'}
+                        'Agent turn'}
                     </span>
                     <code>{entry.turn_id ?? 'Turn ID not recorded'}</code>
                   </div>
@@ -540,6 +545,7 @@ export function Transcript({
                     Task: inspected.data.task_id,
                     Thread: inspected.data.thread_id,
                     Turn: inspected.data.turn_id,
+                    Backend: backendLabel(inspected.data.source.backend),
                     Source: inspected.data.source.origin,
                     Started: inspected.data.started_at,
                     Completed: inspected.data.completed_at,

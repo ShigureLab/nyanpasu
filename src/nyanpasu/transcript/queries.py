@@ -12,16 +12,21 @@ from nyanpasu.transcript.models import Coverage, TranscriptEntry
 from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from nyanpasu.codex import CodexSessionSource
+    from nyanpasu.transcript.history import SessionSource
 
 BUDGET = 240 * 1024
 TASKS = """
-    SELECT r.*,coalesce(r.thread_id,parent.thread_id) AS session_id,
-           (SELECT expires_at FROM context_leases WHERE context_key=r.context_key) AS lease_expires_at
-    FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+    SELECT bound.*, CASE WHEN session_backend='codex' THEN session_thread_id
+        ELSE session_backend || ':' || session_thread_id END AS session_id
+    FROM (
+        SELECT r.*, coalesce(r.thread_id,parent.thread_id) AS session_thread_id,
+               CASE WHEN r.coalesced_into IS NOT NULL THEN parent.backend ELSE r.backend END AS session_backend,
+               (SELECT expires_at FROM context_leases WHERE context_key=r.context_key) AS lease_expires_at
+        FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+    ) bound
 """
 
 
@@ -66,11 +71,11 @@ def take(
 
 
 class TranscriptReader:
-    """Task metadata comes from Nyanpasu; every conversation read comes from Codex."""
+    """Task metadata comes from Nyanpasu; every conversation read comes from its native runtime."""
 
-    def __init__(self, db_path: Path, source: CodexSessionSource):
+    def __init__(self, db_path: Path, sources: Callable[[str], SessionSource]):
         self.db_path = db_path
-        self.source = source
+        self.sources = sources
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -87,13 +92,15 @@ class TranscriptReader:
                 f"SELECT * FROM ({TASKS}) WHERE session_id=? ORDER BY created_at", (session_id,)
             ).fetchall()
         if not rows:
-            raise RecordNotFound("Codex session is not associated with a Nyanpasu task")
+            raise RecordNotFound("Session is not associated with a Nyanpasu task")
         return [dict(row) for row in rows]
 
     async def snapshot(self, session_id: str) -> Snapshot:
         tasks = self._tasks(session_id)
         task_by_turn = {row["turn_id"]: row["task_id"] for row in tasks if row["turn_id"] and not row["coalesced_into"]}
-        return await read_snapshot(self.source, session_id, task_by_turn)
+        return await read_snapshot(
+            self.sources(tasks[0]["session_backend"]), tasks[0]["session_thread_id"], task_by_turn
+        )
 
     def sessions(
         self, q: str = "", state: str = "", context: str = "", offset: int = 0, limit: int = 50
@@ -124,11 +131,11 @@ class TranscriptReader:
         latest = tasks[-1]
         return {
             "session_id": session_id,
-            "thread_id": session_id,
+            "thread_id": latest["session_thread_id"],
             "context_key": latest["context_key"],
             "title": title(json.loads(latest["task_json"])),
-            "backend": "codex",
-            "origin": "codex",
+            "backend": latest["session_backend"],
+            "origin": "native",
             "created_at": iso_time(tasks[0]["created_at"]),
             "updated_at": iso_time(max(task["updated_at"] for task in tasks)),
             "state": latest["status"],
@@ -159,19 +166,10 @@ class TranscriptReader:
             )
         data["has_more_tasks"] = offset + limit < len(tasks)
         try:
-            thread = await self.source.read_thread(session_id)
-            data["codex"] = {
-                "id": thread["id"],
-                "cwd": thread.get("cwd"),
-                "model": thread.get("model"),
-                "provider": thread.get("modelProvider"),
-                "reasoning_effort": thread.get("reasoningEffort"),
-                "cli_version": thread.get("cliVersion"),
-                "created_at": iso_time(thread["createdAt"]),
-                "updated_at": iso_time(thread["updatedAt"]) if thread.get("updatedAt") else None,
-            }
-        except (OSError, RuntimeError, TimeoutError) as exc:
-            data["codex"] = None
+            history = await self.sources(tasks[0]["session_backend"]).read_session(tasks[0]["session_thread_id"])
+            data["runtime"] = history.metadata.model_dump()
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            data["runtime"] = None
             data["history_error"] = str(exc)
         return redact(data)
 
@@ -242,7 +240,7 @@ class TranscriptReader:
             raise CursorError("Invalid change offset")
         turn_ids = [turn["id"] for turn in snapshot.turns]
         if anchor is not None and anchor not in turn_ids:
-            raise CursorError("Codex history changed; reload this session", 409)
+            raise CursorError("Session history changed; reload this session", 409)
         turns = snapshot.turns[turn_ids.index(anchor) :] if anchor is not None else snapshot.turns
         latest = self._change_position(snapshot)
         unchanged = state == latest
@@ -274,7 +272,7 @@ class TranscriptReader:
         snapshot = await self.snapshot(session_id)
         snapshot.entry(data[1])
         if ref not in snapshot.contents:
-            raise CursorError("The Codex item changed; refresh it before reading this content", 409)
+            raise CursorError("The session item changed; refresh it before reading this content", 409)
         return snapshot.contents[ref]
 
     async def content(

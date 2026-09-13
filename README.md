@@ -1,6 +1,6 @@
 # Nyanpasu
 
-Nyanpasu is a plugin-oriented Codex agent service. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses persistent Codex threads per context, records state in SQLite, and runs Codex under a constrained runtime policy.
+Nyanpasu is a plugin-oriented agent service supporting Codex and Claude Code. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses native agent sessions per context, records state in SQLite, and runs the selected agent with explicit runtime settings.
 
 GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 
@@ -10,9 +10,9 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Context workspace management. By default, one `context_key` owns one reusable managed clone that is reset to the task revision before each run.
 - Optional event snapshots for plugins that explicitly need per-event isolation.
 - Persistent task, thread, and context state.
-- Codex backend management through `codex app-server` or `codex exec`.
+- Codex (`app-server` or `exec`) and Claude Code (`claude -p`) backends, including compatible wrapper executables.
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
-- Runtime safety defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
+- Codex defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
@@ -42,6 +42,7 @@ command_timeout_seconds = 3600
 pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
 [runtime]
+backend = "codex" # or "claude"
 concurrency = 4
 coalesce_window_seconds = 600
 clean_event_snapshots = true
@@ -86,9 +87,9 @@ github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
 ```
 
-Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking Codex. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
+Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking the selected backend. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
 
-Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. GitHub plugins accept a literal `token`, a command-backed `token`, or `token_env`. Configure only one source. Credentials are resolved when each plugin starts and reused for its lifetime. A configured environment variable that is missing or empty prevents startup. If neither `token` nor `token_env` is set, GitHub plugins use the ambient `gh auth` state.
+Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. GitHub plugins accept a literal `token`, a command-backed `token`, or `token_env`. Configure only one source. Credentials are resolved when each plugin starts and reused for its lifetime. A configured environment variable that is missing or empty prevents that backend from starting. If neither `token` nor `token_env` is set, GitHub plugins use the ambient `gh auth` state.
 
 To pin plugin-side API calls to one locally authenticated account without storing a token in TOML:
 
@@ -99,7 +100,7 @@ token = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "y
 
 Token commands follow the same execution, validation, and error reporting rules as `codex.env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
 
-Agent-driven GitHub tasks that run `gh` inside Codex, such as PR maker, also need the token environment variable to be visible to the Codex runtime. Add that variable name to `codex.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
+Agent-driven GitHub tasks that run `gh`, such as PR maker, also need the token environment variable to be visible to the selected runtime. Add that variable name to `codex.pass_env` or `claude.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
 
 Set `codex.model` and `codex.reasoning_effort` to pin Nyanpasu's model independently of your interactive Codex configuration. Both `app-server` and `exec` apply these settings to every turn, including resumed sessions. `NYANPASU_CODEX_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` override the TOML values. An omitted setting inherits Codex's defaults; use a reasoning effort supported by the selected model. Restart Nyanpasu after changing the configuration. The Dashboard's Runtime page shows the configured values, and the reviewer's disclosure footer uses the same configuration.
 
@@ -114,11 +115,56 @@ GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user",
 
 For a static value, use `GH_TOKEN = "your-token"` instead. Values in `codex.env` override the base environment and `codex.pass_env`; their names do not need to appear in `pass_env`.
 
-Commands run once when the service is created, with the original service environment and `NYANPASU_HOME` as the working directory. Arguments are passed directly without a shell, and commands cannot reference other `codex.env` entries. Only trailing CR/LF characters are removed from stdout. A command that cannot start, exits unsuccessfully, exceeds 10 seconds, or returns empty, invalid UTF-8, or NUL-containing output prevents startup. Errors identify the variable and failure without including command output. Resolved values stay in memory and are reused for every Codex turn, including app-server restarts; restart Nyanpasu to refresh them.
+Commands run once when that backend is first used, with the original service environment and `NYANPASU_HOME` as the working directory. Arguments are passed directly without a shell, and commands cannot reference other `codex.env` entries. Only trailing CR/LF characters are removed from stdout. A command that cannot start, exits unsuccessfully, exceeds 10 seconds, or returns empty, invalid UTF-8, or NUL-containing output prevents that backend from starting. Errors identify the variable and failure without including command output. Resolved values stay in memory and are reused for every Codex turn, including app-server restarts; restart Nyanpasu to refresh them.
 
 `codex.env` only affects Codex child processes. It does not modify the service environment or configure plugin-side GitHub credentials: `integrations.github.token_env` reads the service's environment at plugin startup. Configure both `codex.env.GH_TOKEN` and `integrations.github.token` for the same account when the agent and plugin need to publish as one bot. Pinning credentials this way prevents local `gh auth switch` from changing the account used by a running service.
 
 `approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
+
+## Claude Code and wrapper executables
+
+Choose the default backend for **new contexts** with `runtime.backend` or `NYANPASU_BACKEND`. Existing contexts stay bound to their original backend and resume there. Use a new context key to switch an ongoing workflow to another backend; conversation migration between agents is not automatic. Keep both backends configured when retaining mixed history.
+
+```toml
+[runtime]
+backend = "claude"
+
+[claude]
+bin = "/path/to/claude" # defaults to "claude" on PATH
+model = "sonnet"
+permission_mode = "dontAsk"
+allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
+command_timeout_seconds = 3600
+pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
+
+[claude.env]
+CLAUDE_CONFIG_DIR = "/path/to/claude-home"
+```
+
+Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) before using it. This integration was verified with Claude Code **2.1.270** and requires the stream-JSON input/output, user-message replay, `--permission-prompts none`, and `--system-prompt-snapshot off` options. A compatible wrapper must preserve those options and the native session format. `claude auth status` checks authentication; `claude --help` lists supported flags.
+
+Claude starts one process per task and resumes the persisted session on the next task. Its final `result` determines success; an error result fails the task even if the process exits with status zero. Timeout and shutdown terminate the process group. Cleanup releases the context/workspace and preserves Claude's native history. Claude's own retention settings determine how long old transcripts remain available.
+
+`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. The default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. Nyanpasu passes `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt and refreshed on every resumed turn.
+
+Both `[claude]` and `[codex]` share `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. For example, a corporate wrapper can receive its own prefix arguments before Nyanpasu adds the agent protocol arguments:
+
+```toml
+[claude]
+bin = "/opt/company/bin/claude-wrapper"
+args = ["--profile", "review-bot"]
+
+[codex]
+bin = "/opt/company/bin/codex-wrapper"
+args = ["--profile", "review-bot"]
+backend = "app-server"
+```
+
+`bin` is a single executable name or path, not a shell command. Paths containing spaces work. Relative paths such as `./wrapper` are resolved against the service startup directory; executable symlinks are preserved. `args` is a literal argument list, with no shell interpolation. Codex uses this same command for execution and history access. Claude wrappers that change the history directory must expose the same `CLAUDE_CONFIG_DIR` through `claude.env` so both execution and the Dashboard find it.
+
+`NYANPASU_CODEX_BIN` and `NYANPASU_CLAUDE_BIN` override executable paths. Claude also accepts `NYANPASU_CLAUDE_MODEL`, `NYANPASU_CLAUDE_REASONING_EFFORT`, and `NYANPASU_CLAUDE_PERMISSION_MODE`. `NYANPASU_COMMAND_TIMEOUT_SECONDS` overrides both backends' timeouts. Restart Nyanpasu after configuration changes.
+
+Environment filtering and command-backed values work identically for both backends. API credentials and custom endpoint variables must be explicitly passed with `claude.pass_env` or set in `claude.env`; a local Claude login can be read through the inherited home directory. `CLAUDE_CONFIG_DIR` is inherited when present. Project instructions, skills and MCP settings are loaded by the selected CLI; install reviewer skills in Claude's supported skill locations when using that backend. Task `instruction_docs` can supply shared repository instructions explicitly.
 
 ## Run
 
@@ -139,13 +185,15 @@ curl http://127.0.0.1:8765/tasks
 curl http://127.0.0.1:8765/contexts
 ```
 
-Open the dashboard to read session transcripts, inspect tool input/output and failures, search Codex history, and follow related tasks:
+Open the dashboard to read session transcripts, inspect tool input/output and failures, search native conversation history, and follow related tasks:
 
 ```text
 http://127.0.0.1:8765/dashboard
 ```
 
-Codex is the source for conversation history. Nyanpasu stores task scheduling metadata and thread/turn references; the dashboard reads messages and tool results through the Codex app-server API, and step timestamps from the native rollout referenced by Codex, without a second conversation database. Earlier and later entries load into the current conversation while preserving the reading position. Session metadata and task dates are visible, and runtime diagnostics are shown as timestamped log messages. Tasks sharing a Codex thread appear in one session. Startup migrates existing task references and removes the old transcript tables and stored result bodies.
+Each backend owns its conversation history. Nyanpasu stores task scheduling metadata and backend/session/turn references. The Dashboard reads Codex history through app-server and Claude history from its native JSONL files, without maintaining another conversation database. Both sources produce the same message, reasoning, tool, file-change, search, export, and pagination contract. Tool inputs and results stay linked, and native timestamps are shown when available. Unknown content remains inspectable; unavailable metadata is not invented.
+
+Existing database records migrate to the Codex backend. Codex session URLs stay unchanged; Claude URLs use `claude:<native-session-id>` so equal IDs from different backends cannot collide. Session details show the owning backend and the native ID to use with its CLI. History remains readable after changing the default backend, provided the original runtime and its history files remain available.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
@@ -198,9 +246,9 @@ POST /plugins/github-pr-maker/tasks
 GET /plugins/github-pr-maker/tasks/{task_id}
 ```
 
-It accepts a repository and task description, builds a concrete PR plan, and asks Codex to implement the change, create a branch, commit, push, and open one pull request with `gh pr create` inside the managed worktree. The post-process hook only parses the agent's final `PR: <url>` or `NO_PR: <reason>` marker and records the result. Core still never performs GitHub writes directly.
+It accepts a repository and task description, builds a concrete PR plan, and asks the selected agent to implement the change, create a branch, commit, push, and open one pull request with `gh pr create` inside the managed worktree. The post-process hook only parses the agent's final `PR: <url>` or `NO_PR: <reason>` marker and records the result. Core still never performs GitHub writes directly.
 
-When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so Codex keeps the same thread and the core runtime serializes work for that PR. Follow-up tasks ask Codex to commit and push to the existing PR branch instead of opening a second PR.
+When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so the agent keeps the same session and the core runtime serializes work for that PR. Follow-up tasks ask the agent to commit and push to the existing PR branch instead of opening a second PR.
 
 ## Plugin Contract
 
@@ -249,10 +297,10 @@ AgentTask(
 
 Core executes the task and calls post-process hooks registered for `metadata["plugin_id"]`.
 
-`developer_instructions` and configured `instruction_docs` form the session instructions. The app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Codex's built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard records session instructions separately from the actual turn input.
+`developer_instructions` and configured `instruction_docs` form the session instructions. The Codex app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Claude uses `--append-system-prompt` with prompt snapshots disabled for updated instructions on resume. Each agent’s built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard renders the native turn input without prepending session instructions.
 
 Plugins that need current external state before execution can register `runtime.add_task_preparer(self.id, self.prepare_task)`. The async preparer receives `(task, coalesced_tasks, context)` after the context lease is acquired, and returns a task with the current workspace, instructions, and message. Keep the task ID and context key unchanged; return an ignored task when the work is no longer applicable.
 
 Task merging is opt-in with a `coalesce_key` and requires a registered preparer. Compatible queued tasks with the same key, plugin, and context can merge within `runtime.coalesce_window_seconds`; the preparer owns their domain-specific merge. Ordinary tasks remain separate. Recording and merging happen in one transaction, and a running task cannot receive late merged events. This window does not delay task execution or guarantee that nearby events will share a turn.
 
-By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs Codex there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.
+By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs the selected backend there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.

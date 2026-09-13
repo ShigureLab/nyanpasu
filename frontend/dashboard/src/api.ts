@@ -6,6 +6,10 @@ export interface Page<T> {
   total?: number;
   has_more: boolean;
 }
+
+export function backendLabel(backend: string): string {
+  return ({ codex: 'Codex', claude: 'Claude Code' } as Record<string, string>)[backend] ?? backend;
+}
 export interface Session {
   session_id: string;
   context_key: string;
@@ -35,14 +39,14 @@ export interface SessionDetail extends Session {
   tasks: Turn[];
   task_count: number;
   has_more_tasks: boolean;
-  codex: {
+  runtime: {
     id: string;
     cwd: string | null;
     model: string | null;
     provider: string | null;
     reasoning_effort: string | null;
     cli_version: string | null;
-    created_at: string;
+    created_at: string | null;
     updated_at: string | null;
   } | null;
   history_error?: string;

@@ -24,7 +24,7 @@ def history(tmp_path: Path):
     )
     state.bind_task_execution("task", "thread", "turn-1")
     source = MemorySessionSource([turn("turn-1", tool("a", "original"))])
-    return state, source, TranscriptReader(state.db_path, source)
+    return state, source, TranscriptReader(state.db_path, lambda _: source)
 
 
 @pytest.mark.anyio
@@ -166,8 +166,8 @@ async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visibl
     assert entry["completed_at"] == "2026-09-14T00:00:02.456000+00:00"
     assert entry["recorded_at"] != entry["observed_at"]
     detail = await reader.session("thread")
-    assert detail["codex"]["model"] == "native-model"
-    assert detail["codex"]["cwd"] == "/native/worktree"
+    assert detail["runtime"]["model"] == "native-model"
+    assert detail["runtime"]["cwd"] == "/native/worktree"
     record["payload"]["thread_id"] = "other-thread"
     path.write_text(json.dumps(record) + "\n")
     assert (await reader.entry("thread", "a"))["started_at"] is None
