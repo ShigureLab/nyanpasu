@@ -236,7 +236,7 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await expect(page.locator('.session-metadata')).toContainText('demo:transcript');
   await expect(page.locator('.session-metadata')).toContainText('test-model');
   await page.getByRole('button', { name: 'Tasks', exact: true }).click();
-  await expect(page.locator('.task-times time').first()).toHaveAttribute('datetime', /2026-/);
+  await expect(page.locator('.task-times time').first()).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
   await page.getByRole('button', { name: 'Runtime', exact: true }).click();
   await expect(page.locator('.diagnostic')).toHaveCount(2);
   await expect(page.locator('.diagnostic').first()).toContainText(
