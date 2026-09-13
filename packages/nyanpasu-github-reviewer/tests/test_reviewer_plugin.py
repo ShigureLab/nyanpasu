@@ -1,31 +1,36 @@
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
+import pytest
+
+from nyanpasu.models import AgentContext, TaskAction
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings
-from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
+from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_task
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _config(tmp_path: Path) -> GitHubReviewerConfig:
-    return GitHubReviewerConfig(
-        repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path / "repo")},
-        github_login="review-bot",
-        dry_run=True,
-        post_reviews=False,
+def _plugin(tmp_path: Path) -> GitHubReviewerPlugin:
+    return GitHubReviewerPlugin(
+        GitHubReviewerConfig(
+            repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path / "repo", base_branches=("main",))},
+            github_login="review-bot",
+            dry_run=True,
+        )
     )
 
 
-def _pr_payload(action: str, *, number: int = 1, sha: str = "abc123") -> dict[str, object]:
+def _pr_payload(action: str, sha: str = "head-a") -> dict[str, object]:
     return {
         "action": action,
         "repository": {"full_name": "ExampleOrg/ExampleRepo"},
         "pull_request": {
-            "number": number,
-            "html_url": f"https://github.com/ExampleOrg/ExampleRepo/pull/{number}",
+            "number": 1,
+            "html_url": "https://github.com/ExampleOrg/ExampleRepo/pull/1",
             "state": "open",
             "draft": False,
             "base": {"ref": "main"},
@@ -34,22 +39,100 @@ def _pr_payload(action: str, *, number: int = 1, sha: str = "abc123") -> dict[st
     }
 
 
-def test_event_to_task_treats_active_context_as_followup_review(tmp_path: Path) -> None:
-    plugin = GitHubReviewerPlugin().bind_for_conversion(
-        config=_config(tmp_path),
-        context_lookup=lambda _: None,
-        active_context_task_lookup=lambda context_key, exclude_task_id: (
-            context_key == "github:ExampleOrg/ExampleRepo#1" and exclude_task_id == "delivery-2"
-        ),
-    )
-    event = parse_github_event(
-        "pull_request",
-        "delivery-2",
-        _pr_payload("opened"),
-        agent_login="review-bot",
+def _task(plugin: GitHubReviewerPlugin, action: str, sha: str):
+    return plugin.event_to_task(
+        parse_github_event("pull_request", f"{action}-{sha}", _pr_payload(action, sha), agent_login="review-bot")
     )
 
-    task = plugin.event_to_task(event)
 
-    assert task.metadata["review_mode"] == "followup_review"
-    assert "Internal review mode: followup_review" in task.prompt
+def _live_pr(**updates):
+    return {
+        "number": 1,
+        "url": "https://github.com/ExampleOrg/ExampleRepo/pull/1",
+        "state": "OPEN",
+        "isDraft": False,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": "head-b",
+        **updates,
+    }
+
+
+def _stub_github(monkeypatch, **updates):
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    monkeypatch.setattr(module, "gh_json", lambda *args, **kwargs: _live_pr(**updates))
+
+
+def test_event_conversion_defers_session_and_target_decisions(tmp_path: Path) -> None:
+    task = _task(_plugin(tmp_path), "opened", "head-a")
+
+    assert task.coalesce_key
+    assert task.developer_instructions == ""
+    assert "head-a" not in task.prompt
+    assert "review_mode" not in task.metadata
+    assert "previous_head_sha" not in task.metadata
+    assert task.metadata["triggers"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path, monkeypatch, reverse: bool) -> None:
+    plugin = _plugin(tmp_path)
+    opened = _task(plugin, "opened", "head-a")
+    updated = _task(plugin, "synchronize", "head-b")
+    first, second = (updated, opened) if reverse else (opened, updated)
+    _stub_github(monkeypatch)
+
+    prepared = await plugin.prepare_task(first, (second,), None)
+
+    assert prepared.task_id == first.task_id
+    assert prepared.workspace is not None and prepared.workspace.revision == "head-b"
+    assert prepared.metadata["pull_request"]["head_sha"] == "head-b"
+    assert len(prepared.metadata["triggers"]) == 2
+    assert prepared.prompt.startswith("Review ")
+    assert prepared.prompt.count("Target head:") == 1
+    assert "Target head: head-b" in prepared.prompt
+    assert "head-a" not in prepared.prompt
+    assert "Additional coalesced task context" not in prepared.prompt
+    assert "gh-slate" in prepared.developer_instructions
+
+
+@pytest.mark.anyio
+async def test_preparation_reads_completed_context_at_execution(tmp_path: Path, monkeypatch) -> None:
+    plugin = _plugin(tmp_path)
+    queued = _task(plugin, "synchronize", "head-b")
+    _stub_github(monkeypatch)
+    context = AgentContext(
+        context_key=queued.context_key,
+        thread_id="existing-thread",
+        session_worktree=tmp_path / "worktree",
+        workspace_key="ExampleOrg/ExampleRepo",
+        revision="head-a",
+    )
+
+    prepared = await plugin.prepare_task(queued, (), context)
+
+    assert prepared.prompt.startswith("Continue reviewing ")
+    assert "Previous task head (not proof of completed review): head-a" in prepared.prompt
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("updates", [{"state": "CLOSED"}, {"isDraft": True}, {"baseRefName": "other"}])
+async def test_no_review_when_pr_becomes_ineligible_in_queue(tmp_path: Path, monkeypatch, updates) -> None:
+    plugin = _plugin(tmp_path)
+    queued = _task(plugin, "opened", "head-a")
+    _stub_github(monkeypatch, **updates)
+
+    prepared = await plugin.prepare_task(queued, (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    assert "Review skipped" in prepared.prompt
+
+
+def test_manual_review_preserves_explicit_request(tmp_path: Path, monkeypatch) -> None:
+    _stub_github(monkeypatch)
+    plugin = _plugin(tmp_path)
+    assert plugin.config is not None
+    task = manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 1)
+
+    assert task.metadata["triggers"][0]["kind"] == "manual_review"

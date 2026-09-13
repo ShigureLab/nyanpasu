@@ -14,7 +14,7 @@ from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_f
 from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
-from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, TaskAction, TaskStatus, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import (
@@ -22,14 +22,18 @@ from nyanpasu_github_reviewer.models import (
     PullRequestRef,
     ReviewAction,
     ReviewEvent,
+    ReviewTrigger,
 )
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
-from nyanpasu_github_reviewer.prompt import build_review_prompt, cleanup_prompt
+from nyanpasu_github_reviewer.prompt import (
+    build_review_instructions,
+    build_review_prompt,
+    cleanup_prompt,
+    review_trigger,
+)
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from pydantic import BaseModel
 
     from nyanpasu.plugins import PluginRuntime
@@ -41,8 +45,8 @@ class GitHubReviewerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubReviewerConfig
 
-    def __init__(self) -> None:
-        self.config: GitHubReviewerConfig | None = None
+    def __init__(self, config: GitHubReviewerConfig | None = None) -> None:
+        self.config = config
         self.runtime: PluginRuntime | None = None
         self.store: GitHubReviewerStore | None = None
         self.poller: GitHubEventsPoller | None = None
@@ -59,6 +63,7 @@ class GitHubReviewerPlugin:
         self.config = config
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
+        runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_router(self._router(), prefix="/plugins/github-reviewer", tags=["github-reviewer"])
         if config.poll_enabled:
             self.poller = GitHubEventsPoller(
@@ -73,18 +78,6 @@ class GitHubReviewerPlugin:
                 ",".join(config.repos),
                 config.poll_interval_seconds,
             )
-
-    def bind_for_conversion(
-        self,
-        *,
-        config: GitHubReviewerConfig,
-        context_lookup: Callable[[str], AgentContext | None] | None = None,
-        active_context_task_lookup: Callable[[str, str], bool] | None = None,
-    ) -> GitHubReviewerPlugin:
-        self.config = config
-        self._context_lookup = context_lookup
-        self._active_context_task_lookup = active_context_task_lookup
-        return self
 
     async def shutdown(self) -> None:
         if self.poller_task is not None:
@@ -132,93 +125,74 @@ class GitHubReviewerPlugin:
         pr = event.pr
         context_key = f"github:{pr.repo}#{pr.number}" if pr else f"github:event:{event.delivery_id}"
         workspace = self._workspace_for_pr(pr) if pr else None
-        prompt = ""
-        review_mode = "initial_review"
-        previous_head_sha = None
-        instruction_docs: tuple[InstructionDocument, ...] = ()
-        if task_action is TaskAction.RUN:
-            if pr is None:
-                raise ValueError("review event has no pull request")
-            instruction_docs = self._instruction_docs_for_pr(pr)
-            existing = self.runtime_store_context(context_key)
-            has_active_context_task = self.runtime_active_context_task(context_key, exclude_task_id=event.delivery_id)
-            review_mode = "initial_review" if existing is None and not has_active_context_task else "followup_review"
-            previous_head_sha = existing.get("revision") if existing else None
-            event = self._with_coalesced_event_context(event)
-            prompt = build_review_prompt(
-                self.config,
-                event,
-                "{{NYANPASU_WORKTREE}}",
-                review_mode=review_mode,
-                previous_head_sha=previous_head_sha,
-            )
-        elif task_action is TaskAction.CLEANUP and pr is not None:
+        prompt = f"Review {pr.repo} PR #{pr.number}." if pr else ""
+        if task_action is TaskAction.CLEANUP and pr is not None:
             prompt = cleanup_prompt(pr)
         return AgentTask(
             task_id=event.delivery_id,
             action=task_action,
             context_key=context_key,
             prompt=prompt,
+            coalesce_key=context_key if task_action is TaskAction.RUN else None,
             workspace=workspace,
-            instruction_docs=instruction_docs,
             dedupe_key=event.delivery_id,
             metadata={
                 "plugin_id": self.id,
-                "github_event": event.github_event,
-                "pull_request": event.pr.model_dump(mode="json") if event.pr else None,
-                "delivery_id": event.delivery_id,
-                "review_mode": review_mode,
-                "previous_head_sha": previous_head_sha,
-                "raw": event.raw,
+                "pull_request": pr.model_dump(mode="json") if pr else None,
+                "triggers": [review_trigger(event).model_dump(mode="json")],
             },
             cleanup_policy="context" if task_action is TaskAction.CLEANUP else "none",
         )
 
-    def _instruction_docs_for_pr(self, pr: PullRequestRef):
-        if self.config is None:
-            return ()
-        return instruction_documents_for_repo(
-            repo=pr.repo,
-            plugin_instruction_docs=self.config.instruction_docs,
-            repo_settings=self.config.repos,
-        )
+    async def prepare_task(
+        self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
+    ) -> AgentTask:
+        return await asyncio.to_thread(self._prepare_review, task, coalesced, context)
 
-    def runtime_store_context(self, context_key: str) -> dict[str, Any] | None:
-        context_lookup = getattr(self, "_context_lookup", None)
-        if context_lookup is not None:
-            context = context_lookup(context_key)
-            if context is None:
-                return None
-            return {
-                "thread_id": context.thread_id,
-                "session_worktree": str(context.session_worktree) if context.session_worktree else None,
-                "workspace_key": context.workspace_key,
-                "revision": context.revision,
-            }
-        if self.runtime is None:
-            return None
-        context = StateStore(self.runtime.config.db_path).get_context(context_key)
-        if context is None:
-            return None
-        return {
-            "thread_id": context.thread_id,
-            "session_worktree": str(context.session_worktree) if context.session_worktree else None,
-            "workspace_key": context.workspace_key,
-            "revision": context.revision,
+    def _prepare_review(
+        self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
+    ) -> AgentTask:
+        assert self.config is not None
+        queued_pr = PullRequestRef.model_validate(task.metadata["pull_request"])
+        pr = _fetch_pr(self.config, queued_pr.repo, queued_pr.number)
+        triggers = tuple(
+            ReviewTrigger.model_validate(trigger)
+            for item in (task, *coalesced)
+            for trigger in item.metadata["triggers"]
+        )
+        metadata = {
+            **task.metadata,
+            "pull_request": pr.model_dump(mode="json"),
+            "triggers": [item.model_dump(mode="json") for item in triggers],
         }
-
-    def runtime_active_context_task(self, context_key: str, *, exclude_task_id: str) -> bool:
-        active_lookup = getattr(self, "_active_context_task_lookup", None)
-        if active_lookup is not None:
-            return bool(active_lookup(context_key, exclude_task_id))
-        if self.runtime is None:
-            return False
-        active = StateStore(self.runtime.config.db_path).active_task_for_context(
-            context_key,
-            exclude_task_id=exclude_task_id,
-            statuses=(TaskStatus.QUEUED.value, TaskStatus.RUNNING.value),
+        if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
+            return task.model_copy(
+                update={
+                    "action": TaskAction.IGNORED,
+                    "prompt": f"Review skipped: {pr.url} is no longer an eligible open PR.",
+                    "metadata": metadata,
+                }
+            )
+        return task.model_copy(
+            update={
+                "workspace": self._workspace_for_pr(pr),
+                "developer_instructions": build_review_instructions(self.config, pr),
+                "instruction_docs": instruction_documents_for_repo(
+                    repo=pr.repo,
+                    plugin_instruction_docs=self.config.instruction_docs,
+                    repo_settings=self.config.repos,
+                ),
+                "prompt": build_review_prompt(
+                    self.config,
+                    pr,
+                    "{{NYANPASU_WORKTREE}}",
+                    triggers=triggers,
+                    has_session=bool(context and context.thread_id),
+                    previous_task_head=context.revision if context else None,
+                ),
+                "metadata": metadata,
+            }
         )
-        return active is not None
 
     def _workspace_for_pr(self, pr: PullRequestRef | None) -> WorkspaceRef | None:
         if pr is None or self.config is None:
@@ -248,28 +222,8 @@ class GitHubReviewerPlugin:
             return event
         if event.pr.head_sha and event.pr.base_ref and event.pr.head_ref:
             return event
-        data = gh_json(
-            [
-                "pr",
-                "view",
-                str(event.pr.number),
-                "--repo",
-                event.pr.repo,
-                "--json",
-                "number,state,isDraft,url,baseRefName,headRefName,headRefOid",
-            ],
-            env=self.config.gh_env if self.config else None,
-        )
-        hydrated = PullRequestRef(
-            repo=event.pr.repo,
-            number=int(data["number"]),
-            url=str(data.get("url") or event.pr.url),
-            base_ref=str(data.get("baseRefName") or event.pr.base_ref),
-            head_ref=str(data.get("headRefName") or event.pr.head_ref),
-            head_sha=str(data.get("headRefOid") or event.pr.head_sha),
-            state=str(data.get("state") or event.pr.state).lower(),
-            draft=bool(data.get("isDraft", event.pr.draft)),
-        )
+        assert self.config is not None
+        hydrated = _fetch_pr(self.config, event.pr.repo, event.pr.number)
         return event.model_copy(update={"pr": hydrated, "after_sha": event.after_sha or hydrated.head_sha})
 
     def _review_thread_event_is_relevant(self, event: ReviewEvent) -> bool:
@@ -308,19 +262,6 @@ class GitHubReviewerPlugin:
             return True
         return pr.base_ref in repo_config.base_branches
 
-    def _with_coalesced_event_context(self, event: ReviewEvent) -> ReviewEvent:
-        _ = event
-        return event
-
-
-def event_with_coalesced_tasks(event: ReviewEvent, coalesced_tasks: list[dict[str, Any]]) -> ReviewEvent:
-    raw = dict(event.raw)
-    context = raw.get("nyanpasu")
-    nyanpasu = dict(context) if isinstance(context, dict) else {}
-    nyanpasu["coalesced_events"] = coalesced_tasks
-    raw["nyanpasu"] = nyanpasu
-    return event.model_copy(update={"raw": raw})
-
 
 def verify_signature(body: bytes, signature: str | None, secret: str | None) -> None:
     try:
@@ -345,33 +286,31 @@ def _mentions_login(text: str, login: str) -> bool:
 
 
 def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -> AgentTask:
-    payload = _pr_payload_from_gh(config, repo, pr_number)
-    event = parse_github_event(
-        "pull_request",
-        f"manual-{safe_slug(repo)}-{pr_number}-{int(time.time())}",
-        payload,
-        agent_login=config.github_login,
+    pr = _fetch_pr(config, repo, pr_number)
+    event = ReviewEvent(
+        delivery_id=f"manual-{safe_slug(repo)}-{pr_number}-{time.time_ns()}",
+        github_event="manual_review",
+        action=ReviewAction.REVIEW,
+        pr=pr,
+        after_sha=pr.head_sha,
+        raw={"nyanpasu": {"trigger": "manual_review", "trigger_summary": "Review explicitly requested from the CLI."}},
     )
-    plugin = GitHubReviewerPlugin()
-    plugin.bind_for_conversion(config=config)
-    return plugin.event_to_task(event)
+    return GitHubReviewerPlugin(config).event_to_task(event)
 
 
-def _pr_payload_from_gh(config: GitHubReviewerConfig, repo: str, pr: int) -> dict[str, object]:
+def _fetch_pr(config: GitHubReviewerConfig, repo: str, pr_number: int) -> PullRequestRef:
     fields = "number,state,isDraft,url,baseRefName,headRefName,headRefOid"
-    data = gh_json(["pr", "view", str(pr), "--repo", repo, "--json", fields], env=config.gh_env)
-    return {
-        "action": "synchronize",
-        "repository": {"full_name": repo},
-        "pull_request": {
-            "number": data["number"],
-            "html_url": data["url"],
-            "state": str(data["state"]).lower(),
-            "draft": data["isDraft"],
-            "base": {"ref": data["baseRefName"]},
-            "head": {"ref": data["headRefName"], "sha": data["headRefOid"]},
-        },
-    }
+    data = gh_json(["pr", "view", str(pr_number), "--repo", repo, "--json", fields], env=config.gh_env)
+    return PullRequestRef(
+        repo=repo,
+        number=int(data["number"]),
+        url=str(data["url"]),
+        state=str(data["state"]).lower(),
+        draft=bool(data["isDraft"]),
+        base_ref=str(data["baseRefName"]),
+        head_ref=str(data["headRefName"]),
+        head_sha=str(data["headRefOid"]),
+    )
 
 
 def plugin() -> GitHubReviewerPlugin:

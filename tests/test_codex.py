@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tomllib
 from typing import TYPE_CHECKING, Any
 
 from nyanpasu.codex import CodexAppServerBackend, CodexExecBackend, safe_codex_env
@@ -8,8 +9,6 @@ from nyanpasu.config import CodexConfig, NyanpasuConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from nyanpasu.transcript.capture import EventObserver
 
 
 def test_safe_codex_env_filters_by_default_and_honors_pass_env(tmp_path: Path, monkeypatch) -> None:
@@ -35,7 +34,6 @@ def test_app_server_backend_completes_from_task_complete_payload(tmp_path: Path)
     try:
         asyncio.set_event_loop(loop)
         waiter = loop.create_future()
-        backend._thread_events["thread-1"] = []
         backend._turn_waiters[("thread-1", "turn-1")] = waiter
 
         backend._handle_message(
@@ -68,7 +66,7 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
         backend._proc = loop.run_until_complete(asyncio.create_subprocess_exec("true"))
         loop.run_until_complete(backend._proc.wait())
         backend._pending[1] = waiter
-        backend._thread_events["thread-1"] = [{"event": "stale"}]
+        backend._agent_messages[("thread-1", "turn-1")] = ["stale"]
 
         alive = loop.run_until_complete(backend._process_alive())
 
@@ -76,7 +74,7 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
         assert backend._proc is None
         assert backend._reader_task is None
         assert backend._pending == {}
-        assert backend._thread_events == {}
+        assert backend._agent_messages == {}
         assert waiter.done()
         assert isinstance(waiter.exception(), RuntimeError)
     finally:
@@ -99,6 +97,21 @@ def test_exec_backend_argv_includes_approvals_reviewer(tmp_path: Path) -> None:
     assert argv[argv.index("--ask-for-approval") + 1] == "on-request"
 
 
+def test_exec_instructions_are_toml_safe_for_new_and_resumed_sessions(tmp_path: Path) -> None:
+    backend = CodexExecBackend(NyanpasuConfig(state_dir=tmp_path / "state"))
+    instructions = 'Review "carefully".\n保留规则。 Path: C:\\repo; literal $(command) and `text`.'
+    for thread_id in (None, "thread-1"):
+        argv = backend._argv(
+            cwd=tmp_path,
+            thread_id=thread_id,
+            output_path=tmp_path / "out.txt",
+            developer_instructions=instructions,
+        )
+        override = next(arg for arg in argv if arg.startswith("developer_instructions="))
+        assert tomllib.loads(override)["developer_instructions"] == instructions
+        assert not any("base_instructions" in arg or "model_instructions_file" in arg for arg in argv)
+
+
 def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
@@ -111,13 +124,15 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
             "threadId": "thread-1",
             "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
         }
-        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id=None)
+        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id=None, developer_instructions="review role")
 
         backend._completed_turns[("thread-1", "turn-1")] = {
             "threadId": "thread-1",
             "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
         }
-        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id="thread-1")
+        await backend.run_turn(
+            cwd=tmp_path, prompt="new commit", thread_id="thread-1", developer_instructions="updated review role"
+        )
 
     asyncio.run(run())
 
@@ -133,6 +148,12 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
         assert "runtimeWorkspaceRoots" not in params
         assert "persistExtendedHistory" not in params
         assert "experimentalRawEvents" not in params
+        assert "baseInstructions" not in params
+    assert backend.requests[0][1]["developerInstructions"] == "review role"
+    assert backend.requests[2][1]["developerInstructions"] == "updated review role"
+    for (_, params), text in zip(backend.requests[1::2], ("review", "new commit"), strict=True):
+        assert params["input"] == [{"type": "text", "text": text, "text_elements": []}]
+        assert "developerInstructions" not in params
 
 
 def test_app_server_server_requests_are_answered_for_daemon_mode(tmp_path: Path) -> None:
@@ -169,9 +190,7 @@ class RecordingAppServerBackend(CodexAppServerBackend):
     async def _ensure_started(self) -> None:
         return None
 
-    async def _request(
-        self, method: str, params: dict[str, Any] | None, observer: EventObserver | None = None
-    ) -> dict[str, Any]:
+    async def _request(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
         assert params is not None
         self.requests.append((method, params))
         if method in {"thread/start", "thread/resume"}:

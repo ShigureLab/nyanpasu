@@ -135,13 +135,13 @@ curl http://127.0.0.1:8765/tasks
 curl http://127.0.0.1:8765/contexts
 ```
 
-Open the dashboard to read session transcripts, inspect tool input/output and failures, search saved content, and follow related tasks:
+Open the dashboard to read session transcripts, inspect tool input/output and failures, search Codex history, and follow related tasks:
 
 ```text
 http://127.0.0.1:8765/dashboard
 ```
 
-Legacy results remain readable with explicit capture gaps; new executions record input and backend events while they run.
+Codex is the source for conversation history. Nyanpasu stores task scheduling metadata and thread/turn references; the dashboard reads messages and tool results through the Codex app-server API without a second conversation database. Tasks sharing a Codex thread appear in one session. Startup migrates existing task references and removes the old transcript tables and stored result bodies.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
@@ -223,6 +223,7 @@ AgentTask(
     action=TaskAction.RUN,
     context_key="my-domain:object-456",
     prompt="Review or handle this event.",
+    developer_instructions="Continue this object's task across turns and follow the configured publication policy.",
     instruction_docs=[
         InstructionDocument(
             name="AGENTS.md",
@@ -243,5 +244,11 @@ AgentTask(
 ```
 
 Core executes the task and calls post-process hooks registered for `metadata["plugin_id"]`.
+
+`developer_instructions` and configured `instruction_docs` form the session instructions. The app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Codex's built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard records session instructions separately from the actual turn input.
+
+Plugins that need current external state before execution can register `runtime.add_task_preparer(self.id, self.prepare_task)`. The async preparer receives `(task, coalesced_tasks, context)` after the context lease is acquired, and returns a task with the current workspace, instructions, and message. Keep the task ID and context key unchanged; return an ignored task when the work is no longer applicable.
+
+Task merging is opt-in with a `coalesce_key` and requires a registered preparer. Compatible queued tasks with the same key, plugin, and context can merge within `runtime.coalesce_window_seconds`; the preparer owns their domain-specific merge. Ordinary tasks remain separate. Recording and merging happen in one transaction, and a running task cannot receive late merged events. This window does not delay task execution or guarantee that nearby events will share a turn.
 
 By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs Codex there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.

@@ -11,7 +11,7 @@ from nyanpasu_github_pr_maker.models import CreatePullRequestTaskRequest
 from nyanpasu_github_pr_maker.plugin import GitHubPrMakerPlugin
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import TaskRunResult, TaskStatus
+from nyanpasu.models import AgentContext, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 
@@ -36,6 +36,9 @@ class FakeAgent:
 
     async def shutdown(self) -> None:
         return None
+
+    def add_task_preparer(self, plugin_id, preparer) -> None:
+        self.preparer = preparer
 
     def add_post_process_hook(self, plugin_id, hook) -> None:
         self.hooks[plugin_id] = hook
@@ -94,13 +97,15 @@ async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, 
     assert task.metadata["publish"]["dry_run"] is True
     assert "gh_env" not in task.metadata["publish"]
     assert "token" not in str(task.metadata)
-    assert "Create a branch, commit your changes, push the branch, and open exactly one pull request" in task.prompt
-    assert "gh pr create" in task.prompt
-    assert "NO_PR: <reason>" in task.prompt
-    assert "Dry run:" in task.prompt
-    assert "Do not commit, push, or create a pull request." in task.prompt
-    assert "PR: <url>" in task.prompt
-    assert "NYANPASU_TEST_GH_TOKEN" in task.prompt
+    assert "Update the README with setup instructions." in task.prompt
+    assert "Draft: False; dry run: True" in task.prompt
+    assert "gh pr create" not in task.prompt
+    assert "NYANPASU_TEST_GH_TOKEN" not in task.prompt
+    assert "gh pr create" in task.developer_instructions
+    assert "NO_PR: <reason>" in task.developer_instructions
+    assert "Publication mode: dry run" in task.developer_instructions
+    assert "PR: <url>" in task.developer_instructions
+    assert "NYANPASU_TEST_GH_TOKEN" in task.developer_instructions
 
 
 @pytest.mark.anyio
@@ -147,7 +152,6 @@ async def test_pr_maker_post_process_records_agent_created_pr(tmp_path: Path, mo
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="Implemented docs.\nPR: https://github.com/ExampleOrg/ExampleRepo/pull/1",
-            raw_events=[],
             session_worktree=tmp_path / "worktree",
         ),
     )
@@ -194,7 +198,6 @@ async def test_pr_maker_records_failure_when_agent_omits_pr_url(tmp_path: Path, 
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="Implemented docs.",
-            raw_events=[],
             session_worktree=tmp_path / "worktree",
         ),
     )
@@ -237,7 +240,6 @@ async def test_pr_maker_dry_run_records_without_pr_url(tmp_path: Path, monkeypat
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="Dry run complete.",
-            raw_events=[],
             session_worktree=tmp_path / "worktree",
         ),
     )
@@ -280,7 +282,6 @@ async def test_pr_maker_records_agent_no_pr_reason(tmp_path: Path, monkeypatch) 
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="Nothing to change.\nNO_PR: repository already contains the requested docs",
-            raw_events=[],
             session_worktree=tmp_path / "worktree",
         ),
     )
@@ -334,7 +335,6 @@ async def test_pr_maker_registers_managed_pr_when_follow_up_enabled(tmp_path: Pa
                 thread_id="thread-1",
                 turn_id="turn-1",
                 final_message="Done.\nPR: https://github.com/ExampleOrg/ExampleRepo/pull/1",
-                raw_events=[],
                 session_worktree=tmp_path / "worktree",
             ),
         )
@@ -409,11 +409,31 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         assert follow_up_task.metadata["publish"]["existing_pr_number"] == 1
         assert follow_up_task.metadata["publish"]["git_author_name"] == "Bot"
         assert seen_env == [{"GH_TOKEN": "token", "GITHUB_TOKEN": "token"}]
-        assert "failing checks: unit" in follow_up_task.prompt
-        assert "push to the existing PR branch" in follow_up_task.prompt
-        assert "open another pull request" in follow_up_task.prompt
-        assert "NYANPASU_TEST_GH_TOKEN" in follow_up_task.prompt
+        assert "Failing checks: unit" in follow_up_task.prompt
+        assert "commit and push needed changes to the existing PR branch" in follow_up_task.developer_instructions
+        assert "NYANPASU_TEST_GH_TOKEN" in follow_up_task.developer_instructions
+        assert "NYANPASU_TEST_GH_TOKEN" not in follow_up_task.prompt
+        assert "Update docs." not in follow_up_task.prompt
         assert "token" not in str(follow_up_task.metadata)
+
+        plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
+        second = _pr_view(head_sha="latest-head", failing_checks=("unit",))
+        monkeypatch.setattr(plugin_module, "fetch_pull_request_view", fetch_pr)
+        context = AgentContext(
+            context_key=follow_up_task.context_key,
+            thread_id="existing-thread",
+            session_worktree=tmp_path / "worktree",
+            workspace_key="ExampleOrg/ExampleRepo",
+            revision="abc123",
+        )
+        resumed = await runtime.preparer(follow_up_task, (), context)
+        restored = await runtime.preparer(follow_up_task, (), None)
+        assert resumed.workspace is not None and resumed.workspace.revision == "latest-head"
+        assert "Target head: latest-head" in resumed.prompt
+        assert "Update docs." not in resumed.prompt
+        assert "Original task (restored" in restored.prompt and "Update docs." in restored.prompt
+        assert resumed.developer_instructions == restored.developer_instructions
+        assert len(resumed.prompt) < 1000
     finally:
         await plugin.shutdown()
 
@@ -433,6 +453,9 @@ class FakeRuntime:
 
     def add_router(self, router, *, prefix: str = "", tags=None) -> None:
         _ = router, prefix, tags
+
+    def add_task_preparer(self, plugin_id, preparer) -> None:
+        self.preparer = preparer
 
     def add_post_process_hook(self, plugin_id: str, hook) -> None:
         self.hooks[plugin_id] = hook

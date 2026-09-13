@@ -9,12 +9,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from nyanpasu.agent import AgentService, PostProcessHook
+from nyanpasu.codex import CodexAppServerBackend, CodexSessionSource
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
-from nyanpasu.plugins import PluginManager, PluginRegistry
+from nyanpasu.plugins import PluginManager, PluginRegistry, TaskPreparer
 from nyanpasu.store import StateStore
-from nyanpasu.transcript import TranscriptStore
 from nyanpasu.transcript.api import dashboard_router
-from nyanpasu.transcript.database import RecordNotFound
+from nyanpasu.transcript.queries import CursorError, TranscriptReader
+from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
 
 if TYPE_CHECKING:
     from enum import Enum
@@ -30,6 +31,8 @@ class AgentBackend(Protocol):
     async def shutdown(self) -> None: ...
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None: ...
+
+    def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None: ...
 
 
 class WebPluginRuntime:
@@ -53,18 +56,29 @@ class WebPluginRuntime:
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self.agent.add_post_process_hook(plugin_id, hook)
 
+    def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
+        self.agent.add_task_preparer(plugin_id, preparer)
+
 
 def create_app(
     config: NyanpasuConfig | None = None,
     agent: AgentBackend | None = None,
     *,
     plugin_registry: PluginRegistry | None = None,
+    session_source: CodexSessionSource | None = None,
 ) -> FastAPI:
     resolved_config = config or load_config()
     ensure_state_dirs(resolved_config)
     resolved_agent = agent or AgentService(resolved_config)
     runtime = WebPluginRuntime(config=resolved_config, app=None, agent=resolved_agent)
     plugin_manager = PluginManager(resolved_config, runtime, plugin_registry)
+    history_backend = None
+    if session_source is None:
+        if isinstance(resolved_agent, AgentService):
+            session_source = resolved_agent.codex
+        else:
+            history_backend = CodexAppServerBackend(resolved_config)
+            session_source = history_backend
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -74,14 +88,15 @@ def create_app(
         finally:
             await plugin_manager.shutdown()
             await resolved_agent.shutdown()
+            if history_backend is not None:
+                await history_backend.close()
 
     app = FastAPI(title="Nyanpasu Agent Service", version="0.1.0", lifespan=lifespan)
     app.state.config = resolved_config
     app.state.agent = resolved_agent
     runtime.app = app
     state_store = StateStore(resolved_config.db_path)
-    transcript_store = TranscriptStore(state_store.db_path)
-    transcript_store.import_legacy()
+    reader = TranscriptReader(state_store.db_path, session_source)
 
     def runtime_info() -> dict[str, Any]:
         if isinstance(resolved_agent, AgentService):
@@ -89,16 +104,23 @@ def create_app(
             proc = getattr(backend, "_proc", None)
             return {
                 "connection": "connected" if proc is not None and proc.returncode is None else "idle",
-                "capture_error": resolved_agent.capture_error,
                 "diagnostics": list(getattr(backend, "diagnostics", [])),
             }
-        return {"connection": "external", "capture_error": None, "diagnostics": []}
+        return {"connection": "external", "diagnostics": []}
 
-    app.include_router(dashboard_router(resolved_config, transcript_store, runtime_info))
+    app.include_router(dashboard_router(resolved_config, reader, runtime_info))
 
     @app.exception_handler(RecordNotFound)
     async def missing_record(request, exc: RecordNotFound):
         return JSONResponse(status_code=404, content={"detail": str(exc.args[0])})
+
+    @app.exception_handler(SourceUnavailable)
+    async def unavailable_source(request, exc: SourceUnavailable):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(CursorError)
+    async def invalid_cursor(request, exc: CursorError):
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
     static_dir = dashboard_static_dir()
     if static_dir is not None:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from nyanpasu.models import AgentTask, TaskRunResult
+from nyanpasu.models import AgentContext, AgentTask, TaskRunResult
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
+TaskPreparer = Callable[[AgentTask, tuple[AgentTask, ...], AgentContext | None], Awaitable[AgentTask]]
 
 
 @runtime_checkable
@@ -37,6 +38,8 @@ class PluginRuntime(Protocol):
     def add_router(self, router: APIRouter, *, prefix: str = "", tags: list[str] | None = None) -> None: ...
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None: ...
+
+    def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None: ...
 
 
 class PluginRegistry:

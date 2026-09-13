@@ -59,7 +59,7 @@ class StateStore:
                     thread_id TEXT,
                     turn_id TEXT,
                     task_json TEXT NOT NULL,
-                    result_json TEXT,
+                    coalesced_into TEXT,
                     error TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -79,10 +79,51 @@ class StateStore:
                 );
                 """
             )
+            self._remove_conversation_copies(conn)
+
+    @staticmethod
+    def _remove_conversation_copies(conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        if "result_json" not in columns:
+            return
+        if "coalesced_into" not in columns:
+            conn.execute("ALTER TABLE task_runs ADD COLUMN coalesced_into TEXT")
+        conn.execute("BEGIN")
+        conn.execute("UPDATE task_runs SET coalesced_into=json_extract(result_json,'$.coalesced_into')")
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "transcript_tasks" in tables:
+            conn.execute("""
+                UPDATE task_runs SET
+                    thread_id=coalesce(thread_id, (
+                        SELECT s.thread_id FROM transcript_tasks t
+                        JOIN transcript_sessions s USING(session_id) WHERE t.task_id=task_runs.task_id
+                    )),
+                    turn_id=coalesce(turn_id, (
+                        SELECT t.turn_id FROM transcript_tasks t WHERE t.task_id=task_runs.task_id
+                    ))
+            """)
+        conn.execute("ALTER TABLE task_runs DROP COLUMN result_json")
+        for table in (
+            "transcript_events",
+            "transcript_entries",
+            "transcript_changes",
+            "transcript_chunks",
+            "transcript_contents",
+            "transcript_tasks",
+            "transcript_sessions",
+            "transcript_imports",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def record_task(self, task: AgentTask) -> bool:
+        accepted, _ = self.enqueue_task(task)
+        return accepted
+
+    def enqueue_task(self, task: AgentTask, *, coalesce_since: float | None = None) -> tuple[bool, str | None]:
+        """Record and optionally merge a task before another worker can claim either task."""
         now = time.time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute(
                     """
@@ -102,12 +143,57 @@ class StateStore:
                         now,
                     ),
                 )
-                return True
             except sqlite3.IntegrityError:
-                return False
+                return False, None
+            if coalesce_since is None or not task.coalesce_key or task.action is not TaskAction.RUN:
+                return True, None
+            row = conn.execute(
+                """
+                SELECT task_id, action, task_json, created_at FROM task_runs
+                WHERE context_key = ? AND status = ? AND task_id <> ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (task.context_key, TaskStatus.QUEUED.value, task.task_id),
+            ).fetchone()
+            if row is None or row["action"] != TaskAction.RUN.value or row["created_at"] < coalesce_since:
+                return True, None
+            queued = AgentTask.model_validate(json.loads(row["task_json"]))
+            if queued.coalesce_key != task.coalesce_key or queued.metadata.get("plugin_id") != task.metadata.get(
+                "plugin_id"
+            ):
+                return True, None
+            conn.execute(
+                "UPDATE task_runs SET status = ?, coalesced_into = ?, updated_at = ? WHERE task_id = ?",
+                (
+                    TaskStatus.COMPLETED.value,
+                    queued.task_id,
+                    now,
+                    task.task_id,
+                ),
+            )
+            return True, queued.task_id
 
     def mark_task_running(self, task_id: str, event_worktree: Path | None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree)
+
+    def update_task_input(self, task: AgentTask) -> None:
+        with self._connect() as conn:
+            original = json.loads(
+                conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task.task_id,)).fetchone()[0]
+            )
+            # Keep the scheduler request; Codex owns the resulting conversation.
+            prepared = task.model_dump(mode="json", exclude={"prompt", "developer_instructions", "instruction_docs"})
+            conn.execute(
+                "UPDATE task_runs SET task_json = ?, action = ?, updated_at = ? WHERE task_id = ?",
+                (json_dumps({**original, **prepared}), task.action.value, time.time(), task.task_id),
+            )
+
+    def bind_task_execution(self, task_id: str, thread_id: str, turn_id: str | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE task_runs SET thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
+                (thread_id, turn_id, time.time(), task_id),
+            )
 
     def mark_task_done(self, result: TaskRunResult) -> None:
         self._update_task(
@@ -115,7 +201,7 @@ class StateStore:
             result.status,
             thread_id=result.thread_id,
             turn_id=result.turn_id,
-            result_json=json_dumps(_result_to_json(result)),
+            event_worktree=result.event_worktree,
             error=result.error,
         )
 
@@ -123,24 +209,7 @@ class StateStore:
         self._update_task(task_id, TaskStatus.FAILED, error=error)
 
     def mark_task_interrupted(self, task_id: str, error: str) -> None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT result_json, error FROM task_runs WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
-            result_json = None
-            if row is not None and row["result_json"] is not None:
-                result_json = str(row["result_json"])
-        if result_json is None:
-            result_json = json_dumps({"interrupted": True})
-        self._update_task(task_id, TaskStatus.FAILED, result_json=result_json, error=error)
-
-    def mark_task_coalesced(self, task_id: str, active_task_id: str) -> None:
-        self._update_task(
-            task_id,
-            TaskStatus.COMPLETED,
-            result_json=json_dumps({"coalesced": True, "coalesced_into": active_task_id}),
-        )
+        self._update_task(task_id, TaskStatus.FAILED, error=error)
 
     def task_status(self, task_id: str) -> str | None:
         with self._connect() as conn:
@@ -294,21 +363,15 @@ class StateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT task_id, task_json, result_json, created_at
+                SELECT task_id, task_json, created_at
                 FROM task_runs
-                WHERE status = ? AND result_json IS NOT NULL
+                WHERE coalesced_into = ?
                 ORDER BY created_at ASC
                 """,
-                (TaskStatus.COMPLETED.value,),
+                (active_task_id,),
             ).fetchall()
         tasks: list[CoalescedTaskRecord] = []
         for row in rows:
-            try:
-                result = json.loads(row["result_json"])
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(result, dict) or result.get("coalesced_into") != active_task_id:
-                continue
             try:
                 task = json.loads(row["task_json"])
             except json.JSONDecodeError:
@@ -480,7 +543,6 @@ class StateStore:
         event_worktree: Path | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
-        result_json: str | None = None,
         error: str | None = None,
     ) -> None:
         updates = ["status = ?", "updated_at = ?"]
@@ -494,9 +556,6 @@ class StateStore:
         if turn_id is not None:
             updates.append("turn_id = ?")
             values.append(turn_id)
-        if result_json is not None:
-            updates.append("result_json = ?")
-            values.append(result_json)
         if error is not None:
             updates.append("error = ?")
             values.append(error)
@@ -602,19 +661,4 @@ def _first_line(value: str) -> str:
 
 
 def _task_to_json(task: AgentTask) -> dict[str, Any]:
-    return {
-        "task_id": task.task_id,
-        "action": task.action.value,
-        "context_key": task.context_key,
-        "prompt": task.prompt,
-        "workspace": task.workspace.model_dump(mode="json") if task.workspace else None,
-        "instruction_docs": [doc.model_dump(mode="json") for doc in task.instruction_docs],
-        "dedupe_key": task.dedupe_key,
-        "metadata": task.metadata,
-        "workspace_policy": task.workspace_policy,
-        "cleanup_policy": task.cleanup_policy,
-    }
-
-
-def _result_to_json(result: TaskRunResult) -> dict[str, Any]:
-    return result.model_dump(mode="json")
+    return task.model_dump(mode="json")

@@ -1,21 +1,28 @@
 from __future__ import annotations
 
-import base64
 import json
 import re
+import sqlite3
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from nyanpasu.models import json_dumps
-from nyanpasu.transcript.content import content_page
-from nyanpasu.transcript.database import RecordNotFound, now_iso
+from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint, redact
+from nyanpasu.transcript.models import Coverage, TranscriptEntry
+from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
 
 if TYPE_CHECKING:
-    import sqlite3
+    from collections.abc import Iterator
+    from pathlib import Path
 
-    from nyanpasu.transcript.database import TranscriptDatabase
+    from nyanpasu.codex import CodexSessionSource
 
 BUDGET = 240 * 1024
+TASKS = """
+    SELECT r.*,coalesce(r.thread_id,parent.thread_id) AS session_id,
+           (SELECT expires_at FROM context_leases WHERE context_key=r.context_key) AS lease_expires_at
+    FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+"""
 
 
 class CursorError(ValueError):
@@ -24,48 +31,141 @@ class CursorError(ValueError):
         self.status = status
 
 
-SESSION_STATES = """
-WITH session_states AS (
-    SELECT s.*, coalesce((
-        SELECT r.status FROM transcript_tasks t JOIN task_runs r USING(task_id)
-        WHERE t.session_id=s.session_id ORDER BY t.started_at DESC LIMIT 1
-    ), 'unknown') AS state FROM transcript_sessions s
-)
-"""
+def cursor(session_id: str, purpose: str, value: Any) -> str:
+    return encode([session_id, purpose, value])
+
+
+def position(value: str, session_id: str, purpose: str) -> Any:
+    try:
+        data = decode(value)
+    except ValueError as exc:
+        raise CursorError(str(exc)) from exc
+    if not isinstance(data, list) or len(data) != 3 or data[:2] != [session_id, purpose]:
+        raise CursorError("Cursor belongs to a different session or query")
+    return data[2]
+
+
+def title(task: dict[str, Any]) -> str:
+    metadata = task.get("metadata", {})
+    request = metadata.get("request", {})
+    return str(request.get("title") or task.get("prompt") or task["task_id"]).splitlines()[0][:160]
+
+
+def take(
+    entries: list[TranscriptEntry], limit: int, *, reverse: bool = False, budget: int = BUDGET
+) -> list[dict[str, Any]]:
+    selected, size = [], 0
+    for entry in reversed(entries) if reverse else entries:
+        value = entry.model_dump(mode="json")
+        cost = len(json.dumps(value, ensure_ascii=False).encode())
+        if len(selected) >= limit or (selected and size + cost > budget):
+            break
+        selected.append(value)
+        size += cost
+    return list(reversed(selected)) if reverse else selected
 
 
 class TranscriptReader:
-    def __init__(self, database: TranscriptDatabase):
-        self.db = database
+    """Task metadata comes from Nyanpasu; every conversation read comes from Codex."""
 
-    def cursor(self, session: sqlite3.Row, purpose: str, seq: int) -> str:
-        return (
-            base64.urlsafe_b64encode(
-                json_dumps([session["session_id"], session["generation"], purpose, str(seq)]).encode()
-            )
-            .decode()
-            .rstrip("=")
-        )
+    def __init__(self, db_path: Path, source: CodexSessionSource):
+        self.db_path = db_path
+        self.source = source
 
-    def decode_cursor(self, session: sqlite3.Row, value: str, purpose: str) -> int:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+        conn.row_factory = sqlite3.Row
         try:
-            sid, generation, kind, seq = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
-            if (
-                sid != session["session_id"]
-                or kind != purpose
-                or not str(seq).isdigit()
-                or int(seq) > 9223372036854775807
-            ):
-                raise ValueError
-            if generation != session["generation"]:
-                raise CursorError("Transcript generation changed; reload this session", 409)
-            return int(seq)
-        except CursorError:
-            raise
-        except (ValueError, TypeError, UnicodeDecodeError) as exc:
-            raise CursorError("Invalid cursor for this session and query") from exc
+            yield conn
+        finally:
+            conn.close()
 
-    def window(
+    def _tasks(self, session_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ({TASKS}) WHERE session_id=? ORDER BY created_at", (session_id,)
+            ).fetchall()
+        if not rows:
+            raise RecordNotFound("Codex session is not associated with a Nyanpasu task")
+        return [dict(row) for row in rows]
+
+    async def snapshot(self, session_id: str) -> Snapshot:
+        tasks = self._tasks(session_id)
+        task_by_turn = {row["turn_id"]: row["task_id"] for row in tasks if row["turn_id"] and not row["coalesced_into"]}
+        return await read_snapshot(self.source, session_id, task_by_turn)
+
+    def sessions(
+        self, q: str = "", state: str = "", context: str = "", offset: int = 0, limit: int = 50
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT * FROM ({TASKS}) WHERE session_id IS NOT NULL ORDER BY created_at").fetchall()
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            groups.setdefault(row["session_id"], []).append(dict(row))
+        items = [self._session(session_id, tasks) for session_id, tasks in groups.items()]
+        items = [
+            item
+            for item in items
+            if (not q or q.casefold() in (item["title"] + " " + item["context_key"]).casefold())
+            and (not state or item["state"] == state)
+            and (not context or context in item["context_key"])
+        ]
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return {
+            "items": items[offset : offset + limit],
+            "total": len(items),
+            "offset": offset,
+            "has_more": offset + limit < len(items),
+        }
+
+    @staticmethod
+    def _session(session_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        latest = tasks[-1]
+        return {
+            "session_id": session_id,
+            "thread_id": session_id,
+            "context_key": latest["context_key"],
+            "title": title(json.loads(latest["task_json"])),
+            "backend": "codex",
+            "origin": "codex",
+            "created_at": iso_time(tasks[0]["created_at"]),
+            "updated_at": iso_time(max(task["updated_at"] for task in tasks)),
+            "state": latest["status"],
+            "execution_uncertain": latest["status"] == "running" and (latest["lease_expires_at"] or 0) < time.time(),
+            "task_count": len(tasks),
+            "coverage": Coverage().model_dump(),
+            "previous_session_id": None,
+        }
+
+    def session(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        tasks = self._tasks(session_id)
+        data = self._session(session_id, tasks)
+        data["tasks"] = []
+        for row in tasks[offset : offset + limit]:
+            task = json.loads(row["task_json"])
+            workspace = task.get("workspace") or {}
+            data["tasks"].append(
+                {
+                    "task_id": row["task_id"],
+                    "turn_id": row["turn_id"],
+                    "title": title(task),
+                    "state": row["status"],
+                    "cwd": row["event_worktree"],
+                    "revision": workspace.get("revision"),
+                    "started_at": iso_time(row["created_at"]),
+                    "ended_at": iso_time(row["updated_at"]) if row["status"] in {"completed", "failed"} else None,
+                }
+            )
+        data["has_more_tasks"] = offset + limit < len(tasks)
+        return redact(data)
+
+    @staticmethod
+    def _change_position(snapshot: Snapshot) -> dict[str, Any]:
+        latest = snapshot.turns[-1] if snapshot.turns else None
+        return {"turn": latest["id"] if latest else None, "revision": fingerprint(latest), "offset": 0}
+
+    async def window(
         self,
         session_id: str,
         *,
@@ -76,175 +176,95 @@ class TranscriptReader:
         limit: int = 50,
     ) -> dict[str, Any]:
         if sum(value is not None for value in (before, after_window, around, after)) > 1:
-            raise ValueError("before, after_window, around, and after are mutually exclusive")
-        with self.db.connect() as conn:
-            session = self.db.session(conn, session_id)
-            latest = conn.execute(
-                "SELECT coalesce(max(seq),0) FROM transcript_events WHERE session_id=?", (session_id,)
-            ).fetchone()[0]
-            common = {"session_id": session_id, "generation": session["generation"], "generated_at": now_iso()}
-            if after is not None:
-                start = self.decode_cursor(session, after, "changes")
-                if start > latest:
-                    raise CursorError("Cursor is beyond this transcript")
-                rows = conn.execute(
-                    "SELECT * FROM transcript_changes WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?",
-                    (session_id, start, limit + 1),
-                ).fetchall()
-                changes, used, cursor = [], 0, start
-                for row in rows[:limit]:
-                    cost = len(row["data"].encode())
-                    if changes and used + cost > BUDGET:
-                        break
-                    used += cost
-                    cursor = row["seq"]
-                    changes.append({"seq": str(cursor), "upserts": [json.loads(row["data"])]})
-                more = bool(rows and rows[-1]["seq"] > cursor)
-                if not more:
-                    cursor = latest
-                return {
-                    **common,
-                    "changes": changes,
-                    "next_cursor": self.cursor(session, "changes", cursor),
-                    "has_more": more,
-                }
-            where, order = "session_id=?", "DESC"
-            args: list[Any] = [session_id]
-            if before is not None:
-                where += " AND first_seq<?"
-                args.append(self.decode_cursor(session, before, "before"))
-            elif after_window is not None:
-                where += " AND first_seq>?"
-                args.append(self.decode_cursor(session, after_window, "forward"))
-                order = "ASC"
-            elif around is not None:
-                target = conn.execute(
-                    "SELECT first_seq FROM transcript_entries WHERE session_id=? AND entry_id=?", (session_id, around)
-                ).fetchone()
-                if target is None:
-                    raise RecordNotFound("Entry not found in this session")
-                earlier = conn.execute(
-                    "SELECT first_seq FROM transcript_entries WHERE session_id=? AND first_seq<=? ORDER BY first_seq DESC LIMIT ?",
-                    (session_id, target[0], max(1, limit // 2)),
-                ).fetchall()
-                where += " AND first_seq>=?"
-                args.append(earlier[-1][0])
-                order = "ASC"
-            rows = conn.execute(
-                f"SELECT data,first_seq FROM transcript_entries WHERE {where} ORDER BY first_seq {order} LIMIT ?",
-                (*args, limit),
-            ).fetchall()
-            if around is not None:
-                center = next(index for index, row in enumerate(rows) if json.loads(row["data"])["entry_id"] == around)
-                rows = sorted(enumerate(rows), key=lambda pair: abs(pair[0] - center))
-                rows = [row for _, row in rows]
-            entries, used = [], 0
-            for row in rows:
-                cost = len(row["data"].encode())
-                if entries and used + cost > BUDGET:
-                    break
-                used += cost
-                entries.append(json.loads(row["data"]))
-            entries.sort(key=lambda entry: int(entry["first_seq"]))
-            first = int(entries[0]["first_seq"]) if entries else 0
-            last = int(entries[-1]["first_seq"]) if entries else 0
-            older = bool(
-                conn.execute(
-                    "SELECT 1 FROM transcript_entries WHERE session_id=? AND first_seq<? LIMIT 1", (session_id, first)
-                ).fetchone()
-            )
-            newer = bool(
-                conn.execute(
-                    "SELECT 1 FROM transcript_entries WHERE session_id=? AND first_seq>? LIMIT 1", (session_id, last)
-                ).fetchone()
-            )
-            return {
-                **common,
-                "entries": entries,
-                "before_cursor": self.cursor(session, "before", first) if entries else None,
-                "after_window_cursor": self.cursor(session, "forward", last) if entries else None,
-                "has_older": older,
-                "has_newer": newer,
-                "change_cursor": self.cursor(session, "changes", latest),
-                "coverage": json.loads(session["coverage"]),
-            }
+            raise CursorError("Choose one of before, after_window, around, or after")
+        snapshot = await self.snapshot(session_id)
+        if after is not None:
+            return self._changes(snapshot, after, limit)
+        entries = list(snapshot.entries)
+        if before:
+            anchor = position(before, session_id, "window")
+            values = take(entries[: snapshot.position(anchor)], limit, reverse=True)
+        elif after_window:
+            anchor = position(after_window, session_id, "window")
+            values = take(entries[snapshot.position(anchor) + 1 :], limit)
+        elif around:
+            index = snapshot.position(around)
+            newer = take(entries[index:], max(1, limit // 2), budget=BUDGET // 2)
+            values = take(entries[:index], limit - len(newer), reverse=True, budget=BUDGET // 2)
+            values.extend(newer)
+        else:
+            values = take(entries, limit, reverse=True)
+        start = int(values[0]["first_seq"]) - 1 if values else 0
+        end = int(values[-1]["first_seq"]) if values else 0
+        return {
+            "session_id": session_id,
+            "generation": snapshot.generation,
+            "generated_at": snapshot.read_at,
+            "entries": values,
+            "before_cursor": cursor(session_id, "window", values[0]["entry_id"]) if start else None,
+            "after_window_cursor": cursor(session_id, "window", values[-1]["entry_id"])
+            if values and end < len(entries)
+            else None,
+            "has_older": start > 0,
+            "has_newer": end < len(entries),
+            "change_cursor": cursor(session_id, "changes", self._change_position(snapshot)),
+            "coverage": snapshot.coverage,
+        }
 
-    def sessions(
-        self, q: str = "", state: str = "", context: str = "", offset: int = 0, limit: int = 50
+    def _changes(self, snapshot: Snapshot, after: str, limit: int) -> dict[str, Any]:
+        state = position(after, snapshot.session_id, "changes")
+        if not isinstance(state, dict) or set(state) - {"turn", "revision", "offset", "page_revision"}:
+            raise CursorError("Invalid change cursor")
+        anchor = state.get("turn")
+        offset = state.get("offset", 0)
+        if not isinstance(offset, int) or offset < 0:
+            raise CursorError("Invalid change offset")
+        turn_ids = [turn["id"] for turn in snapshot.turns]
+        if anchor is not None and anchor not in turn_ids:
+            raise CursorError("Codex history changed; reload this session", 409)
+        turns = snapshot.turns[turn_ids.index(anchor) :] if anchor is not None else snapshot.turns
+        latest = self._change_position(snapshot)
+        unchanged = state == latest
+        ids = {turn["id"] for turn in turns}
+        candidates = [] if unchanged else [entry for entry in snapshot.entries if entry.turn_id in ids]
+        revision = fingerprint(turns)
+        if state.get("page_revision") != revision:
+            offset = 0
+        values = take(candidates[offset:], limit)
+        end = offset + len(values)
+        more = end < len(candidates)
+        next_position = {**state, "offset": end, "page_revision": revision} if more else latest
+        return {
+            "session_id": snapshot.session_id,
+            "generation": snapshot.generation,
+            "generated_at": snapshot.read_at,
+            "changes": [{"seq": revision, "upserts": values}] if values else [],
+            "next_cursor": cursor(snapshot.session_id, "changes", next_position),
+            "has_more": more,
+        }
+
+    async def entry(self, session_id: str, entry_id: str) -> dict[str, Any]:
+        return (await self.snapshot(session_id)).entry(entry_id).model_dump(mode="json")
+
+    async def _content(self, session_id: str, ref: str) -> str:
+        data = decode(ref)
+        if not isinstance(data, list) or len(data) != 4 or data[0] != session_id:
+            raise CursorError("Content belongs to a different session")
+        snapshot = await self.snapshot(session_id)
+        snapshot.entry(data[1])
+        if ref not in snapshot.contents:
+            raise CursorError("The Codex item changed; refresh it before reading this content", 409)
+        return snapshot.contents[ref]
+
+    async def content(
+        self, session_id: str, ref: str, offset: int = 0, limit: int = CHUNK_BYTES, *, tail: bool = False
     ) -> dict[str, Any]:
-        where, args = ["1=1"], []
-        if q:
-            where.append("(instr(lower(title),lower(?))>0 OR instr(lower(context_key),lower(?))>0)")
-            args.extend([q, q])
-        if state:
-            where.append("state=?")
-            args.append(state)
-        if context:
-            where.append("context_key=?")
-            args.append(context)
-        with self.db.connect() as conn:
-            total = conn.execute(
-                f"{SESSION_STATES} SELECT count(*) FROM session_states WHERE {' AND '.join(where)}", args
-            ).fetchone()[0]
-            rows = conn.execute(
-                f"{SESSION_STATES} SELECT * FROM session_states WHERE {' AND '.join(where)} ORDER BY (state IN ('running','preparing')) DESC, updated_at DESC LIMIT ? OFFSET ?",
-                (*args, limit, offset),
-            ).fetchall()
-            items = [self._session_dict(conn, row) for row in rows]
-        return {"items": items, "total": total, "offset": offset, "has_more": offset + len(items) < total}
+        return content_page(await self._content(session_id, ref), ref, offset, limit, tail=tail)
 
-    def _session_dict(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
-        data = dict(row)
-        data["coverage"] = json.loads(data["coverage"])
-        lease = conn.execute(
-            "SELECT expires_at FROM context_leases WHERE context_key=?", (row["context_key"],)
-        ).fetchone()
-        latest = conn.execute(
-            "SELECT r.status FROM transcript_tasks t JOIN task_runs r USING(task_id) WHERE t.session_id=? ORDER BY t.started_at DESC LIMIT 1",
-            (row["session_id"],),
-        ).fetchone()
-        data["state"] = latest[0] if latest else "unknown"
-        data["execution_uncertain"] = data["state"] in {"running", "preparing"} and (
-            not lease or lease[0] < time.time()
-        )
-        data["entry_count"] = conn.execute(
-            "SELECT count(*) FROM transcript_entries WHERE session_id=?", (row["session_id"],)
-        ).fetchone()[0]
-        return data
+    async def download(self, session_id: str, ref: str) -> str:
+        return await self._content(session_id, ref)
 
-    def session(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        with self.db.connect() as conn:
-            session = self._session_dict(conn, self.db.session(conn, session_id))
-            session["tasks"] = [
-                dict(row)
-                for row in conn.execute(
-                    "SELECT t.*,r.status AS state FROM transcript_tasks t JOIN task_runs r USING(task_id) WHERE session_id=? ORDER BY t.started_at LIMIT ? OFFSET ?",
-                    (session_id, limit, offset),
-                )
-            ]
-            session["task_count"] = conn.execute(
-                "SELECT count(*) FROM transcript_tasks WHERE session_id=?", (session_id,)
-            ).fetchone()[0]
-            session["has_more_tasks"] = offset + len(session["tasks"]) < session["task_count"]
-            return session
-
-    def entry(self, session_id: str, entry_id: str) -> dict[str, Any]:
-        with self.db.connect() as conn:
-            self.db.session(conn, session_id)
-            row = conn.execute(
-                "SELECT data FROM transcript_entries WHERE session_id=? AND entry_id=?", (session_id, entry_id)
-            ).fetchone()
-            if row is None:
-                raise RecordNotFound("Entry not found in this session")
-            return json.loads(row[0])
-
-    def content(
-        self, session_id: str, ref: str, offset: int = 0, limit: int = 65536, *, tail: bool = False
-    ) -> dict[str, Any]:
-        with self.db.connect() as conn:
-            return content_page(conn, session_id, ref, offset, limit, tail=tail)
-
-    def events(
+    async def events(
         self,
         session_id: str,
         *,
@@ -254,38 +274,36 @@ class TranscriptReader:
         limit: int = 50,
         q: str = "",
     ) -> dict[str, Any]:
-        with self.db.connect() as conn:
-            session = self.db.session(conn, session_id)
-            purpose = "events:" + json_dumps([entry_id, q])
-            start = self.decode_cursor(session, after, purpose) if after else max(0, (around or 1) - 1)
-            where, args = "session_id=? AND seq>?", [session_id, start]
-            if entry_id:
-                where += " AND entry_id=?"
-                args.append(entry_id)
-            rows = conn.execute(f"SELECT * FROM transcript_events WHERE {where} ORDER BY seq", args)
-            items = []
-            position = start
-            more = False
-            pattern = re.compile(re.escape(q), re.IGNORECASE)
-            for row in rows:
-                if q and not self._find_content(conn, session_id, row["content_ref"], pattern, len(q)):
-                    position = row["seq"]
-                    continue
-                if len(items) == limit:
-                    more = True
-                    break
-                position = row["seq"]
-                record = dict(row)
-                record["seq"] = str(record["seq"])
-                record["preview"] = content_page(conn, session_id, record["content_ref"], 0, 4096)["text"]
-                items.append(record)
-            return {
-                "items": items,
-                "has_more": more,
-                "next_cursor": self.cursor(session, purpose, position),
-            }
+        snapshot = await self.snapshot(session_id)
+        purpose = "source:" + json.dumps([entry_id, q])
+        start = position(after, session_id, purpose) if after else max(0, (around or 1) - 1)
+        if not isinstance(start, int) or start < 0:
+            raise CursorError("Invalid source item cursor")
+        matches = []
+        for entry in snapshot.entries:
+            ref = snapshot.originals[entry.entry_id]
+            raw = snapshot.contents[ref]
+            if (not entry_id or entry.entry_id == entry_id) and (not q or q.casefold() in raw.casefold()):
+                matches.append(
+                    {
+                        "seq": entry.first_seq,
+                        "type": entry.title,
+                        "direction": "codex",
+                        "observed_at": snapshot.read_at,
+                        "entry_id": entry.entry_id,
+                        "content_ref": ref,
+                        "preview": raw.encode()[:4096].decode(errors="ignore"),
+                    }
+                )
+        values = [item for item in matches if int(item["seq"]) > start][:limit]
+        end = int(values[-1]["seq"]) if values else start
+        return {
+            "items": values,
+            "has_more": any(int(item["seq"]) > end for item in matches),
+            "next_cursor": cursor(session_id, purpose, end),
+        }
 
-    def search(
+    async def search(
         self,
         session_id: str,
         q: str,
@@ -296,122 +314,50 @@ class TranscriptReader:
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
+        snapshot = await self.snapshot(session_id)
         pattern = re.compile(re.escape(q), re.IGNORECASE)
-        with self.db.connect() as conn:
-            session = self.db.session(conn, session_id)
-            latest = conn.execute(
-                "SELECT coalesce(max(seq),0) FROM transcript_events WHERE session_id=?", (session_id,)
-            ).fetchone()[0]
-            where, args = ["session_id=?"], [session_id]
-            if task_id:
-                where.append("task_id=?")
-                args.append(task_id)
-            if kind:
-                where.append("json_extract(data,'$.kind')=?")
-                args.append(kind)
-            if errors:
-                where.append("json_extract(data,'$.state') IN ('failed','declined','interrupted')")
-            order = "DESC" if errors else "ASC"
-            rows = conn.execute(
-                f"SELECT data FROM transcript_entries WHERE {' AND '.join(where)} ORDER BY first_seq {order}", args
-            )
-            found = []
-            for row in rows:
-                entry = json.loads(row["data"])
-                for block in entry["blocks"]:
-                    hit = self._find_content(conn, session_id, block["content_ref"], pattern, len(q))
-                    if hit:
-                        found.append(
-                            {
-                                "entry_id": entry["entry_id"],
-                                "task_id": entry["task_id"],
-                                "turn_id": entry["turn_id"],
-                                "title": entry["title"],
-                                "observed_at": entry["observed_at"],
-                                "block_id": block["block_id"],
-                                "content_ref": block["content_ref"],
-                                **hit,
-                            }
-                        )
-                    if len(found) > offset + limit:
-                        return {
-                            "items": found[offset : offset + limit],
-                            "has_more": True,
-                            "indexed_through": str(latest),
-                            "coverage": json.loads(session["coverage"]),
+        found = []
+        for entry in reversed(snapshot.entries) if errors else snapshot.entries:
+            if (task_id and entry.task_id != task_id) or (kind and entry.kind != kind):
+                continue
+            if errors and entry.state not in {"failed", "declined", "interrupted"}:
+                continue
+            for block in entry.blocks:
+                text = snapshot.contents[block.content_ref]
+                match = pattern.search(text)
+                if match:
+                    found.append(
+                        {
+                            "entry_id": entry.entry_id,
+                            "task_id": entry.task_id,
+                            "title": entry.title,
+                            "block_id": block.block_id,
+                            "content_ref": block.content_ref,
+                            "offset": len(text[: match.start()].encode()),
+                            "snippet": text[max(0, match.start() - 80) : match.end() + 160],
                         }
-            return {
-                "items": found[offset:],
-                "has_more": False,
-                "indexed_through": str(latest),
-                "coverage": json.loads(session["coverage"]),
-            }
+                    )
+                if len(found) > offset + limit:
+                    return {"items": found[offset : offset + limit], "has_more": True}
+        return {"items": found[offset : offset + limit], "has_more": False}
 
-    def _find_content(
-        self, conn: sqlite3.Connection, session_id: str, ref: str, pattern, overlap: int
-    ) -> dict[str, Any] | None:
-        offset, carry = 0, ""
-        while True:
-            page = content_page(conn, session_id, ref, offset, 65536)
-            text = carry + page["text"]
-            match = pattern.search(text)
-            if match:
-                return {
-                    "offset": offset - len(carry.encode()) + len(text[: match.start()].encode()),
-                    "snippet": text[max(0, match.start() - 100) : match.end() + 180],
-                }
-            if page["next_offset"] is None:
-                return None
-            carry = text[-overlap:] if overlap else ""
-            offset = page["next_offset"]
-
-    def download(self, session_id: str, ref: str):
-        with self.db.connect() as conn:
-            yield from self._download_in_snapshot(conn, session_id, ref)
-
-    def export(self, session_id: str, format: str, task_id: str | None = None):
-        with self.db.connect() as conn:
-            session = self.db.session(conn, session_id)
-            latest = conn.execute(
-                "SELECT coalesce(max(seq),0) FROM transcript_events WHERE session_id=?", (session_id,)
-            ).fetchone()[0]
-            metadata = {
-                "session_id": session_id,
-                "task_id": task_id,
-                "generated_at": now_iso(),
-                "through_seq": str(latest),
-                "coverage": json.loads(session["coverage"]),
-                "origin": session["origin"],
-            }
+    async def export(self, session_id: str, format: str, task_id: str | None = None) -> str:
+        snapshot = await self.snapshot(session_id)
+        output = []
+        for entry in snapshot.entries:
+            if task_id and entry.task_id != task_id:
+                continue
             if format == "jsonl":
-                yield json_dumps({"export": metadata}) + "\n"
-                where, args = "session_id=? AND seq<=?", [session_id, latest]
-                if task_id:
-                    where += " AND task_id=?"
-                    args.append(task_id)
-                for row in conn.execute(f"SELECT * FROM transcript_events WHERE {where} ORDER BY seq", args):
-                    yield '{"observation":' + json_dumps(dict(row)) + ',"event":'
-                    yield from self._download_in_snapshot(conn, session_id, row["content_ref"])
-                    yield "}\n"
-            else:
-                yield "# " + session["title"] + "\n\n```json\n" + json.dumps(metadata, indent=2) + "\n```\n\n"
-                where, args = "session_id=?", [session_id]
-                if task_id:
-                    where += " AND task_id=?"
-                    args.append(task_id)
-                for row in conn.execute(f"SELECT data FROM transcript_entries WHERE {where} ORDER BY first_seq", args):
-                    entry = json.loads(row["data"])
-                    yield f"## {entry['title']} · {entry['state']}\n\nTask: {entry['task_id']} · Entry: {entry['entry_id']}\n\n"
-                    for block in entry["blocks"]:
-                        yield f"### {block['block_id']}\n\n"
-                        yield from self._download_in_snapshot(conn, session_id, block["content_ref"])
-                        yield "\n\n"
-
-    def _download_in_snapshot(self, conn: sqlite3.Connection, session_id: str, ref: str):
-        offset = 0
-        while True:
-            page = content_page(conn, session_id, ref, offset, 65536)
-            yield page["text"]
-            if page["next_offset"] is None:
-                return
-            offset = page["next_offset"]
+                output.append(
+                    json.dumps(json.loads(snapshot.contents[snapshot.originals[entry.entry_id]]), ensure_ascii=False)
+                )
+                continue
+            output.append(f"## {entry.title}\n\nTurn: {entry.turn_id}\n")
+            for block in entry.blocks:
+                text = snapshot.contents[block.content_ref]
+                if block.kind == "markdown":
+                    output.append(text)
+                else:
+                    fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", text)), default=0))
+                    output.append(f"{fence}\n{text}\n{fence}")
+        return ("\n" if format == "jsonl" else "\n\n").join(output) + "\n"

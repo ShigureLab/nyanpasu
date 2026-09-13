@@ -5,13 +5,14 @@ import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from nyanpasu_github.instructions import instruction_documents_for_repo
 from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.pulls import PullRequestView, fetch_pull_request_view
 from nyanpasu_github.workspace import branch_workspace_ref
 
 from nyanpasu.models import AgentTask, TaskAction
 from nyanpasu_github_pr_maker.models import PullRequestPublishMetadata
-from nyanpasu_github_pr_maker.prompt import build_pr_follow_up_prompt
+from nyanpasu_github_pr_maker.prompt import build_pr_follow_up_prompt, build_pr_maker_instructions
 
 if TYPE_CHECKING:
     from nyanpasu.plugins import PluginRuntime
@@ -169,11 +170,20 @@ def build_follow_up_task(
         action=TaskAction.RUN,
         context_key=record.context_key,
         prompt=build_pr_follow_up_prompt(
-            config=config,
-            record=record,
+            publish=publish,
             pr=pr,
+        ),
+        developer_instructions=build_pr_maker_instructions(
+            config,
+            dry_run=publish.dry_run,
             auth_instructions=auth_instructions,
         ),
+        instruction_docs=instruction_documents_for_repo(
+            repo=record.repo,
+            plugin_instruction_docs=config.instruction_docs,
+            repo_settings=config.repos,
+        ),
+        coalesce_key=f"pr-followup:{record.repo}#{record.pr_number}",
         workspace=branch_workspace_ref(
             repo=record.repo,
             settings=repo_settings,

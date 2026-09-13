@@ -5,17 +5,18 @@ import time
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from nyanpasu.transcript.content import redact
 from nyanpasu.transcript.models import TranscriptChanges, TranscriptEntry, TranscriptWindow
 from nyanpasu.transcript.queries import CursorError
+from nyanpasu.transcript.source import SourceUnavailable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from nyanpasu.config import NyanpasuConfig
-    from nyanpasu.transcript.store import TranscriptStore
+    from nyanpasu.transcript.queries import TranscriptReader
 
 PageSize = Annotated[int, Query(ge=1, le=100)]
 Offset = Annotated[int, Query(ge=0)]
@@ -23,23 +24,20 @@ Search = Annotated[str, Query(max_length=256)]
 
 
 def dashboard_router(
-    config: NyanpasuConfig, store: TranscriptStore, runtime_info: Callable[[], dict[str, Any]]
+    config: NyanpasuConfig, reader: TranscriptReader, runtime_info: Callable[[], dict[str, Any]]
 ) -> APIRouter:
     router = APIRouter(prefix="/api")
-    reader = store.reader
 
     @router.get("/overview")
     def overview():
-        with store.db.connect() as conn:
+        with reader.connect() as conn:
             counts = dict(conn.execute("SELECT status,count(*) FROM task_runs GROUP BY status").fetchall())
-            latest = conn.execute("SELECT max(observed_at) FROM transcript_events").fetchone()[0]
         return {
             "generated_at": time.time(),
             "service": "available",
             "task_counts": counts,
-            "last_persisted_at": latest,
             "backend": config.codex.backend,
-            "capture_error": runtime_info().get("capture_error"),
+            "session_source": "codex",
         }
 
     @router.get("/sessions")
@@ -51,7 +49,7 @@ def dashboard_router(
         return reader.session(session_id, offset, limit)
 
     @router.get("/sessions/{session_id}/transcript", response_model=TranscriptWindow | TranscriptChanges)
-    def transcript(
+    async def transcript(
         session_id: str,
         before: str | None = None,
         after_window: str | None = None,
@@ -60,7 +58,7 @@ def dashboard_router(
         limit: PageSize = 50,
     ):
         try:
-            return reader.window(
+            return await reader.window(
                 session_id, before=before, after_window=after_window, around=around, after=after, limit=limit
             )
         except CursorError as exc:
@@ -69,11 +67,11 @@ def dashboard_router(
             raise HTTPException(400, str(exc)) from exc
 
     @router.get("/sessions/{session_id}/entries/{entry_id}", response_model=TranscriptEntry)
-    def entry(session_id: str, entry_id: str):
-        return reader.entry(session_id, entry_id)
+    async def entry(session_id: str, entry_id: str):
+        return await reader.entry(session_id, entry_id)
 
     @router.get("/sessions/{session_id}/events")
-    def events(
+    async def events(
         session_id: str,
         after: str | None = None,
         entry: str | None = None,
@@ -82,12 +80,12 @@ def dashboard_router(
         q: Search = "",
     ):
         try:
-            return reader.events(session_id, after=after, entry_id=entry, around=around, limit=limit, q=q)
+            return await reader.events(session_id, after=after, entry_id=entry, around=around, limit=limit, q=q)
         except CursorError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
 
     @router.get("/sessions/{session_id}/search")
-    def search(
+    async def search(
         session_id: str,
         q: Search = "",
         task: str | None = None,
@@ -98,10 +96,10 @@ def dashboard_router(
     ):
         if not q and not errors:
             raise HTTPException(400, "Provide search text or select errors")
-        return reader.search(session_id, q, task_id=task, kind=kind, errors=errors, offset=offset, limit=limit)
+        return await reader.search(session_id, q, task_id=task, kind=kind, errors=errors, offset=offset, limit=limit)
 
     @router.get("/sessions/{session_id}/content/{ref}")
-    def content(
+    async def content(
         session_id: str,
         ref: str,
         offset: Offset = 0,
@@ -110,22 +108,23 @@ def dashboard_router(
         tail: bool = False,
     ):
         try:
-            page = reader.content(session_id, ref, offset, limit, tail=tail)
+            if download:
+                return Response(
+                    await reader.download(session_id, ref),
+                    media_type="text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{ref}.txt"'},
+                )
+            return await reader.content(session_id, ref, offset, limit, tail=tail)
+        except CursorError:
+            raise
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if download:
-            return StreamingResponse(
-                reader.download(session_id, ref),
-                media_type="text/plain",
-                headers={"Content-Disposition": f'attachment; filename="{ref}.txt"'},
-            )
-        return page
 
     @router.get("/sessions/{session_id}/export")
-    def export(session_id: str, format: Literal["markdown", "jsonl"] = "markdown", task: str | None = None):
+    async def export(session_id: str, format: Literal["markdown", "jsonl"] = "markdown", task: str | None = None):
         reader.session(session_id, limit=1)
-        return StreamingResponse(
-            reader.export(session_id, format, task),
+        return Response(
+            await reader.export(session_id, format, task),
             media_type="text/plain",
             headers={
                 "Content-Disposition": f'attachment; filename="{session_id}.{"md" if format == "markdown" else "jsonl"}"'
@@ -144,16 +143,16 @@ def dashboard_router(
         if plugin:
             where.append("coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core')=?")
             args.append(plugin)
-        with store.db.connect() as conn:
+        with reader.connect() as conn:
             total = conn.execute(f"SELECT count(*) FROM task_runs r WHERE {' AND '.join(where)}", args).fetchone()[0]
             rows = conn.execute(
                 f"""
                 SELECT r.task_id,r.context_key,r.action,r.status,r.updated_at,r.created_at,
-                       substr(r.error,1,1000) AS error,t.session_id,
+                       substr(r.error,1,1000) AS error,coalesce(r.thread_id,parent.thread_id) AS session_id,
                        coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core') AS plugin_id,
                        coalesce(json_extract(r.task_json,'$.metadata.request.title'),substr(json_extract(r.task_json,'$.prompt'),1,160),r.task_id) AS title,
-                       json_extract(r.result_json,'$.coalesced_into') AS coalesced_into
-                FROM task_runs r LEFT JOIN transcript_tasks t USING(task_id)
+                       r.coalesced_into
+                FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
                 WHERE {" AND ".join(where)}
                 ORDER BY (r.status='running') DESC,(r.status='queued') DESC,r.updated_at DESC
                 LIMIT ? OFFSET ?
@@ -163,35 +162,34 @@ def dashboard_router(
         return {"items": redact([dict(row) for row in rows]), "total": total, "has_more": offset + len(rows) < total}
 
     @router.get("/tasks/{task_id}")
-    def task(task_id: str):
-        with store.db.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT r.*,t.session_id FROM task_runs r LEFT JOIN transcript_tasks t USING(task_id) WHERE task_id=?
-            """,
-                (task_id,),
-            ).fetchone()
+    async def task(task_id: str):
+        with reader.connect() as conn:
+            row = conn.execute("SELECT * FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise HTTPException(404, "Task not found")
             data = dict(row)
-            task_data = json.loads(data.pop("task_json"))
-            result = json.loads(data.pop("result_json") or "{}")
-            entry = conn.execute(
-                "SELECT entry_id FROM transcript_entries WHERE task_id=? ORDER BY first_seq LIMIT 1", (task_id,)
-            ).fetchone()
-            data["entry_id"] = entry[0] if entry else None
-            data["task"] = task_data
-            data["coalesced_into"] = result.get("coalesced_into")
+            data["task"] = json.loads(data.pop("task_json"))
+            data["session_id"] = data["thread_id"]
             if data["coalesced_into"]:
                 target = conn.execute(
-                    "SELECT session_id FROM transcript_tasks WHERE task_id=?", (data["coalesced_into"],)
+                    "SELECT thread_id,turn_id FROM task_runs WHERE task_id=?", (data["coalesced_into"],)
                 ).fetchone()
-                data["session_id"] = target[0] if target else None
+                data["session_id"] = target["thread_id"] if target else None
+                data["turn_id"] = target["turn_id"] if target else None
+        data["entry_id"] = None
+        if data["session_id"] and data["turn_id"]:
+            try:
+                snapshot = await reader.snapshot(data["session_id"])
+                data["entry_id"] = next(
+                    (entry.entry_id for entry in snapshot.entries if entry.turn_id == data["turn_id"]), None
+                )
+            except SourceUnavailable as exc:
+                data["history_error"] = str(exc)
         return redact(data)
 
     @router.get("/plugins")
     def plugins():
-        with store.db.connect() as conn:
+        with reader.connect() as conn:
             rows = conn.execute("""
                 SELECT coalesce(json_extract(task_json,'$.metadata.plugin_id'),'core') AS plugin_id,
                        status,action,count(*) AS count,max(updated_at) AS last_updated_at
@@ -213,7 +211,7 @@ def dashboard_router(
 
     @router.get("/runtime")
     def runtime():
-        with store.db.connect() as conn:
+        with reader.connect() as conn:
             leases = [dict(row) for row in conn.execute("SELECT * FROM context_leases ORDER BY expires_at DESC")]
         return {
             "backend": config.codex.backend,

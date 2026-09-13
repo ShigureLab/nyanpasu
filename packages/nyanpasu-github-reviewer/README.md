@@ -36,7 +36,15 @@ path = "/path/to/repo/AGENTS.md"
 required = false
 ```
 
-`instruction_docs` are resolved when a PR event becomes an `AgentTask`. Plugin-level documents apply to every reviewer task; repo-level documents are appended for that repo. This is how `SOUL.md`, `AGENTS.md`, and similar task-local policy files reach Codex without making them global GitHub-reviewer prompt text.
+`instruction_docs` are resolved when the review is prepared for execution. Plugin-level documents apply to every reviewer task; repo-level documents apply to that repo. They join the session's developer instructions rather than being appended to every user message. Configure these as trusted policy documents; PR content and comments remain external task material.
+
+## Session Instructions And Turn Input
+
+The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the Codex session. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and the disclosure footer. Tool procedures come from the `github-conversation` and `gh-slate` skills.
+
+Every execution prepares one short user message containing the target head, worktree, publication mode, and trigger summaries or request links. The previous task head is a navigation hint, not proof that a review was completed. Existing GitHub reviews and threads remain the evidence for prior review coverage.
+
+The plugin prepares the task after the core acquires its context lease. It refreshes the PR from GitHub, checks that it remains eligible, and uses the same head for the workspace and turn input. Merged events preserve their request context without embedding other prompts. Events arriving while a task is running are handled by a later turn, which reads the context left by the preceding task.
 
 ## Run
 
@@ -179,7 +187,7 @@ pending -> skipped
 
 `dedupe_key` prevents replaying the same logical event. The Nyanpasu core still owns per-context serialization, so events for the same PR cannot run concurrently in the same worktree.
 
-When several pending events share a `context_key`, the dispatcher can coalesce them into one follow-up task. The prompt should list the coalesced event summaries, with the latest PR head as the review target. This preserves webhook-like ordering while avoiding duplicate reviews for bursty commit/comment activity.
+Reviewer tasks opt into core coalescing. When several events are still queued for the same PR, the plugin prepares one task from their trigger summaries and the current GitHub PR state. A PR creation event and a synchronize event can therefore become one initial turn at the current head, regardless of arrival order. Coalescing never embeds complete task prompts and does not force an initial task into follow-up mode merely because another task is queued.
 
 Automatic follow-up events should not post noise. If an existing unresolved thread already covers the issue and the new event adds no new evidence or decision, the review turn may be skipped or summarized internally. Explicit user mentions and review-thread replies still deserve a GitHub-visible response when relevant.
 

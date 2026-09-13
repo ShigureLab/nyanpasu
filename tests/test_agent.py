@@ -12,26 +12,41 @@ from nyanpasu.models import AgentContext, AgentTask, CodexRunResult, Instruction
 from nyanpasu.store import StateStore
 
 if TYPE_CHECKING:
-    from nyanpasu.transcript.capture import EventObserver
+    from nyanpasu.codex import ExecutionStarted
 
 
 class FakeCodex:
     def __init__(self) -> None:
         self.calls: list[tuple[Path, str | None]] = []
         self.prompts: list[str] = []
+        self.instructions: list[str] = []
         self.archived: list[str] = []
 
     async def run_turn(
-        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+        self,
+        *,
+        cwd: Path,
+        prompt: str,
+        thread_id: str | None,
+        developer_instructions: str = "",
+        on_started: ExecutionStarted | None = None,
     ) -> CodexRunResult:
         self.prompts.append(prompt)
+        self.instructions.append(developer_instructions)
         self.calls.append((cwd, thread_id))
+        if on_started:
+            await on_started(thread_id or "thread-1", "turn-1")
         return CodexRunResult(
             thread_id=thread_id or "thread-1",
             turn_id="turn-1",
             final_message="done",
-            raw_events=[],
         )
+
+    async def read_thread(self, thread_id: str) -> dict:
+        return {"id": thread_id}
+
+    async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict:
+        return {"data": [], "nextCursor": None}
 
     async def cleanup_thread(self, thread_id: str) -> None:
         self.archived.append(thread_id)
@@ -79,14 +94,26 @@ class SlowCodex(FakeCodex):
         self.second_started = second_started
 
     async def run_turn(
-        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+        self,
+        *,
+        cwd: Path,
+        prompt: str,
+        thread_id: str | None,
+        developer_instructions: str = "",
+        on_started: ExecutionStarted | None = None,
     ) -> CodexRunResult:
         if not self.calls:
             self.started.set()
         elif self.second_started is not None:
             self.second_started.set()
         await self.release.wait()
-        return await super().run_turn(cwd=cwd, prompt=prompt, thread_id=thread_id, observer=observer)
+        return await super().run_turn(
+            cwd=cwd,
+            prompt=prompt,
+            thread_id=thread_id,
+            developer_instructions=developer_instructions,
+            on_started=on_started,
+        )
 
 
 class CancellableCodex(FakeCodex):
@@ -95,7 +122,13 @@ class CancellableCodex(FakeCodex):
         self.started = started
 
     async def run_turn(
-        self, *, cwd: Path, prompt: str, thread_id: str | None, observer: EventObserver | None = None
+        self,
+        *,
+        cwd: Path,
+        prompt: str,
+        thread_id: str | None,
+        developer_instructions: str = "",
+        on_started: ExecutionStarted | None = None,
     ) -> CodexRunResult:
         _ = cwd, prompt, thread_id
         self.started.set()
@@ -206,9 +239,10 @@ async def test_agent_coalesces_queued_tasks_for_same_context(tmp_path: Path) -> 
     config = _config(tmp_path)
     store = StateStore(config.db_path)
     agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=FakeCodex())
-    assert store.record_task(_task("task-1"))
+    agent.add_task_preparer("demo", _prepare_demo)
+    assert store.record_task(_merge_task("task-1"))
 
-    result = await agent.submit(_task("task-2"))
+    result = await agent.submit(_merge_task("task-2"))
 
     assert result["coalesced"] is True
     assert result["coalesced_into"] == "task-1"
@@ -225,10 +259,11 @@ async def test_agent_queues_one_followup_while_context_is_running_and_coalesces_
     codex = SlowCodex(started, release, second_started)
     agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
 
-    result1 = await agent.submit(_task("task-1"))
+    agent.add_task_preparer("demo", _prepare_demo)
+    result1 = await agent.submit(_merge_task("task-1"))
     await started.wait()
-    result2 = await agent.submit(_task("task-2"))
-    result3 = await agent.submit(_task("task-3"))
+    result2 = await agent.submit(_merge_task("task-2"))
+    result3 = await agent.submit(_merge_task("task-3"))
     release.set()
     await second_started.wait()
     while store.task_status("task-2") != "completed":
@@ -311,40 +346,183 @@ async def test_agent_shutdown_marks_running_tasks_failed_and_releases_lease(tmp_
 
 
 @pytest.mark.anyio
-async def test_agent_appends_task_instruction_documents(tmp_path: Path) -> None:
+async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = StateStore(config.db_path)
     codex = FakeCodex()
     agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
     task = _task("task-1").model_copy(
         update={
+            "developer_instructions": "Persistent role.",
             "instruction_docs": (
                 InstructionDocument(name="SOUL.md", source=str(tmp_path / "SOUL.md"), content="Stay precise."),
                 InstructionDocument(name="AGENTS.md", content="Use project-local conventions."),
-            )
+            ),
         }
     )
 
     await agent.run_now(task)
 
-    assert "Task-specific instruction documents:" in codex.prompts[0]
-    assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.prompts[0]
-    assert "Stay precise." in codex.prompts[0]
-    assert "--- AGENTS.md ---" in codex.prompts[0]
+    await agent.run_now(task.model_copy(update={"task_id": "task-2", "dedupe_key": "task-2"}))
+
+    assert codex.instructions[0] == codex.instructions[1]
+    assert "Persistent role." in codex.instructions[0]
+    assert "Configured instruction documents:" in codex.instructions[0]
+    assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.instructions[0]
+    assert "Stay precise." in codex.instructions[0]
+    assert "--- AGENTS.md ---" in codex.instructions[0]
+    assert all("Stay precise." not in prompt for prompt in codex.prompts)
+    assert codex.calls[1][1] == "thread-1"
+
+
+def _merge_task(task_id: str) -> AgentTask:
+    return _task(task_id).model_copy(update={"coalesce_key": "batch", "metadata": {"plugin_id": "demo"}})
+
+
+async def _prepare_demo(task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None) -> AgentTask:
+    return task.model_copy(update={"prompt": "Handle " + ", ".join(item.task_id for item in (task, *coalesced))})
 
 
 @pytest.mark.anyio
-async def test_transcript_setup_failure_releases_context_lease(tmp_path: Path, monkeypatch) -> None:
+async def test_freeform_tasks_are_not_automatically_merged(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = StateStore(config.db_path)
-    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=FakeCodex())
-    begin = agent.transcripts.begin
+    codex = FakeCodex()
+    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+    agent._semaphore = asyncio.Semaphore(0)
+    first = await agent.submit(_task("task-1"))
+    second = await agent.submit(_task("task-2"))
+    assert "coalesced" not in first and "coalesced" not in second
+    agent._semaphore.release()
+    while agent._tasks:
+        await asyncio.gather(*agent._tasks)
+    assert len(codex.calls) == 2
+    await agent.shutdown()
 
-    def unavailable(*args, **kwargs):
-        raise OSError("disk unavailable")
 
-    monkeypatch.setattr(agent.transcripts, "begin", unavailable)
-    with pytest.raises(OSError, match="disk unavailable"):
-        await agent.run_now(_task("failed-setup"))
-    monkeypatch.setattr(agent.transcripts, "begin", begin)
-    await asyncio.wait_for(agent.run_now(_task("next-task")), 2)
+def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None):
+    import importlib
+
+    from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings
+    from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
+
+    head = {"sha": "head-b"}
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    monkeypatch.setattr(
+        module,
+        "gh_json",
+        lambda *args, **kwargs: {
+            "number": 42,
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "https://github.com/ExampleOrg/ExampleRepo/pull/42",
+            "baseRefName": "main",
+            "headRefName": "feature",
+            "headRefOid": head["sha"],
+        },
+    )
+    plugin = GitHubReviewerPlugin(
+        GitHubReviewerConfig(
+            repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path / "repo")},
+            github_login="review-bot",
+            dry_run=True,
+        )
+    )
+    backend = codex or FakeCodex()
+    agent = AgentService(_config(tmp_path), worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=backend)
+    agent.add_task_preparer(plugin.id, plugin.prepare_task)
+    return agent, plugin, backend, head
+
+
+def _review_task(plugin, action: str, sha: str) -> AgentTask:
+    from nyanpasu_github_reviewer.events import parse_github_event
+
+    event = parse_github_event(
+        "pull_request",
+        f"{action}-{sha}",
+        {
+            "action": action,
+            "repository": {"full_name": "ExampleOrg/ExampleRepo"},
+            "pull_request": {
+                "number": 42,
+                "html_url": "https://github.com/ExampleOrg/ExampleRepo/pull/42",
+                "state": "open",
+                "draft": False,
+                "base": {"ref": "main"},
+                "head": {"ref": "feature", "sha": sha},
+            },
+        },
+        agent_login="review-bot",
+    )
+    return plugin.event_to_task(event)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_reviewer_merged_events_produce_one_coherent_turn(tmp_path: Path, monkeypatch, reverse: bool) -> None:
+    agent, plugin, codex, _ = _review_setup(tmp_path, monkeypatch)
+    agent._semaphore = asyncio.Semaphore(0)
+    tasks = [_review_task(plugin, "opened", "head-a"), _review_task(plugin, "synchronize", "head-b")]
+    if reverse:
+        tasks.reverse()
+    await agent.submit(tasks[0])
+    merged = await agent.submit(tasks[1])
+    assert merged["coalesced"]
+    agent._semaphore.release()
+    await asyncio.gather(*agent._tasks)
+
+    assert len(codex.prompts) == 1
+    assert codex.prompts[0].startswith("Review ")
+    assert "Target head: head-b" in codex.prompts[0]
+    assert "head-a" not in codex.prompts[0]
+    assert "{{NYANPASU" not in codex.prompts[0]
+    assert "coalesced_tasks" not in codex.prompts[0]
+    assert len(codex.prompts[0]) < 1200
+    context = agent.store.get_context(tasks[0].context_key)
+    assert context is not None and context.revision == "head-b"
+    await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_reviewer_events_during_review_resume_with_completed_task_head(tmp_path: Path, monkeypatch) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    agent, plugin, codex, head = _review_setup(tmp_path, monkeypatch, codex=SlowCodex(started, release))
+    head["sha"] = "head-a"
+    first = _review_task(plugin, "opened", "head-a")
+    await agent.submit(first)
+    await started.wait()
+    head["sha"] = "head-b"
+    await agent.submit(_review_task(plugin, "synchronize", "head-b"))
+    head["sha"] = "head-c"
+    merged = await agent.submit(_review_task(plugin, "synchronize", "head-c"))
+    assert merged["coalesced"]
+    release.set()
+    await asyncio.gather(*agent._tasks)
+
+    assert len(codex.prompts) == 2
+    assert "Target head: head-a" in codex.prompts[0]
+    assert "Target head: head-c" in codex.prompts[1]
+    assert "Previous task head (not proof of completed review): head-a" in codex.prompts[1]
+    assert codex.calls[1][1] == "thread-1"
+    assert codex.instructions[0] == codex.instructions[1]
+    context = agent.store.get_context(first.context_key)
+    assert context is not None and context.revision == "head-c"
+    await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_preparer_can_skip_obsolete_work_without_a_codex_turn(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    agent = AgentService(_config(tmp_path), worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+
+    async def skip(task, coalesced, context):
+        return task.model_copy(update={"action": TaskAction.IGNORED, "prompt": "PR closed while queued."})
+
+    agent.add_task_preparer("demo", skip)
+    result = await agent.run_now(_merge_task("skip"))
+
+    assert result.final_message == "PR closed while queued."
+    assert result.turn_id is None and codex.calls == []
+    assert agent.store.get_context("demo:1") is None
+    assert agent.store.recent_tasks()[0].action is TaskAction.IGNORED
+    await agent.shutdown()

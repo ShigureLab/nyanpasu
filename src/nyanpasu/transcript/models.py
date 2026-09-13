@@ -11,15 +11,13 @@ class ContentUpdate(BaseModel):
     block_id: str
     kind: str
     text: str
-    append: bool = False
 
 
 class EntryUpdate(BaseModel):
-    """Adapter output; omitted fields preserve the existing projection."""
+    """Presentation fields derived from one Codex item."""
 
     model_config = ConfigDict(extra="forbid")
 
-    key: str | None = None
     kind: str | None = None
     title: str | None = None
     state: str | None = None
@@ -33,22 +31,19 @@ class EntryUpdate(BaseModel):
     duration_ms: int | None = None
     decision: str | None = None
     source_truncated: bool = False
-    missing_parts: list[str] = Field(default_factory=list)
     blocks: list[ContentUpdate] = Field(default_factory=list)
 
     def fields(self) -> dict:
         return self.model_dump(
             exclude_unset=True,
             exclude_none=True,
-            exclude={"key", "blocks", "source_truncated", "missing_parts"},
+            exclude={"blocks", "source_truncated"},
         )
 
 
 class Coverage(ContractModel):
     source_truncated: bool = False
-    capture_gap: bool = False
     redacted: bool = False
-    missing_parts: list[str] = Field(default_factory=list)
 
 
 class Source(ContractModel):
@@ -81,14 +76,9 @@ class TranscriptEntry(ContractModel):
     state: str = "unknown"
     raw_state: str | None = None
     observed_at: str
-    source_timestamp: str | None = None
-    started_at: str | None = None
-    ended_at: str | None = None
     source: Source
     source_item_id: str | None = None
-    related_entry_ids: list[str] = Field(default_factory=list)
     blocks: list[TranscriptBlock] = Field(default_factory=list)
-    raw_event_count: int = 0
     coverage: Coverage = Field(default_factory=Coverage)
     tool_name: str | None = None
     command: str | None = None

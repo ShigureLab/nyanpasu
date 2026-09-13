@@ -287,9 +287,7 @@ export function Transcript({
           {detail.error}
         </p>
       )}
-      {detail.data?.coverage.capture_gap && (
-        <p className="notice">History coverage: {detail.data.coverage.missing_parts.join(' · ')}</p>
-      )}
+
       {detail.data?.execution_uncertain && (
         <p className="notice">
           No active context lease. Execution status cannot be confirmed; unfinished tools have no
@@ -304,7 +302,7 @@ export function Transcript({
               aria-pressed={mode === value}
               onClick={() => navigate({ mode: value })}
             >
-              {value === 'conversation' ? 'Conversation' : 'Events'}
+              {value === 'conversation' ? 'Conversation' : 'Source items'}
             </button>
           ))}
         </div>
@@ -494,7 +492,7 @@ export function Transcript({
               )}
               {!window && busy && <p className="empty">Loading transcript…</p>}
               {window && entries.length === 0 && (
-                <p className="empty">No transcript has been recorded for this session.</p>
+                <p className="empty">Codex has no conversation items for this session.</p>
               )}
               {visible.map((entry, index) => (
                 <div key={entry.entry_id}>
@@ -509,7 +507,6 @@ export function Transcript({
                   )}
                   <Entry
                     entry={entry}
-                    sessionMissingParts={detail.data?.coverage.missing_parts ?? []}
                     navigate={navigate}
                     selected={selected === entry.entry_id}
                     expand={selected === entry.entry_id}
@@ -550,8 +547,6 @@ export function Transcript({
                     Turn: inspected.data.turn_id,
                     Source: inspected.data.source.origin,
                     Observed: inspected.data.observed_at,
-                    Started: inspected.data.started_at,
-                    Ended: inspected.data.ended_at,
                     Revision: inspected.data.revision_seq,
                   }).map(([key, value]) => (
                     <div key={key}>
@@ -570,7 +565,7 @@ export function Transcript({
                     navigate({ mode: 'events', event: inspected.data!.first_seq });
                   }}
                 >
-                  Original events ({inspected.data.raw_event_count})
+                  Original Codex item
                 </button>
                 {inspected.data.blocks.map((block) => (
                   <details key={block.block_id}>

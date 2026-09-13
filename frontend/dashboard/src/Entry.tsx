@@ -79,8 +79,7 @@ export function ContentBlock({
   const [plain, setPlain] = useState(false);
   const requestVersion = useRef(0);
   const endpoint = `/api/sessions/${session}/content/${block.content_ref}`;
-  const readFullMessage =
-    block.preview_truncated && ['markdown', 'actual_input'].includes(block.kind);
+  const readFullMessage = block.preview_truncated && block.kind === 'markdown';
   useEffect(() => {
     const version = ++requestVersion.current;
     setPage(null);
@@ -213,14 +212,12 @@ export const Entry = memo(function Entry({
   selected,
   expand,
   focus,
-  sessionMissingParts,
 }: {
   entry: TranscriptEntry;
   navigate: Navigate;
   selected: boolean;
   expand?: boolean;
   focus?: { block: string; offset: number; ref: string };
-  sessionMissingParts: readonly string[];
 }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   useEffect(() => {
@@ -242,9 +239,6 @@ export const Entry = memo(function Entry({
     (expand ||
       !isTool ||
       ['running', 'failed', 'interrupted', 'pending', 'declined'].includes(entry.state));
-  const missingParts = entry.coverage.missing_parts.filter(
-    (part) => !sessionMissingParts.includes(part),
-  );
   return (
     <article
       data-entry-id={entry.entry_id}
@@ -284,9 +278,6 @@ export const Entry = memo(function Entry({
         </p>
       )}
       {entry.decision && <p className="notice">Response sent: {entry.decision}</p>}
-      {entry.coverage.capture_gap && missingParts.length > 0 && (
-        <p className="notice">{missingParts.join(' · ')}</p>
-      )}
       {entry.coverage.source_truncated && (
         <p className="notice">The backend truncated this content.</p>
       )}
@@ -294,29 +285,23 @@ export const Entry = memo(function Entry({
       {open ? (
         entry.blocks.map((block) => {
           const focused = focus?.block === block.block_id;
+          const changed = focused && focus.ref !== block.content_ref;
           const content = (
             <ContentBlock
-              block={focused ? { ...block, content_ref: focus.ref } : block}
+              block={block}
               session={entry.session_id}
               streaming={entry.state === 'running'}
-              focusOffset={focused ? focus.offset : undefined}
+              focusOffset={focused && !changed ? focus.offset : undefined}
             />
           );
           return (
             <div key={block.block_id}>
-              {focused && focus.ref !== block.content_ref && (
-                <p className="notice">Showing the saved version linked by this search result.</p>
+              {changed && (
+                <p className="notice">
+                  Codex content has changed since this search. Showing current content.
+                </p>
               )}
-              {block.kind === 'actual_input' || block.block_id === 'context' ? (
-                <details open={focus?.block === block.block_id}>
-                  <summary>
-                    {block.kind === 'actual_input' ? 'Actual submitted input' : 'Execution context'}
-                  </summary>
-                  {content}
-                </details>
-              ) : (
-                content
-              )}
+              {content}
             </div>
           );
         })

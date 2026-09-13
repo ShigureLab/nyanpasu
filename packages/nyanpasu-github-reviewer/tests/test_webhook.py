@@ -36,6 +36,9 @@ class FakeAgent:
     async def shutdown(self) -> None:
         return None
 
+    def add_task_preparer(self, plugin_id, preparer) -> None:
+        self.preparer = preparer
+
     def add_post_process_hook(self, plugin_id, hook) -> None:
         _ = plugin_id, hook
 
@@ -88,4 +91,4 @@ async def test_webhook_accepts_event(tmp_path: Path) -> None:
     assert response.json()["accepted"] is True
     assert fake_agent.tasks[0].task_id == "delivery-1"
     assert fake_agent.tasks[0].context_key == "github:ExampleOrg/ExampleRepo#123"
-    assert fake_agent.tasks[0].metadata["raw"]["action"] == "synchronize"
+    assert fake_agent.tasks[0].metadata["triggers"][0]["kind"] == "pull_request_synchronize"

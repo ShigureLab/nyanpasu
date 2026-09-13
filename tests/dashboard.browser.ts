@@ -79,13 +79,13 @@ test('full-content search, entry deep link and original event remain readable', 
   await page.getByRole('textbox', { name: 'Search complete session' }).fill('SEARCH-NEEDLE');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await page.locator('.search-results button').first().click();
-  await expect(page).toHaveURL(/entry=e_/);
+  await expect(page).toHaveURL(/entry=long-tool/);
   await expect(page.locator('.search-focus')).toContainText('SEARCH-NEEDLE');
   const url = page.url();
   await page.reload();
   await expect(page.locator('.search-focus')).toContainText('SEARCH-NEEDLE');
   expect(page.url()).toBe(url);
-  await page.getByRole('button', { name: /Original events/ }).click();
+  await page.getByRole('button', { name: /Original Codex item/ }).click();
   await expect(page.locator('.event')).not.toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Entry details' })).toHaveCount(0);

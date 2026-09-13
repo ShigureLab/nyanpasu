@@ -49,6 +49,8 @@ class AgentTask(NyanpasuModel):
     action: TaskAction
     context_key: str
     prompt: str
+    developer_instructions: str = ""
+    coalesce_key: str | None = None
     workspace: WorkspaceRef | None = None
     instruction_docs: tuple[InstructionDocument, ...] = ()
     dedupe_key: str | None = None
@@ -82,7 +84,6 @@ class TaskRunResult(NyanpasuModel):
     thread_id: str | None
     turn_id: str | None
     final_message: str
-    raw_events: list[dict[str, Any]]
     event_worktree: Path | None = None
     session_worktree: Path | None = None
     error: str | None = None
@@ -103,7 +104,6 @@ class CodexRunResult(NyanpasuModel):
     thread_id: str
     turn_id: str | None
     final_message: str
-    raw_events: list[dict[str, Any]]
 
 
 class TaskRunSummary(NyanpasuModel):

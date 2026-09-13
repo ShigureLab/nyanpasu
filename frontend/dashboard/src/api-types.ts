@@ -37,14 +37,9 @@ export interface TranscriptEntry {
   state: string;
   raw_state: string | null;
   observed_at: string;
-  source_timestamp: string | null;
-  started_at: string | null;
-  ended_at: string | null;
   source: Source;
   source_item_id: string | null;
-  related_entry_ids: string[];
   blocks: TranscriptBlock[];
-  raw_event_count: number;
   coverage: Coverage;
   tool_name: string | null;
   command: string | null;
@@ -72,9 +67,7 @@ export interface TranscriptBlock {
 }
 export interface Coverage {
   source_truncated: boolean;
-  capture_gap: boolean;
   redacted: boolean;
-  missing_parts: string[];
   [k: string]: unknown;
 }
 export interface TranscriptChanges {

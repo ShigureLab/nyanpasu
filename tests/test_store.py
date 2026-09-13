@@ -65,17 +65,15 @@ def test_failed_task_is_still_deduplicated(tmp_path: Path) -> None:
 
 def test_active_task_and_coalesced_task(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
-    first = _task("task-1")
-    second = _task("task-2")
+    first = _task("task-1").model_copy(update={"coalesce_key": "batch"})
+    second = _task("task-2").model_copy(update={"coalesce_key": "batch"})
 
     assert store.record_task(first)
-    assert store.record_task(second)
+    assert store.enqueue_task(second, coalesce_since=0) == (True, first.task_id)
 
     active = store.active_task_for_context("demo:1", exclude_task_id="task-2")
     assert active is not None
     assert active.task_id == "task-1"
-
-    store.mark_task_coalesced("task-2", "task-1")
 
     assert store.task_status("task-2") == "completed"
     coalesced = store.coalesced_tasks_for("task-1")
@@ -109,7 +107,6 @@ def test_mark_task_done_roundtrip(tmp_path: Path) -> None:
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="done",
-            raw_events=[],
             event_worktree=tmp_path / "event",
             session_worktree=tmp_path / "session",
         )
@@ -209,7 +206,6 @@ def test_dashboard_snapshot_groups_plugin_backlog_and_recent_tasks(tmp_path: Pat
             thread_id="thread-1",
             turn_id="turn-1",
             final_message="done",
-            raw_events=[],
         )
     )
     store.upsert_context(
@@ -243,3 +239,75 @@ def test_dashboard_snapshot_groups_plugin_backlog_and_recent_tasks(tmp_path: Pat
     assert plugins["github_reviewer"].failed == 1
     assert plugins["github_pr_maker"].queued == 1
     assert plugins["core"].completed == 1
+
+
+def test_concurrent_enqueues_merge_directly_without_chains(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = StateStore(tmp_path / "state.db")
+    first = _task("first").model_copy(update={"coalesce_key": "batch"})
+    store.record_task(first)
+    incoming = [_task(task_id).model_copy(update={"coalesce_key": "batch"}) for task_id in ("second", "third")]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(store.enqueue_task, task, coalesce_since=0) for task in incoming]
+        assert all(future.result() == (True, "first") for future in futures)
+    assert {item.task_id for item in store.coalesced_tasks_for("first")} == {"second", "third"}
+
+
+def test_claimed_tasks_and_cleanup_are_merge_boundaries(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.db")
+    first = _task("first").model_copy(update={"coalesce_key": "batch"})
+    store.record_task(first)
+    store.mark_task_running(first.task_id, None)
+    second = _task("second").model_copy(update={"coalesce_key": "batch"})
+    assert store.enqueue_task(second, coalesce_since=0) == (True, None)
+    cleanup = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
+    store.record_task(cleanup)
+    third = _task("third").model_copy(update={"coalesce_key": "batch"})
+    assert store.enqueue_task(third, coalesce_since=0) == (True, None)
+    assert store.coalesced_tasks_for("first") == []
+    assert store.coalesced_tasks_for("second") == []
+
+
+def test_distinct_merge_keys_keep_tasks_separate_in_shared_context(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.db")
+    first = _task("first").model_copy(update={"coalesce_key": "pr-1"})
+    second = _task("second").model_copy(update={"coalesce_key": "pr-2"})
+    store.record_task(first)
+
+    assert store.enqueue_task(second, coalesce_since=0) == (True, None)
+    assert store.coalesced_tasks_for("first") == []
+
+
+def test_migrate_conversation_copies_preserves_task_and_execution_references(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    state = StateStore(path)
+    for task_id in ("original", "alias"):
+        state.record_task(AgentTask(task_id=task_id, context_key="demo", action=TaskAction.RUN, prompt="request"))
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE task_runs ADD COLUMN result_json TEXT")
+        conn.execute("ALTER TABLE task_runs DROP COLUMN coalesced_into")
+        conn.execute(
+            "UPDATE task_runs SET result_json=? WHERE task_id='original'",
+            ('{"final_message":"conversation copy","raw_events":[{"text":"duplicate"}]}',),
+        )
+        conn.execute("UPDATE task_runs SET result_json=? WHERE task_id='alias'", ('{"coalesced_into":"original"}',))
+        conn.executescript("""
+            CREATE TABLE transcript_tasks(task_id TEXT,session_id TEXT,turn_id TEXT);
+            CREATE TABLE transcript_sessions(session_id TEXT,thread_id TEXT);
+            CREATE TABLE transcript_events(content TEXT);
+            INSERT INTO transcript_tasks VALUES('original','old-session','turn');
+            INSERT INTO transcript_sessions VALUES('old-session','thread');
+            INSERT INTO transcript_events VALUES('conversation copy');
+        """)
+    migrated = StateStore(path)
+    assert next(task for task in migrated.recent_tasks() if task.task_id == "original").thread_id == "thread"
+    assert next(task for task in migrated.recent_tasks() if task.task_id == "original").turn_id == "turn"
+    assert migrated.coalesced_tasks_for("original")[0].task_id == "alias"
+    StateStore(path)
+    with sqlite3.connect(path) as conn:
+        assert "result_json" not in {row[1] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'transcript_%'").fetchall()
+        assert conn.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 2

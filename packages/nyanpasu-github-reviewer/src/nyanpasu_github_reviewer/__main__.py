@@ -49,6 +49,8 @@ def review(
 
     async def run() -> None:
         agent = AgentService(core_config)
+        plugin = GitHubReviewerPlugin(plugin_config)
+        agent.add_task_preparer(plugin.id, plugin.prepare_task)
         try:
             await agent.run_now(task)
         finally:
@@ -83,17 +85,8 @@ def poll(
     async def run() -> None:
         agent = AgentService(core_config)
         state_store = StateStore(core_config.db_path)
-        plugin = GitHubReviewerPlugin().bind_for_conversion(
-            config=plugin_config,
-            context_lookup=state_store.get_context,
-            active_context_task_lookup=lambda context_key, exclude_task_id: (
-                state_store.active_task_for_context(
-                    context_key,
-                    exclude_task_id=exclude_task_id,
-                )
-                is not None
-            ),
-        )
+        plugin = GitHubReviewerPlugin(plugin_config)
+        agent.add_task_preparer(plugin.id, plugin.prepare_task)
         poller = GitHubEventsPoller(
             plugin_config,
             store=GitHubReviewerStore(core_config.db_path),

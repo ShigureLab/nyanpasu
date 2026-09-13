@@ -16,7 +16,6 @@ interface Overview {
   service: string;
   backend: string;
   generated_at: number;
-  capture_error: string | null;
   task_counts: Record<string, number>;
 }
 interface Plugin {
@@ -28,7 +27,6 @@ interface Plugin {
 interface Runtime {
   connection: string;
   backend: string;
-  capture_error: string | null;
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
   diagnostics: unknown[];
@@ -107,11 +105,7 @@ export function App() {
           {overview.error} · Showing last successfully read data.
         </p>
       )}
-      {overview.data?.capture_error && (
-        <p className="global-error" role="alert">
-          Transcript capture: {overview.data.capture_error}
-        </p>
-      )}
+
       <main className="workspace">
         {view === 'sessions' && (
           <>
@@ -175,7 +169,7 @@ export function App() {
                     <strong>{item.title}</strong>
                     <code>{item.context_key}</code>
                     <small>
-                      {item.entry_count} entries ·{' '}
+                      {item.task_count} tasks ·{' '}
                       {item.origin === 'legacy-result' ? 'Imported history' : item.backend}
                     </small>
                   </button>
@@ -442,8 +436,8 @@ function RuntimeView({
               <h2>{data.data.concurrency}</h2>
             </article>
             <article>
-              <span>Capture</span>
-              <h2>{data.data.capture_error ? 'Write failed' : 'No write error reported'}</h2>
+              <span>Session source</span>
+              <h2>Codex</h2>
             </article>
           </div>
           <h2>Context leases</h2>
@@ -457,9 +451,7 @@ function RuntimeView({
             </div>
           ))}
           <h2>Backend diagnostics</h2>
-          <p className="subtle">
-            Recent global observations; messages without a unique thread are kept here.
-          </p>
+          <p className="subtle">Recent backend diagnostics, held in memory.</p>
           <pre>{JSON.stringify(data.data.diagnostics, null, 2)}</pre>
         </>
       )}

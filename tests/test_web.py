@@ -29,6 +29,9 @@ class FakeAgent:
     async def shutdown(self) -> None:
         return None
 
+    def add_task_preparer(self, plugin_id, preparer) -> None:
+        self.preparer = preparer
+
     def add_post_process_hook(self, plugin_id, hook) -> None:
         _ = plugin_id, hook
 

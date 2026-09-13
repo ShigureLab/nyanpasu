@@ -14,7 +14,7 @@ export interface Session {
   state: string;
   backend: string;
   updated_at: string;
-  entry_count: number;
+  task_count: number;
   execution_uncertain: boolean;
   coverage: Coverage;
   origin: string;

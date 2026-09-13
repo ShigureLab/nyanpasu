@@ -33,6 +33,24 @@ class ReviewEvent(GitHubReviewerModel):
     raw: dict[str, Any]
 
 
+class ReviewTrigger(GitHubReviewerModel):
+    kind: str
+    summary: str = ""
+    actor: str = ""
+    comment_url: str = ""
+    body_excerpt: str = ""
+
+    @property
+    def explicit_request(self) -> bool:
+        return self.kind in {
+            "manual_review",
+            "mentioned_issue_comment",
+            "mentioned_pull_request_review",
+            "review_requested",
+            "review_thread_comment",
+        }
+
+
 class PollEventCursor(GitHubReviewerModel):
     repo: str
     last_event_created_at: str

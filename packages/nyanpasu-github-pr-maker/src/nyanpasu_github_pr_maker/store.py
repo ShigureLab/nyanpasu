@@ -84,6 +84,10 @@ class GitHubPrMakerStore:
             }
             if "pr_number" not in columns:
                 conn.execute("ALTER TABLE github_pr_maker_records ADD COLUMN pr_number INTEGER")
+            conn.execute("""
+                UPDATE github_pr_maker_records SET result_json=json_remove(result_json,'$.final_message')
+                WHERE json_type(result_json,'$.final_message') IS NOT NULL
+            """)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS github_pr_maker_managed_prs (

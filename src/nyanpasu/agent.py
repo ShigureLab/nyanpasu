@@ -15,13 +15,12 @@ from loguru import logger
 
 from nyanpasu.codex import CodexBackend, backend_from_config
 from nyanpasu.git_ops import WorktreeManager
-from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus, json_dumps
+from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore, replace_context
-from nyanpasu.transcript import TranscriptStore
-from nyanpasu.transcript.capture import Capture
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
+    from nyanpasu.plugins import TaskPreparer
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 
@@ -45,8 +44,6 @@ class AgentService:
     ) -> None:
         self.config = config
         self.store = store or StateStore(config.db_path)
-        self.transcripts = TranscriptStore(self.store.db_path)
-        self.capture_error: str | None = None
         self.worktrees = worktrees or WorktreeManager(config)
         self.codex = codex or backend_from_config(config)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
@@ -54,6 +51,7 @@ class AgentService:
         self._tasks: set[asyncio.Task[None]] = set()
         self._submit_lock = asyncio.Lock()
         self._post_process_hooks: dict[str, list[PostProcessHook]] = {}
+        self._task_preparers: dict[str, TaskPreparer] = {}
         self._owner_id = f"{os.uname().nodename}:{os.getpid()}:{id(self)}"
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
@@ -64,7 +62,11 @@ class AgentService:
                 task.action.value,
                 task.context_key,
             )
-            is_new = await to_thread.run_sync(self.store.record_task, task)
+            coalesce_since = time.time() - self.config.runtime.coalesce_window_seconds if task.coalesce_key else None
+            self._preparer_for(task)
+            is_new, active_task_id = await to_thread.run_sync(
+                functools.partial(self.store.enqueue_task, task, coalesce_since=coalesce_since)
+            )
             if not is_new:
                 logger.info("task submit skipped duplicate task_id={} key={}", task.task_id, task.key)
                 return {"accepted": False, "duplicate": True, "task_id": task.task_id}
@@ -75,23 +77,11 @@ class AgentService:
                     thread_id=None,
                     turn_id=None,
                     final_message="",
-                    raw_events=[],
                 )
                 await to_thread.run_sync(self.store.mark_task_done, result)
                 logger.info("task submit ignored task_id={} context={}", task.task_id, task.context_key)
                 return {"accepted": True, "ignored": True, "task_id": task.task_id}
-            active = await to_thread.run_sync(
-                functools.partial(
-                    self.store.active_task_for_context,
-                    task.context_key,
-                    exclude_task_id=task.task_id,
-                    since=time.time() - self.config.runtime.coalesce_window_seconds,
-                    statuses=(TaskStatus.QUEUED.value,),
-                )
-            )
-            if active is not None and task.action is TaskAction.RUN:
-                active_task_id = active.task_id
-                await to_thread.run_sync(self.store.mark_task_coalesced, task.task_id, active_task_id)
+            if active_task_id is not None:
                 logger.info(
                     "task submit coalesced task_id={} into={} context={}",
                     task.task_id,
@@ -128,7 +118,6 @@ class AgentService:
                 thread_id=None,
                 turn_id=None,
                 final_message="",
-                raw_events=[],
             )
             await to_thread.run_sync(self.store.mark_task_done, result)
             return result
@@ -144,6 +133,9 @@ class AgentService:
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self._post_process_hooks.setdefault(plugin_id, []).append(hook)
+
+    def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
+        self._task_preparers[plugin_id] = preparer
 
     async def _run_task_guarded(self, task: AgentTask) -> None:
         async with self._semaphore:
@@ -170,118 +162,79 @@ class AgentService:
         async with self._context_execution(task):
             started_at = time.monotonic()
             existing = await to_thread.run_sync(self.store.get_context, task.context_key)
-            await to_thread.run_sync(
-                self.transcripts.begin, task, existing.thread_id if existing else None, self.config.codex.backend
-            )
-            capture = Capture(self.transcripts, task.task_id)
-            capture.observe({"type": "nyanpasu.preparing", "state": "running"}, "lifecycle")
-            try:
-                await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
-                task = await to_thread.run_sync(self._with_coalesced_task_context, task)
-                context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
-                if context.session_worktree is None:
-                    context = replace_context(context, session_worktree=Path.cwd())
-                event_worktree = None
-                if task.workspace_policy == "event_snapshot":
-                    event_worktree = await to_thread.run_sync(self.worktrees.prepare_event_snapshot, task)
-                    await to_thread.run_sync(self.store.mark_task_running, task.task_id, event_worktree)
-                logger.info(
-                    "task started task_id={} context={} thread_id={} workspace={} workspace_policy={}",
-                    task.task_id,
-                    task.context_key,
-                    context.thread_id,
-                    context.session_worktree,
-                    task.workspace_policy,
-                )
-                prompt = self._runtime_prompt(
-                    task,
-                    event_worktree=event_worktree,
-                    session_worktree=context.session_worktree,
-                )
-                capture.observe(
-                    {
-                        "type": "nyanpasu.input",
-                        "prompt": task.prompt,
-                        "actual_prompt": prompt,
-                        "cwd": str(context.session_worktree),
-                        "context": {
-                            "revision": task.workspace.revision if task.workspace else context.revision,
-                            "workspace": str(context.session_worktree),
-                            "instructions": [doc.model_dump(mode="json") for doc in task.instruction_docs],
-                            "coalesced_tasks": task.metadata.get("coalesced_tasks", []),
-                        },
-                    },
-                    "lifecycle",
-                )
-                await capture.flush()
-                capture.observe({"type": "nyanpasu.running", "state": "running"}, "lifecycle")
-                result = await self.codex.run_turn(
-                    cwd=context.session_worktree or Path.cwd(),
-                    prompt=prompt,
-                    thread_id=context.thread_id,
-                    observer=capture.observe,
-                )
-                await capture.flush()
-                await to_thread.run_sync(self.transcripts.finish_message, task.task_id, result.final_message)
-                capture.observe(
-                    {
-                        "type": "nyanpasu.backend_completed",
-                        "state": "completed",
-                        "thread_id": result.thread_id,
-                        "turn_id": result.turn_id,
-                    },
-                    "lifecycle",
-                )
-                context = replace_context(
-                    context,
-                    thread_id=result.thread_id,
-                    revision=task.workspace.revision if task.workspace else context.revision,
-                )
-                await to_thread.run_sync(self.store.upsert_context, context)
+            await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
+            task = await self._prepare_task(task, existing)
+            await to_thread.run_sync(self.store.update_task_input, task)
+            if task.action is TaskAction.IGNORED:
                 run_result = TaskRunResult(
                     task_id=task.task_id,
                     status=TaskStatus.COMPLETED,
-                    thread_id=result.thread_id,
-                    turn_id=result.turn_id,
-                    final_message=result.final_message,
-                    raw_events=result.raw_events,
-                    event_worktree=event_worktree,
-                    session_worktree=context.session_worktree,
+                    thread_id=existing.thread_id if existing else None,
+                    turn_id=None,
+                    final_message=task.prompt,
                 )
                 await to_thread.run_sync(self.store.mark_task_done, run_result)
-                logger.info(
-                    "task finished task_id={} context={} thread_id={} turn_id={} elapsed_sec={:.2f}",
-                    task.task_id,
-                    task.context_key,
-                    result.thread_id,
-                    result.turn_id,
-                    time.monotonic() - started_at,
-                )
-                capture.observe({"type": "nyanpasu.post_process", "state": "running"}, "lifecycle")
-                await self._run_post_process_hooks(task, run_result)
-                capture.observe({"type": "nyanpasu.post_process_completed", "state": "completed"}, "lifecycle")
-                if task.workspace_policy == "event_snapshot" and self.config.runtime.clean_event_snapshots:
-                    await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, event_worktree)
-                    logger.info("task event snapshot removed task_id={} path={}", task.task_id, event_worktree)
-                capture.observe({"type": "nyanpasu.completed", "state": "completed"}, "lifecycle")
                 return run_result
-            except asyncio.CancelledError:
-                capture.observe(
-                    {
-                        "type": "nyanpasu.interrupted",
-                        "state": "interrupted",
-                        "text": "Task cancelled; unfinished items have no recorded terminal status.",
-                    },
-                    "lifecycle",
-                )
-                raise
-            except Exception as exc:
-                capture.observe({"type": "nyanpasu.failed", "state": "failed", "text": str(exc)}, "lifecycle")
-                raise
-            finally:
-                await asyncio.shield(capture.close())
-                if capture.error:
-                    self.capture_error = capture.error
+            context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
+            if context.session_worktree is None:
+                context = replace_context(context, session_worktree=Path.cwd())
+            event_worktree = None
+            if task.workspace_policy == "event_snapshot":
+                event_worktree = await to_thread.run_sync(self.worktrees.prepare_event_snapshot, task)
+                await to_thread.run_sync(self.store.mark_task_running, task.task_id, event_worktree)
+            logger.info(
+                "task started task_id={} context={} thread_id={} workspace={} workspace_policy={}",
+                task.task_id,
+                task.context_key,
+                context.thread_id,
+                context.session_worktree,
+                task.workspace_policy,
+            )
+            prompt = self._runtime_prompt(
+                task,
+                event_worktree=event_worktree,
+                session_worktree=context.session_worktree,
+            )
+
+            async def on_started(thread_id: str, turn_id: str | None) -> None:
+                await to_thread.run_sync(self.store.bind_task_execution, task.task_id, thread_id, turn_id)
+
+            result = await self.codex.run_turn(
+                cwd=context.session_worktree or Path.cwd(),
+                prompt=prompt,
+                developer_instructions=self._runtime_instructions(task),
+                thread_id=context.thread_id,
+                on_started=on_started,
+            )
+            context = replace_context(
+                context,
+                thread_id=result.thread_id,
+                revision=task.workspace.revision if task.workspace else context.revision,
+            )
+            await to_thread.run_sync(self.store.upsert_context, context)
+            run_result = TaskRunResult(
+                task_id=task.task_id,
+                status=TaskStatus.COMPLETED,
+                thread_id=result.thread_id,
+                turn_id=result.turn_id,
+                final_message=result.final_message,
+                event_worktree=event_worktree,
+                session_worktree=context.session_worktree,
+            )
+            await to_thread.run_sync(self.store.mark_task_done, run_result)
+            logger.info(
+                "task finished task_id={} context={} thread_id={} turn_id={} elapsed_sec={:.2f}",
+                task.task_id,
+                task.context_key,
+                result.thread_id,
+                result.turn_id,
+                time.monotonic() - started_at,
+            )
+            await self._run_post_process_hooks(task, run_result)
+            if task.workspace_policy == "event_snapshot" and self.config.runtime.clean_event_snapshots:
+                await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, event_worktree)
+                logger.info("task event snapshot removed task_id={} path={}", task.task_id, event_worktree)
+            return run_result
 
     @contextlib.asynccontextmanager
     async def _context_execution(self, task: AgentTask):
@@ -308,7 +261,6 @@ class AgentService:
             logger.info("task cleanup started task_id={} context={}", task.task_id, task.context_key)
             await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
             context = await to_thread.run_sync(self.store.delete_context, task.context_key)
-            await to_thread.run_sync(self.transcripts.close_context, task.context_key)
             if context is not None:
                 if context.thread_id:
                     await self.codex.cleanup_thread(context.thread_id)
@@ -319,7 +271,6 @@ class AgentService:
                 thread_id=context.thread_id if context else None,
                 turn_id=None,
                 final_message="",
-                raw_events=[],
                 session_worktree=context.session_worktree if context else None,
             )
             await to_thread.run_sync(self.store.mark_task_done, result)
@@ -339,13 +290,23 @@ class AgentService:
         for hook in self._post_process_hooks.get(plugin_id, []):
             await hook(task, result)
 
-    def _with_coalesced_task_context(self, task: AgentTask) -> AgentTask:
-        coalesced = self.store.coalesced_tasks_for(task.task_id)
-        if not coalesced:
+    async def _prepare_task(self, task: AgentTask, context: AgentContext | None) -> AgentTask:
+        preparer = self._preparer_for(task)
+        if preparer is None:
             return task
-        metadata = dict(task.metadata)
-        metadata["coalesced_tasks"] = [item.model_dump(mode="json") for item in coalesced]
-        return task.model_copy(update={"metadata": metadata})
+        records = await to_thread.run_sync(self.store.coalesced_tasks_for, task.task_id)
+        coalesced = tuple(AgentTask.model_validate(record.task) for record in records)
+        prepared = await preparer(task, coalesced, context)
+        return prepared.model_copy(
+            update={"metadata": {**prepared.metadata, "coalesced_task_ids": [item.task_id for item in coalesced]}}
+        )
+
+    def _preparer_for(self, task: AgentTask) -> TaskPreparer | None:
+        plugin_id = task.metadata.get("plugin_id")
+        preparer = self._task_preparers.get(plugin_id) if isinstance(plugin_id, str) else None
+        if task.coalesce_key and preparer is None:
+            raise ValueError("coalescing requires a registered plugin task preparer")
+        return preparer
 
     def _runtime_prompt(
         self,
@@ -354,26 +315,24 @@ class AgentService:
         event_worktree: Path | None,
         session_worktree: Path | None,
     ) -> str:
-        prompt = task.prompt.replace(
+        return task.prompt.replace(
             "{{NYANPASU_EVENT_WORKTREE}}",
             str(event_worktree or session_worktree or Path.cwd()),
         ).replace(
             "{{NYANPASU_WORKTREE}}",
             str(event_worktree or session_worktree or Path.cwd()),
         )
-        coalesced = task.metadata.get("coalesced_tasks")
-        if isinstance(coalesced, list) and coalesced:
-            prompt += "\n\nAdditional coalesced task context:\n"
-            prompt += json_dumps(coalesced)
-            prompt += "\n"
+
+    def _runtime_instructions(self, task: AgentTask) -> str:
+        instructions = task.developer_instructions.strip()
         if task.instruction_docs:
-            prompt += "\n\nTask-specific instruction documents:\n"
+            instructions += "\n\nConfigured instruction documents:\n"
             for doc in task.instruction_docs:
-                prompt += f"\n--- {doc.name}"
+                instructions += f"\n--- {doc.name}"
                 if doc.source:
-                    prompt += f" ({doc.source})"
-                prompt += f" ---\n{doc.content.strip()}\n"
-        return prompt
+                    instructions += f" ({doc.source})"
+                instructions += f" ---\n{doc.content.strip()}\n"
+        return instructions.strip()
 
     async def _acquire_context_lease(self, task: AgentTask) -> None:
         waited = False

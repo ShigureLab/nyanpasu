@@ -12,10 +12,13 @@ from nyanpasu_github.agent_tasks import (
     configured_branch_context,
     parse_pull_request_task_outcome,
 )
+from nyanpasu_github.instructions import instruction_documents_for_repo
 from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.pulls import fetch_pull_request_view
+from nyanpasu_github.workspace import branch_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
+from nyanpasu.models import TaskAction
 from nyanpasu_github_pr_maker.followup import GitHubPrMakerFollowUpPoller
 from nyanpasu_github_pr_maker.models import (
     CreatePullRequestTaskRequest,
@@ -23,13 +26,17 @@ from nyanpasu_github_pr_maker.models import (
     PullRequestPlan,
     PullRequestPublishMetadata,
 )
-from nyanpasu_github_pr_maker.prompt import build_pr_maker_prompt
+from nyanpasu_github_pr_maker.prompt import (
+    build_pr_follow_up_prompt,
+    build_pr_maker_instructions,
+    build_pr_maker_prompt,
+)
 from nyanpasu_github_pr_maker.store import GitHubPrMakerStore
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from nyanpasu.models import AgentTask, TaskRunResult
+    from nyanpasu.models import AgentContext, AgentTask, TaskRunResult
     from nyanpasu.plugins import PluginRuntime
 
 PLUGIN_ID = "github_pr_maker"
@@ -58,6 +65,7 @@ class GitHubPrMakerPlugin:
         self.store = GitHubPrMakerStore(runtime.config.db_path)
         runtime.add_router(self._router(), prefix="/plugins/github-pr-maker", tags=["github-pr-maker"])
         runtime.add_post_process_hook(self.id, self._post_process)
+        runtime.add_task_preparer(self.id, self.prepare_task)
         if config.follow_up_enabled:
             self.follow_up_poller = GitHubPrMakerFollowUpPoller(
                 config, store=self.store, runtime=runtime, github=self.github
@@ -154,7 +162,10 @@ class GitHubPrMakerPlugin:
         return branch_agent_task(
             task_id=task_id,
             context_key=context_key,
-            prompt=build_pr_maker_prompt(config=self.config, plan=plan),
+            prompt=build_pr_maker_prompt(plan=plan),
+            developer_instructions=build_pr_maker_instructions(
+                self.config, dry_run=plan.dry_run, auth_instructions=plan.auth_instructions
+            ),
             branch_context=branch_context,
             dedupe_key=task_id,
             metadata={
@@ -162,6 +173,55 @@ class GitHubPrMakerPlugin:
                 "request": request.model_dump(mode="json"),
                 "publish": publish.model_dump(mode="json"),
             },
+        )
+
+    async def prepare_task(
+        self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
+    ) -> AgentTask:
+        assert self.config is not None
+        publish = PullRequestPublishMetadata.model_validate(task.metadata["publish"])
+        if not task.metadata.get("follow_up"):
+            return task
+        assert publish.existing_pr_number is not None
+        pr = await asyncio.to_thread(
+            fetch_pull_request_view, publish.repo, publish.existing_pr_number, env=self.github.gh_env()
+        )
+        if not pr.is_open:
+            return task.model_copy(update={"action": TaskAction.IGNORED, "prompt": f"PR is closed: {pr.url}"})
+        publish = publish.model_copy(
+            update={"dry_run": self.config.dry_run, "branch_name": pr.head_ref, "base_branch": pr.base_ref}
+        )
+        return task.model_copy(
+            update={
+                "workspace": branch_workspace_ref(
+                    repo=publish.repo,
+                    settings=self.config.repos[publish.repo],
+                    branch=publish.branch_name,
+                    revision=pr.head_sha,
+                ),
+                "prompt": build_pr_follow_up_prompt(
+                    publish=publish, pr=pr, include_original_task=not (context and context.thread_id)
+                ),
+                "developer_instructions": build_pr_maker_instructions(
+                    self.config, dry_run=publish.dry_run, auth_instructions=self.github.agent_auth_instructions()
+                ),
+                "instruction_docs": instruction_documents_for_repo(
+                    repo=publish.repo,
+                    plugin_instruction_docs=self.config.instruction_docs,
+                    repo_settings=self.config.repos,
+                ),
+                "metadata": {
+                    **task.metadata,
+                    "publish": publish.model_dump(mode="json"),
+                    "managed_pr": {
+                        **task.metadata["managed_pr"],
+                        "head_sha": pr.head_sha,
+                        "review_decision": pr.review_decision,
+                        "merge_state_status": pr.merge_state_status,
+                        "failing_checks": list(pr.failing_checks),
+                    },
+                },
+            }
         )
 
     async def _post_process(self, task: AgentTask, result: TaskRunResult) -> None:
@@ -191,7 +251,6 @@ class GitHubPrMakerPlugin:
         )
         result_payload = {
             "agent_driven": True,
-            "final_message": result.final_message,
             "thread_id": result.thread_id,
             "turn_id": result.turn_id,
         }

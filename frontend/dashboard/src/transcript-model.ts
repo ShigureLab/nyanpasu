@@ -7,7 +7,10 @@ export function mergeEntries(
   const entries = new Map(current.map((entry) => [entry.entry_id, entry]));
   for (const entry of incoming) {
     const previous = entries.get(entry.entry_id);
-    if (!previous || BigInt(entry.revision_seq) > BigInt(previous.revision_seq))
+    if (
+      !previous ||
+      (entry.revision_seq !== previous.revision_seq && entry.observed_at >= previous.observed_at)
+    )
       entries.set(entry.entry_id, entry);
   }
   return [...entries.values()].sort((a, b) => (BigInt(a.first_seq) < BigInt(b.first_seq) ? -1 : 1));
@@ -17,13 +20,14 @@ export function countUpdates(
   current: readonly TranscriptEntry[],
   incoming: readonly TranscriptEntry[],
 ): string[] {
-  const revisions = new Map(current.map((entry) => [entry.entry_id, entry.revision_seq]));
+  const previous = new Map(current.map((entry) => [entry.entry_id, entry]));
   return incoming
-    .filter(
-      (entry) =>
-        !revisions.has(entry.entry_id) ||
-        BigInt(entry.revision_seq) > BigInt(revisions.get(entry.entry_id)!),
-    )
+    .filter((entry) => {
+      const old = previous.get(entry.entry_id);
+      return (
+        !old || (entry.revision_seq !== old.revision_seq && entry.observed_at >= old.observed_at)
+      );
+    })
     .map((entry) => entry.entry_id);
 }
 
