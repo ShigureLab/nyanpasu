@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "source", "summary", "findings", "disclosure"],
+  "properties": {
+    "status": {
+      "enum": ["reviewing", "approved", "changes_requested", "comment", "incomplete"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_sha"],
+      "properties": {
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/finding" }
+    },
+    "disclosure": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plain text inside the current turn's disclosure footer; no HTML or Markdown."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "changes_requested" } } },
+      "then": { "properties": { "findings": { "minProperties": 1 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "approved" } } },
+      "then": {
+        "properties": {
+          "findings": {
+            "additionalProperties": {
+              "properties": { "status": { "enum": ["resolved", "superseded"] } }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "url", "priority", "status"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "pattern": "^https?://" },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "status": { "enum": ["unresolved", "partial", "resolved", "superseded"] },
+        "rule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "url"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1 },
+            "url": { "type": "string", "pattern": "^https?://" }
+          }
+        }
+      }
+    }
+  }
+}

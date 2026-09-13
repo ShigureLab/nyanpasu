@@ -1,0 +1,18 @@
+{
+  "status": "comment",
+  "source": { "head_sha": "0123456789abcdef0123456789abcdef01234567" },
+  "summary": "已完成审查，有一项非阻塞问题需要跟进。",
+  "findings": {
+    "F1": {
+      "title": "修正文档示例中的配置路径",
+      "url": "https://github.com/example/project/pull/123#discussion_r456",
+      "priority": "P2",
+      "status": "unresolved",
+      "rule": {
+        "title": "仓库规则：文档与示例",
+        "url": "https://github.com/example/project/blob/0123456789abcdef0123456789abcdef01234567/skills/code-review/SKILL.md"
+      }
+    }
+  },
+  "disclosure": "Powered by Nyanpasu with Codex, please check the suggestions carefully."
+}

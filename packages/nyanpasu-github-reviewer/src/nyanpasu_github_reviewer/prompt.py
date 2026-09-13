@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, ReviewEvent
 
 INSTRUCTIONS_DIR = Path(__file__).with_name("instructions")
+TEMPLATES_DIR = Path(__file__).with_name("templates")
 
 
 def publication_mode(config: GitHubReviewerConfig) -> str:
@@ -33,6 +34,7 @@ def build_review_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) 
         request_changes="enabled" if config.request_changes_on_findings else "disabled",
         publication_mode=publication_mode(config),
         output_reference=INSTRUCTIONS_DIR / "review-output.md",
+        dashboard_config=TEMPLATES_DIR / "boards.toml",
     )
 
 
@@ -64,6 +66,7 @@ def build_review_prompt(
         f"Base branch: {pr.base_ref}; head branch: {pr.head_ref}",
         f"Worktree: {worktree}",
         f"Publication mode: {publication_mode(config)}.",
+        f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
     ]
     if previous_task_head:
         lines.append(f"Previous task head (not proof of completed review): {previous_task_head}")

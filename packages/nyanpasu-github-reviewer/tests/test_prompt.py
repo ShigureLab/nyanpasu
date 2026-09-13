@@ -6,7 +6,12 @@ import pytest
 
 from nyanpasu.config import CodexConfig
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings, ReviewTrigger
-from nyanpasu_github_reviewer.prompt import INSTRUCTIONS_DIR, build_review_instructions, build_review_prompt
+from nyanpasu_github_reviewer.prompt import (
+    INSTRUCTIONS_DIR,
+    TEMPLATES_DIR,
+    build_review_instructions,
+    build_review_prompt,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,6 +50,7 @@ def test_session_instructions_are_stable_across_heads_and_turns(tmp_path: Path) 
     assert "github-conversation" in instructions and "gh-slate" in instructions
     assert "nyanpasu-review" in instructions and "data.source.head_sha" in instructions
     assert str(INSTRUCTIONS_DIR / "review-output.md") in instructions
+    assert f'--config "{TEMPLATES_DIR / "boards.toml"}" --profile review' in instructions
     assert len(instructions) < 6000
 
 
@@ -64,6 +70,7 @@ def test_ordinary_turn_contains_only_current_facts_and_trigger(tmp_path: Path) -
     assert "Previous task head (not proof of completed review): old-head" in prompt
     assert "/tmp/worktree" in prompt and "New commits." in prompt
     assert "Explicit request: no" in prompt
+    assert f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)" in prompt
     assert "github-conversation" not in prompt
     assert "Powered by Nyanpasu with Codex" in prompt
     assert len(prompt) < 1000

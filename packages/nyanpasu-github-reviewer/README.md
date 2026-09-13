@@ -89,7 +89,18 @@ GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user",
 github_login = "your-bot-login"
 ```
 
-The agent follows the skill to read existing slate data, choose a rendering definition for the first creation, preview changes, publish with the observed revision, and verify the result. It reuses the same comment and definition on follow-up reviews. The dashboard contains the analyzed head SHA, review status and conclusion, and links to canonical finding threads with their resolution status. Detailed findings remain in the review threads.
+The agent follows the skill to read existing slate data, preview changes, publish with the observed revision, and verify the result. The reviewer package ships one `review` profile in [templates/boards.toml](src/nyanpasu_github_reviewer/templates/boards.toml), with a [Jinja template](src/nyanpasu_github_reviewer/templates/review.md.j2), [JSON Schema](src/nyanpasu_github_reviewer/templates/review.schema.json), and [example data](src/nyanpasu_github_reviewer/templates/review.example.json). Each turn supplies the installed profile's absolute path, including resumed sessions; the agent must use it on first creation and reuse the embedded definition on follow-up reviews. A different existing definition is replaced with this profile on the next warranted update. Restart the service after upgrading the reviewer package.
+
+The dashboard has Chinese headings and shows the analyzed head SHA, review status, summary, and findings with priority, resolution status, canonical thread links, and optional rule-source links. Summaries and finding titles follow `review_language`. The statuses are `reviewing`, `approved`, `changes_requested`, `comment`, and `incomplete`; an unfinished review never displays approval. Findings use stable object keys, and resolved or superseded entries remain in the table. The disclosure text comes from the current turn's model declaration. Detailed findings remain in their threads.
+
+Preview the bundled example from the repository root without writing to GitHub:
+
+```bash
+gh-slate render nyanpasu-review \
+  --config packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/templates/boards.toml \
+  --profile review \
+  --data packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/templates/review.example.json
+```
 
 When a review warrants a visible update, the agent updates the dashboard while reviewing and again with the outcome before finishing. Automatic follow-ups with no new code, evidence, finding status, or explicit request leave it unchanged. `dry_run = true` or `post_reviews = false` prohibits all GitHub writes, including dashboard updates. Comments authored by the bot are ignored by event handling, preventing self-triggered review tasks.
 
