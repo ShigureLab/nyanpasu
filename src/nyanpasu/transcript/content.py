@@ -6,11 +6,21 @@ import json
 import re
 from typing import Any
 
+from nyanpasu.transcript.models import ContentUpdate
+
 PREVIEW_BYTES = 4096
 CHUNK_BYTES = 64 * 1024
 SECRET = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b|(?i:Bearer\s+)[A-Za-z0-9._~+/-]{12,}"
 )
+
+
+def display(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def content(block_id: str, kind: str, value: Any) -> ContentUpdate:
+    return ContentUpdate(block_id=block_id, kind=kind, text=display(value))
 
 
 def redact(value: Any) -> Any:

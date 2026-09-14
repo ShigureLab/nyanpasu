@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -24,19 +24,37 @@ class EnvCommand(BaseModel):
         return value
 
 
-class CodexConfig(BaseModel):
+class ProcessConfig(BaseModel):
+    label: ClassVar[str] = "Agent"
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
-    backend: Literal["app-server", "exec"] = "app-server"
-    bin: str = "codex"
+    bin: str
+    args: tuple[str, ...] = ()
     model: str | None = None
     reasoning_effort: str | None = None
-    sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
-    approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
-    approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
-    command_timeout_seconds: int = 60 * 60
+    command_timeout_seconds: int = Field(default=60 * 60, gt=0)
     pass_env: tuple[str, ...] = ()
     env: dict[str, str | EnvCommand] = Field(default_factory=dict, repr=False)
+
+    @field_validator("bin")
+    @classmethod
+    def _executable(cls, value: str) -> str:
+        if not value.strip() or "\0" in value:
+            raise ValueError("bin must be a nonempty executable name or path without NUL")
+        path = Path(value).expanduser()
+        # Preserve executable symlinks (notably virtual-environment interpreters).
+        return str(path.absolute()) if os.sep in value or (os.altsep and os.altsep in value) else value
+
+    @field_validator("args")
+    @classmethod
+    def _arguments(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any("\0" in arg for arg in value):
+            raise ValueError("args must contain no NUL")
+        return value
+
+    @property
+    def command(self) -> tuple[str, ...]:
+        return (self.bin, *self.args)
 
     @field_validator("model", "reasoning_effort")
     @classmethod
@@ -64,6 +82,24 @@ class CodexConfig(BaseModel):
         return value
 
 
+class CodexConfig(ProcessConfig):
+    label: ClassVar[str] = "Codex"
+    bin: str = "codex"
+    backend: Literal["app-server", "exec"] = "app-server"
+    sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
+    approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
+    approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
+
+
+class ClaudeConfig(ProcessConfig):
+    label: ClassVar[str] = "Claude Code"
+    bin: str = "claude"
+    permission_mode: Literal["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] = (
+        "dontAsk"
+    )
+    allowed_tools: tuple[str, ...] = ()
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -74,6 +110,7 @@ class ServerConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    backend: Literal["codex", "claude"] = "codex"
     concurrency: int = 4
     coalesce_window_seconds: int = 600
     context_lease_seconds: float = 2 * 60 * 60
@@ -88,10 +125,19 @@ class NyanpasuConfig(BaseModel):
     state_dir: Path = Field(default_factory=lambda: nyanpasu_home())
     server: ServerConfig = Field(default_factory=ServerConfig)
     codex: CodexConfig = Field(default_factory=CodexConfig)
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     integrations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)
     enabled_plugins: tuple[str, ...] = ()
+
+    def process_config(self, backend: str | None = None) -> ProcessConfig:
+        name = backend or self.runtime.backend
+        if name == "codex":
+            return self.codex
+        if name == "claude":
+            return self.claude
+        raise ValueError(f"unknown runtime backend: {name}")
 
     @field_validator("state_dir", mode="before")
     @classmethod
@@ -172,6 +218,21 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
             codex[field] = int(value) if field == "command_timeout_seconds" else value
     if codex:
         data["codex"] = codex
+    claude = dict(data.get("claude") or {})
+    for suffix, field in {
+        "BIN": "bin",
+        "MODEL": "model",
+        "REASONING_EFFORT": "reasoning_effort",
+        "PERMISSION_MODE": "permission_mode",
+    }.items():
+        if (value := os.getenv(f"NYANPASU_CLAUDE_{suffix}")) is not None:
+            claude[field] = value
+    if (timeout := os.getenv("NYANPASU_COMMAND_TIMEOUT_SECONDS")) is not None:
+        claude["command_timeout_seconds"] = int(timeout)
+    if claude:
+        data["claude"] = claude
+    if backend := os.getenv("NYANPASU_BACKEND"):
+        data["runtime"] = {**data.get("runtime", {}), "backend": backend}
     if plugins := os.getenv("NYANPASU_PLUGINS"):
         data["enabled_plugins"] = plugins
     return data

@@ -187,7 +187,9 @@ class GitHubReviewerPlugin:
                     self.config,
                     pr,
                     "{{NYANPASU_WORKTREE}}",
-                    codex=self.runtime.config.codex,
+                    runtime=self.runtime.config.process_config(
+                        context.backend if context and context.thread_id else None
+                    ),
                     triggers=triggers,
                     has_session=bool(context and context.thread_id),
                     previous_task_head=context.revision if context else None,

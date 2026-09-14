@@ -52,11 +52,11 @@ class GitHubIntegrationConfig(GitHubModel):
         if self.token_env:
             if self.token_env in {"GH_TOKEN", "GITHUB_TOKEN"}:
                 return (
-                    f"GitHub CLI authentication may use `${self.token_env}` if it is exposed to the Codex runtime.",
+                    f"GitHub CLI authentication may use `${self.token_env}` if it is exposed to the agent runtime.",
                     "Do not print or otherwise expose authentication environment variable values.",
                 )
             return (
-                f"If GitHub CLI authentication is needed and `${self.token_env}` is exposed to the Codex runtime, "
+                f"If GitHub CLI authentication is needed and `${self.token_env}` is exposed to the agent runtime, "
                 f'run `gh` commands with `GH_TOKEN="${{{self.token_env}}}" GITHUB_TOKEN="${{{self.token_env}}}"` '
                 "in the command environment.",
                 "Do not print or otherwise expose authentication environment variable values.",
@@ -64,7 +64,7 @@ class GitHubIntegrationConfig(GitHubModel):
         if self.token:
             return (
                 "A GitHub token is configured for plugin-side GitHub API calls, but token values are not embedded in "
-                "agent prompts. Configure `codex.env` or `codex.pass_env` for agent GitHub writes.",
+                "agent prompts. Configure the selected backend’s `env` or `pass_env` for agent GitHub writes.",
             )
         return ("Use ambient `gh auth` for GitHub CLI writes. If authentication is missing, stop and report it.",)
 

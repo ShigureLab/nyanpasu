@@ -8,12 +8,14 @@ from unittest.mock import Mock
 import pytest
 
 from nyanpasu.agent import AgentService
+from nyanpasu.backends import Backend, Backends
 from nyanpasu.config import NyanpasuConfig, RuntimeConfig
-from nyanpasu.models import AgentContext, AgentTask, CodexRunResult, InstructionDocument, TaskAction, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, RunResult, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu.transcript.codex import CodexHistorySource
 
 if TYPE_CHECKING:
-    from nyanpasu.codex import ExecutionStarted
+    from nyanpasu.execution import ExecutionStarted
 
 
 class FakeCodex:
@@ -31,17 +33,20 @@ class FakeCodex:
         thread_id: str | None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult:
+    ) -> RunResult:
         self.prompts.append(prompt)
         self.instructions.append(developer_instructions)
         self.calls.append((cwd, thread_id))
         if on_started:
             await on_started(thread_id or "thread-1", "turn-1")
-        return CodexRunResult(
+        return RunResult(
             thread_id=thread_id or "thread-1",
             turn_id="turn-1",
             final_message="done",
         )
+
+    def runtime_info(self):
+        return {"connection": "idle", "diagnostics": []}
 
     async def read_thread(self, thread_id: str) -> dict:
         return {"id": thread_id}
@@ -102,7 +107,7 @@ class SlowCodex(FakeCodex):
         thread_id: str | None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult:
+    ) -> RunResult:
         if not self.calls:
             self.started.set()
         elif self.second_started is not None:
@@ -130,7 +135,7 @@ class CancellableCodex(FakeCodex):
         thread_id: str | None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult:
+    ) -> RunResult:
         _ = cwd, prompt, thread_id
         self.started.set()
         await asyncio.Event().wait()
@@ -173,7 +178,7 @@ async def test_agent_reuses_context_thread_and_workspace(tmp_path: Path) -> None
     store = StateStore(config.db_path)
     codex = FakeCodex()
     worktrees = FakeWorktrees(tmp_path / "worktrees")
-    agent = AgentService(config, store=store, worktrees=worktrees, codex=codex)
+    agent = AgentService(config, store=store, worktrees=worktrees, backends=fake_backends(config, codex))
 
     await agent.run_now(_task("task-1"))
     await agent.run_now(_task("task-2", revision="def"))
@@ -197,7 +202,7 @@ async def test_agent_can_opt_into_event_snapshot_workspace(tmp_path: Path) -> No
     store = StateStore(config.db_path)
     codex = FakeCodex()
     worktrees = FakeWorktrees(tmp_path / "worktrees")
-    agent = AgentService(config, store=store, worktrees=worktrees, codex=codex)
+    agent = AgentService(config, store=store, worktrees=worktrees, backends=fake_backends(config, codex))
     task = _task("task-1").model_copy(
         update={
             "prompt": "process {{NYANPASU_EVENT_WORKTREE}}",
@@ -218,7 +223,7 @@ async def test_agent_cleanup_archives_thread_and_deletes_context(tmp_path: Path)
     store = StateStore(config.db_path)
     codex = FakeCodex()
     worktrees = FakeWorktrees(tmp_path / "worktrees")
-    agent = AgentService(config, store=store, worktrees=worktrees, codex=codex)
+    agent = AgentService(config, store=store, worktrees=worktrees, backends=fake_backends(config, codex))
 
     await agent.run_now(_task("task-1"))
     await agent.run_now(
@@ -239,7 +244,12 @@ async def test_agent_cleanup_archives_thread_and_deletes_context(tmp_path: Path)
 async def test_agent_coalesces_queued_tasks_for_same_context(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = StateStore(config.db_path)
-    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=FakeCodex())
+    agent = AgentService(
+        config,
+        store=store,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=fake_backends(config, FakeCodex()),
+    )
     agent.add_task_preparer("demo", _prepare_demo)
     assert store.record_task(_merge_task("task-1"))
 
@@ -258,7 +268,9 @@ async def test_agent_queues_one_followup_while_context_is_running_and_coalesces_
     second_started = asyncio.Event()
     release = asyncio.Event()
     codex = SlowCodex(started, release, second_started)
-    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+    agent = AgentService(
+        config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, codex)
+    )
 
     agent.add_task_preparer("demo", _prepare_demo)
     result1 = await agent.submit(_merge_task("task-1"))
@@ -292,8 +304,8 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
     first_codex = SlowCodex(first_started, release_first)
     second_codex = SlowCodex(second_started, release_second)
     worktrees = FakeWorktrees(tmp_path / "worktrees")
-    first_agent = AgentService(config, store=store, worktrees=worktrees, codex=first_codex)
-    second_agent = AgentService(config, store=store, worktrees=worktrees, codex=second_codex)
+    first_agent = AgentService(config, store=store, worktrees=worktrees, backends=fake_backends(config, first_codex))
+    second_agent = AgentService(config, store=store, worktrees=worktrees, backends=fake_backends(config, second_codex))
 
     first_run = asyncio.create_task(first_agent.run_now(_task("task-1")))
     await first_started.wait()
@@ -328,7 +340,7 @@ async def test_agent_shutdown_marks_running_tasks_failed_and_releases_lease(tmp_
         config,
         store=store,
         worktrees=FakeWorktrees(tmp_path / "worktrees"),
-        codex=CancellableCodex(started),
+        backends=fake_backends(config, CancellableCodex(started)),
     )
 
     result = await agent.submit(_task("task-1"))
@@ -351,7 +363,9 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
     config = _config(tmp_path)
     store = StateStore(config.db_path)
     codex = FakeCodex()
-    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+    agent = AgentService(
+        config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, codex)
+    )
     task = _task("task-1").model_copy(
         update={
             "developer_instructions": "Persistent role.",
@@ -389,7 +403,9 @@ async def test_freeform_tasks_are_not_automatically_merged(tmp_path: Path) -> No
     config = _config(tmp_path)
     store = StateStore(config.db_path)
     codex = FakeCodex()
-    agent = AgentService(config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+    agent = AgentService(
+        config, store=store, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, codex)
+    )
     agent._semaphore = asyncio.Semaphore(0)
     first = await agent.submit(_task("task-1"))
     second = await agent.submit(_task("task-2"))
@@ -430,7 +446,10 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
         )
     )
     backend = codex or FakeCodex()
-    agent = AgentService(_config(tmp_path), worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=backend)
+    config = _config(tmp_path)
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
     plugin.runtime = Mock(config=agent.config)
     agent.add_task_preparer(plugin.id, plugin.prepare_task)
     return agent, plugin, backend, head
@@ -515,7 +534,8 @@ async def test_reviewer_events_during_review_resume_with_completed_task_head(tmp
 @pytest.mark.anyio
 async def test_preparer_can_skip_obsolete_work_without_a_codex_turn(tmp_path: Path) -> None:
     codex = FakeCodex()
-    agent = AgentService(_config(tmp_path), worktrees=FakeWorktrees(tmp_path / "worktrees"), codex=codex)
+    config = _config(tmp_path)
+    agent = AgentService(config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, codex))
 
     async def skip(task, coalesced, context):
         return task.model_copy(update={"action": TaskAction.IGNORED, "prompt": "PR closed while queued."})
@@ -528,3 +548,57 @@ async def test_preparer_can_skip_obsolete_work_without_a_codex_turn(tmp_path: Pa
     assert agent.store.get_context("demo:1") is None
     assert agent.store.recent_tasks()[0].action is TaskAction.IGNORED
     await agent.shutdown()
+
+
+def fake_backends(config: NyanpasuConfig, execution: FakeCodex, name: str = "codex") -> Backends:
+    return Backends(config, {name: Backend(execution, CodexHistorySource(execution))})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("existing_context", [False, True])
+async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: Path, existing_context):
+    from httpx import ASGITransport, AsyncClient
+
+    from nyanpasu.web import create_app
+
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        runtime=RuntimeConfig(backend="codex" if existing_context else "claude"),
+    )
+    agent = AgentService(config)
+    agent._semaphore = asyncio.Semaphore(0)  # Keep submissions queued while inspecting their metadata.
+    agent.add_task_preparer("demo", _prepare_demo)
+    if existing_context:
+        agent.store.upsert_context(
+            AgentContext(
+                context_key="demo:1",
+                backend="claude",
+                thread_id="claude-session",
+                session_worktree=None,
+                workspace_key=None,
+                revision=None,
+            )
+        )
+    try:
+        await agent.submit(_merge_task("queued"))
+        assert (await agent.submit(_merge_task("coalesced")))["coalesced_into"] == "queued"
+        await agent.submit(_task("ignored").model_copy(update={"action": TaskAction.IGNORED}))
+        result = await agent.run_now(_task("ignored-now").model_copy(update={"action": TaskAction.IGNORED}))
+        assert result.backend == "claude"
+        assert {task.backend for task in agent.store.recent_tasks()} == {"claude"}
+        for task_id in ("queued", "coalesced", "ignored", "ignored-now"):
+            task = agent.store.find_task_by_dedupe_key(task_id)
+            assert task is not None and task.backend == "claude"
+        app = create_app(config, agent=agent)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            assert {task["backend"] for task in (await client.get("/tasks")).json()["tasks"]} == {"claude"}
+            assert {task["backend"] for task in (await client.get("/api/tasks")).json()["items"]} == {"claude"}
+            # The parent's eventual execution binding is the single authority for a coalesced task.
+            agent.store.bind_task_execution("queued", "codex-session", "turn", "codex")
+            rows = {task["task_id"]: task for task in (await client.get("/api/tasks")).json()["items"]}
+            assert rows["coalesced"]["backend"] == rows["queued"]["backend"] == "codex"
+            assert rows["coalesced"]["session_id"] == rows["queued"]["session_id"] == "codex-session"
+            task = agent.store.find_task_by_dedupe_key("coalesced")
+            assert task is not None and task.backend == "codex"
+    finally:
+        await agent.shutdown()

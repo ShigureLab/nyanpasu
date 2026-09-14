@@ -64,6 +64,7 @@ class AgentTask(NyanpasuModel):
 
 
 class AgentContext(NyanpasuModel):
+    backend: str = "codex"
     context_key: str
     thread_id: str | None
     session_worktree: Path | None
@@ -79,6 +80,7 @@ class AgentContext(NyanpasuModel):
 
 
 class TaskRunResult(NyanpasuModel):
+    backend: str = "codex"
     task_id: str
     status: TaskStatus
     thread_id: str | None
@@ -100,13 +102,14 @@ class TaskRunResult(NyanpasuModel):
         return status.value
 
 
-class CodexRunResult(NyanpasuModel):
+class RunResult(NyanpasuModel):
     thread_id: str
     turn_id: str | None
     final_message: str
 
 
 class TaskRunSummary(NyanpasuModel):
+    backend: str = "codex"
     task_id: str
     dedupe_key: str | None = None
     context_key: str

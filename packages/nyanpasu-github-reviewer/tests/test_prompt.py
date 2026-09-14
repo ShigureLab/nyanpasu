@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from nyanpasu.config import CodexConfig
+from nyanpasu.config import ClaudeConfig, CodexConfig
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.prompt import (
     INSTRUCTIONS_DIR,
@@ -59,7 +59,7 @@ def test_ordinary_turn_contains_only_current_facts_and_trigger(tmp_path: Path) -
         _config(tmp_path),
         _pr(),
         "/tmp/worktree",
-        codex=CodexConfig(),
+        runtime=CodexConfig(),
         triggers=(ReviewTrigger(kind="pull_request_synchronize", summary="New commits."),),
         has_session=True,
         previous_task_head="old-head",
@@ -85,7 +85,7 @@ def test_merged_explicit_requests_are_preserved_without_truncation(tmp_path: Pat
         )
         for index in range(12)
     )
-    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", codex=CodexConfig(), triggers=triggers)
+    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", runtime=CodexConfig(), triggers=triggers)
 
     assert "Explicit request: yes" in prompt
     for trigger in triggers:
@@ -99,7 +99,7 @@ def test_read_only_policy_covers_session_and_current_turn(tmp_path: Path, overri
     config = _config(tmp_path, **overrides)
     for text in (
         build_review_instructions(config, _pr()),
-        build_review_prompt(config, _pr(), "/tmp/worktree", codex=CodexConfig(), triggers=()),
+        build_review_prompt(config, _pr(), "/tmp/worktree", runtime=CodexConfig(), triggers=()),
     ):
         assert "read-only; do not write to GitHub, including reviews, replies, or the dashboard" in text
 
@@ -118,17 +118,21 @@ def test_request_changes_policy_and_output_reference(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("codex", "description"),
+    ("runtime", "description"),
     [
         (CodexConfig(model="gpt-6-astra", reasoning_effort="medium"), "gpt-6-astra medium"),
         (CodexConfig(model="another-model", reasoning_effort="high"), "another-model high"),
         (CodexConfig(model="configured-model"), "configured-model"),
         (CodexConfig(), "Codex"),
         (CodexConfig(model="custom&model"), "custom&amp;model"),
+        (ClaudeConfig(model="claude-sonnet-4-6", reasoning_effort="high"), "claude-sonnet-4-6 high"),
+        (ClaudeConfig(), "Claude Code"),
     ],
 )
-def test_disclosure_uses_the_configured_model_and_effort(tmp_path: Path, codex, description) -> None:
-    prompt = build_review_prompt(_config(tmp_path), _pr(), "/tmp/worktree", codex=codex, triggers=(), has_session=True)
+def test_disclosure_uses_the_configured_model_and_effort(tmp_path: Path, runtime, description) -> None:
+    prompt = build_review_prompt(
+        _config(tmp_path), _pr(), "/tmp/worktree", runtime=runtime, triggers=(), has_session=True
+    )
 
     assert (
         f'<div align="right">\n   <sup>Powered by Nyanpasu with {description}, '

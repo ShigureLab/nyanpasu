@@ -4,7 +4,7 @@ GitHub pull request review plugin for Nyanpasu.
 
 This package owns GitHub review behavior: webhook payload parsing, polling, PR state baselines, `gh-llm` review prompts, and GitHub-facing review policy. Shared GitHub config/workspace/signature helpers come from `nyanpasu-github`. The Nyanpasu core runtime only receives generic `AgentTask` objects.
 
-Each PR maps to one Nyanpasu context key, so follow-up events reuse the same Codex thread and context worktree. The worktree is reset to the current PR head before each review task.
+Each PR maps to one Nyanpasu context key, so follow-up events reuse the same agent session and context worktree. The worktree is reset to the current PR head before each review task.
 
 ## Config
 
@@ -42,9 +42,11 @@ required = false
 
 `instruction_docs` are resolved when the review is prepared for execution. Plugin-level documents apply to every reviewer task; repo-level documents apply to that repo. They join the session's developer instructions rather than being appended to every user message. Configure these as trusted policy documents; PR content and comments remain external task material.
 
+For Claude Code, set `runtime.backend = "claude"` and configure `[claude]`; see the [runtime and wrapper configuration](../../README.md#claude-code-and-wrapper-executables). Install the reviewer skills for the selected CLI and pass GitHub credentials through its `env` or `pass_env`. Existing PR contexts retain their original backend.
+
 ## Session Instructions And Turn Input
 
-The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the Codex session. Each execution renders its disclosure footer from the core `codex.model` and `codex.reasoning_effort` configuration. If the model is unset, the footer names Codex without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
+The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the agent session. Each execution renders its disclosure footer from the owning backend’s `model` and `reasoning_effort` configuration. If the model is unset, the footer names Codex or Claude Code without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
 
 Every execution prepares one short user message containing the target head, worktree, publication mode, the current model's disclosure footer, and trigger summaries or request links. Supplying the footer in each turn also updates the declaration when an existing session resumes with a different model. The previous task head is a navigation hint, not proof that a review was completed. Existing GitHub reviews and threads remain the evidence for prior review coverage.
 
@@ -79,7 +81,7 @@ The poller combines repository events, PR state polling, and PR timeline polling
 
 ## Review Dashboard
 
-The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install both in the environment used by Codex, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install), and verify `gh-slate --version`.
+The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install both in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install), and verify `gh-slate --version`.
 
 ```toml
 [codex.env]
@@ -188,7 +190,7 @@ Timestamp cursors must also keep the ids seen at that timestamp. This avoids los
 
 On cold start, polling establishes cursors and PR snapshots without dispatching historical work. New events are only produced after the baseline.
 
-On restart, polling resumes from the persisted cursors and snapshots. If multiple events for the same PR arrive between two polls, all canonical events are written to the journal in chronological order. The dispatcher may coalesce events for the same context into one Codex turn, but the journal should still retain the individual event records for auditability.
+On restart, polling resumes from the persisted cursors and snapshots. If multiple events for the same PR arrive between two polls, all canonical events are written to the journal in chronological order. The dispatcher may coalesce events for the same context into one agent turn, but the journal should still retain the individual event records for auditability.
 
 ### Dispatch And Coalescing
 
@@ -208,6 +210,6 @@ Automatic follow-up events should not post noise. If an existing unresolved thre
 
 ### Known Limits
 
-Polling cannot perfectly reproduce every GitHub delivery. If a comment is created and deleted between poll cycles, the plugin may never see it. If many commits land between cycles, the review should compare the last reviewed head against the latest head rather than replaying every intermediate commit as separate Codex turns.
+Polling cannot perfectly reproduce every GitHub delivery. If a comment is created and deleted between poll cycles, the plugin may never see it. If many commits land between cycles, the review should compare the last reviewed head against the latest head rather than replaying every intermediate commit as separate agent turns.
 
 The reliability goal is not byte-for-byte webhook replay. The goal is to avoid missing actionable final state changes, especially fork PR head updates, mentions, review-thread replies, and review decisions.

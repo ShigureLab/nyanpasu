@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   get,
+  backendLabel,
   query,
   useNavigation,
   useResource,
@@ -35,6 +36,8 @@ interface Runtime {
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
   diagnostics: Diagnostic[];
+  bin: string;
+  backends: Record<string, { connection: string; bin: string; diagnostics: Diagnostic[] }>;
 }
 
 export function App() {
@@ -173,7 +176,7 @@ export function App() {
                     <strong>{item.title}</strong>
                     <code>{item.context_key}</code>
                     <small>
-                      {item.task_count} tasks · {item.backend}
+                      {item.task_count} tasks · {backendLabel(item.backend)}
                     </small>
                   </button>
                 ))}
@@ -458,7 +461,9 @@ function RuntimeView({
 }) {
   const data = useResource<Runtime>('/api/runtime', live, refresh);
   const [level, setLevel] = useState('');
-  const diagnostics = (data.data?.diagnostics ?? []).filter(
+  const [diagnosticBackend, setDiagnosticBackend] = useState('');
+  const selectedBackend = diagnosticBackend || data.data?.backend || '';
+  const diagnostics = (data.data?.backends[selectedBackend]?.diagnostics ?? []).filter(
     (item) => !level || item.level === level,
   );
   return (
@@ -471,7 +476,8 @@ function RuntimeView({
           <div className="runtime-cards">
             <article>
               <span>Backend</span>
-              <h2>{data.data.backend}</h2>
+              <h2>{backendLabel(data.data.backend)}</h2>
+              <code>{data.data.bin}</code>
               <Status state={data.data.connection} />
             </article>
             <article>
@@ -480,8 +486,8 @@ function RuntimeView({
             </article>
             <article>
               <span>Configured model</span>
-              <h2>{data.data.model ?? 'Codex default'}</h2>
-              <span>Reasoning: {data.data.reasoning_effort ?? 'Codex default'}</span>
+              <h2>{data.data.model ?? 'Backend default'}</h2>
+              <span>Reasoning: {data.data.reasoning_effort ?? 'Backend default'}</span>
             </article>
           </div>
           <h2>Context leases</h2>
@@ -496,6 +502,17 @@ function RuntimeView({
           ))}
           <div className="diagnostics-heading">
             <h2>Backend diagnostics</h2>
+            <select
+              aria-label="Diagnostic backend"
+              value={selectedBackend}
+              onChange={(event) => setDiagnosticBackend(event.target.value)}
+            >
+              {[...new Set([data.data.backend, ...Object.keys(data.data.backends)])].map((name) => (
+                <option key={name} value={name}>
+                  {backendLabel(name)}
+                </option>
+              ))}
+            </select>
             <select
               aria-label="Diagnostic level"
               value={level}

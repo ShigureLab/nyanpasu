@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from nyanpasu.agent import AgentService, PostProcessHook
-from nyanpasu.codex import CodexAppServerBackend, CodexSessionSource
+from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
 from nyanpasu.plugins import PluginManager, PluginRegistry, TaskPreparer
 from nyanpasu.store import StateStore
@@ -18,9 +18,11 @@ from nyanpasu.transcript.queries import CursorError, TranscriptReader
 from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from enum import Enum
 
     from nyanpasu.models import AgentTask, TaskRunResult
+    from nyanpasu.transcript.history import SessionSource
 
 
 class AgentBackend(Protocol):
@@ -65,20 +67,19 @@ def create_app(
     agent: AgentBackend | None = None,
     *,
     plugin_registry: PluginRegistry | None = None,
-    session_source: CodexSessionSource | None = None,
+    session_sources: Callable[[str], SessionSource] | None = None,
 ) -> FastAPI:
     resolved_config = config or load_config()
     ensure_state_dirs(resolved_config)
     resolved_agent = agent or AgentService(resolved_config)
     runtime = WebPluginRuntime(config=resolved_config, app=None, agent=resolved_agent)
     plugin_manager = PluginManager(resolved_config, runtime, plugin_registry)
-    history_backend = None
-    if session_source is None:
-        if isinstance(resolved_agent, AgentService):
-            session_source = resolved_agent.codex
-        else:
-            history_backend = CodexAppServerBackend(resolved_config)
-            session_source = history_backend
+    owned_backends = None
+    if isinstance(resolved_agent, AgentService):
+        backends = resolved_agent.backends
+    else:
+        owned_backends = backends = Backends(resolved_config)
+    session_sources = session_sources or backends.source
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -88,25 +89,20 @@ def create_app(
         finally:
             await plugin_manager.shutdown()
             await resolved_agent.shutdown()
-            if history_backend is not None:
-                await history_backend.close()
+            if owned_backends is not None:
+                await owned_backends.close()
 
     app = FastAPI(title="Nyanpasu Agent Service", version="0.1.0", lifespan=lifespan)
     app.state.config = resolved_config
     app.state.agent = resolved_agent
     runtime.app = app
     state_store = StateStore(resolved_config.db_path)
-    reader = TranscriptReader(state_store.db_path, session_source)
+    reader = TranscriptReader(state_store.db_path, session_sources)
 
     def runtime_info() -> dict[str, Any]:
-        if isinstance(resolved_agent, AgentService):
-            backend = resolved_agent.codex
-            proc = getattr(backend, "_proc", None)
-            return {
-                "connection": "connected" if proc is not None and proc.returncode is None else "idle",
-                "diagnostics": list(getattr(backend, "diagnostics", [])),
-            }
-        return {"connection": "external", "diagnostics": []}
+        info = backends.runtime_info()
+        active = info["backends"].get(resolved_config.runtime.backend, {})
+        return {"connection": active.get("connection", "idle"), "diagnostics": active.get("diagnostics", []), **info}
 
     app.include_router(dashboard_router(resolved_config, reader, runtime_info))
 
@@ -130,7 +126,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "backend": resolved_config.codex.backend,
+            "backend": resolved_config.runtime.backend,
             "enabled_plugins": list(resolved_config.enabled_plugins or resolved_config.plugins),
         }
 
@@ -142,18 +138,7 @@ def create_app(
     @app.get("/contexts")
     async def contexts() -> dict[str, Any]:
         store = StateStore(resolved_config.db_path)
-        return {
-            "contexts": [
-                {
-                    "context_key": context.context_key,
-                    "thread_id": context.thread_id,
-                    "session_worktree": str(context.session_worktree) if context.session_worktree else None,
-                    "workspace_key": context.workspace_key,
-                    "revision": context.revision,
-                }
-                for context in store.list_contexts()
-            ]
-        }
+        return {"contexts": [context.model_dump(mode="json") for context in store.list_contexts()]}
 
     @app.get("/api/dashboard")
     async def dashboard_api(recent_limit: int = 50, backlog_limit: int = 100) -> dict[str, Any]:

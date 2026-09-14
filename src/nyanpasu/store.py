@@ -22,6 +22,14 @@ from nyanpasu.models import (
     json_dumps,
 )
 
+# A coalesced task is executed by its parent; do not maintain a second backend binding.
+TASK_RUNS = """
+    SELECT r.task_id, r.dedupe_key, r.context_key, r.action, r.status, r.event_worktree,
+           r.thread_id, r.turn_id, r.task_json, r.coalesced_into, r.error, r.created_at, r.updated_at,
+           coalesce(parent.backend, r.backend) AS backend
+    FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+"""
+
 
 class StateStore:
     def __init__(self, db_path: Path) -> None:
@@ -79,7 +87,12 @@ class StateStore:
                 );
                 """
             )
+            conn.execute("BEGIN IMMEDIATE")
             self._remove_conversation_copies(conn)
+            for table in ("agent_contexts", "task_runs"):
+                columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if "backend" not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN backend TEXT NOT NULL DEFAULT 'codex'")
 
     @staticmethod
     def _remove_conversation_copies(conn: sqlite3.Connection) -> None:
@@ -88,7 +101,6 @@ class StateStore:
             return
         if "coalesced_into" not in columns:
             conn.execute("ALTER TABLE task_runs ADD COLUMN coalesced_into TEXT")
-        conn.execute("BEGIN")
         conn.execute("UPDATE task_runs SET coalesced_into=json_extract(result_json,'$.coalesced_into')")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "transcript_tasks" in tables:
@@ -115,22 +127,29 @@ class StateStore:
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
 
-    def record_task(self, task: AgentTask) -> bool:
-        accepted, _ = self.enqueue_task(task)
+    def record_task(self, task: AgentTask, *, default_backend: str = "codex") -> bool:
+        accepted, _ = self.enqueue_task(task, default_backend=default_backend)
         return accepted
 
-    def enqueue_task(self, task: AgentTask, *, coalesce_since: float | None = None) -> tuple[bool, str | None]:
+    def enqueue_task(
+        self, task: AgentTask, *, default_backend: str = "codex", coalesce_since: float | None = None
+    ) -> tuple[bool, str | None]:
         """Record and optionally merge a task before another worker can claim either task."""
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            context = conn.execute(
+                "SELECT backend FROM agent_contexts WHERE context_key=? AND thread_id IS NOT NULL",
+                (task.context_key,),
+            ).fetchone()
+            backend = context["backend"] if context is not None else default_backend
             try:
                 conn.execute(
                     """
                     INSERT INTO task_runs (
-                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at
+                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at, backend
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task.task_id,
@@ -141,6 +160,7 @@ class StateStore:
                         json_dumps(_task_to_json(task)),
                         now,
                         now,
+                        backend,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -173,32 +193,33 @@ class StateStore:
             )
             return True, queued.task_id
 
-    def mark_task_running(self, task_id: str, event_worktree: Path | None) -> None:
-        self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree)
+    def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
+        self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
 
     def update_task_input(self, task: AgentTask) -> None:
         with self._connect() as conn:
             original = json.loads(
                 conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task.task_id,)).fetchone()[0]
             )
-            # Keep the scheduler request; Codex owns the resulting conversation.
+            # Keep the scheduler request; the runtime owns the resulting conversation.
             prepared = task.model_dump(mode="json", exclude={"prompt", "developer_instructions", "instruction_docs"})
             conn.execute(
                 "UPDATE task_runs SET task_json = ?, action = ?, updated_at = ? WHERE task_id = ?",
                 (json_dumps({**original, **prepared}), task.action.value, time.time(), task.task_id),
             )
 
-    def bind_task_execution(self, task_id: str, thread_id: str, turn_id: str | None) -> None:
+    def bind_task_execution(self, task_id: str, thread_id: str, turn_id: str | None, backend: str = "codex") -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE task_runs SET thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
-                (thread_id, turn_id, time.time(), task_id),
+                "UPDATE task_runs SET backend=?,thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
+                (backend, thread_id, turn_id, time.time(), task_id),
             )
 
     def mark_task_done(self, result: TaskRunResult) -> None:
         self._update_task(
             result.task_id,
             result.status,
+            backend=result.backend,
             thread_id=result.thread_id,
             turn_id=result.turn_id,
             event_worktree=result.event_worktree,
@@ -216,13 +237,18 @@ class StateStore:
             row = conn.execute("SELECT status FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()
         return str(row["status"]) if row is not None else None
 
+    def task_backend(self, task_id: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT backend FROM ({TASK_RUNS}) WHERE task_id=?", (task_id,)).fetchone()
+        return row["backend"]
+
     def find_task_by_dedupe_key(self, dedupe_key: str) -> TaskRunSummary | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT task_id, dedupe_key, context_key, action, status, event_worktree, thread_id, turn_id, error,
+                f"""
+                SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at
-                FROM task_runs WHERE dedupe_key = ?
+                FROM ({TASK_RUNS}) WHERE dedupe_key = ?
                 """,
                 (dedupe_key,),
             ).fetchone()
@@ -247,9 +273,9 @@ class StateStore:
             where.append("created_at >= ?")
             values.append(since)
         sql = f"""
-            SELECT task_id, dedupe_key, context_key, action, status, event_worktree, thread_id, turn_id, error,
+            SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                 created_at, updated_at
-            FROM task_runs
+            FROM ({TASK_RUNS})
             WHERE {" AND ".join(where)}
             ORDER BY created_at ASC
             LIMIT 1
@@ -391,7 +417,7 @@ class StateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT context_key, thread_id, session_worktree, workspace_key, revision
+                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision
                 FROM agent_contexts WHERE context_key = ?
                 """,
                 (context_key,),
@@ -399,6 +425,7 @@ class StateStore:
         if row is None:
             return None
         return AgentContext(
+            backend=row["backend"],
             context_key=row["context_key"],
             thread_id=row["thread_id"],
             session_worktree=Path(row["session_worktree"]) if row["session_worktree"] else None,
@@ -412,10 +439,11 @@ class StateStore:
             conn.execute(
                 """
                 INSERT INTO agent_contexts (
-                    context_key, thread_id, session_worktree, workspace_key, revision, created_at, updated_at
+                    context_key, backend, thread_id, session_worktree, workspace_key, revision, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(context_key) DO UPDATE SET
+                    backend = excluded.backend,
                     thread_id = excluded.thread_id,
                     session_worktree = excluded.session_worktree,
                     workspace_key = excluded.workspace_key,
@@ -424,6 +452,7 @@ class StateStore:
                 """,
                 (
                     context.context_key,
+                    context.backend,
                     context.thread_id,
                     str(context.session_worktree) if context.session_worktree else None,
                     context.workspace_key,
@@ -443,12 +472,13 @@ class StateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT context_key, thread_id, session_worktree, workspace_key, revision
+                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision
                 FROM agent_contexts ORDER BY context_key
                 """
             ).fetchall()
         return [
             AgentContext(
+                backend=row["backend"],
                 context_key=row["context_key"],
                 thread_id=row["thread_id"],
                 session_worktree=Path(row["session_worktree"]) if row["session_worktree"] else None,
@@ -461,10 +491,10 @@ class StateStore:
     def recent_tasks(self, limit: int = 20) -> list[TaskRunSummary]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT task_id, dedupe_key, context_key, action, status, event_worktree, thread_id, turn_id, error,
+                f"""
+                SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at
-                FROM task_runs ORDER BY updated_at DESC LIMIT ?
+                FROM ({TASK_RUNS}) ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
@@ -474,10 +504,10 @@ class StateStore:
         now = time.time()
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT task_id, dedupe_key, context_key, action, status, event_worktree, thread_id, turn_id, error,
+                f"""
+                SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at, task_json
-                FROM task_runs
+                FROM ({TASK_RUNS})
                 ORDER BY updated_at DESC
                 """
             ).fetchall()
@@ -541,12 +571,16 @@ class StateStore:
         status: TaskStatus,
         *,
         event_worktree: Path | None = None,
+        backend: str | None = None,
         thread_id: str | None = None,
         turn_id: str | None = None,
         error: str | None = None,
     ) -> None:
         updates = ["status = ?", "updated_at = ?"]
         values: list[Any] = [status.value, time.time()]
+        if backend is not None:
+            updates.append("backend = ?")
+            values.append(backend)
         if event_worktree is not None:
             updates.append("event_worktree = ?")
             values.append(str(event_worktree))

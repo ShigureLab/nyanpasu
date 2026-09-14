@@ -9,7 +9,7 @@ from fastapi.responses import Response
 
 from nyanpasu.transcript.content import redact
 from nyanpasu.transcript.models import TranscriptChanges, TranscriptEntry, TranscriptWindow
-from nyanpasu.transcript.queries import CursorError
+from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
 
 if TYPE_CHECKING:
@@ -36,8 +36,8 @@ def dashboard_router(
             "generated_at": time.time(),
             "service": "available",
             "task_counts": counts,
-            "backend": config.codex.backend,
-            "session_source": "codex",
+            "backend": config.runtime.backend,
+            "session_source": "native",
         }
 
     @router.get("/sessions")
@@ -129,15 +129,15 @@ def dashboard_router(
             where.append("coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core')=?")
             args.append(plugin)
         with reader.connect() as conn:
-            total = conn.execute(f"SELECT count(*) FROM task_runs r WHERE {' AND '.join(where)}", args).fetchone()[0]
+            total = conn.execute(f"SELECT count(*) FROM ({TASKS}) r WHERE {' AND '.join(where)}", args).fetchone()[0]
             rows = conn.execute(
                 f"""
                 SELECT r.task_id,r.context_key,r.action,r.status,r.updated_at,r.created_at,
-                       substr(r.error,1,1000) AS error,coalesce(r.thread_id,parent.thread_id) AS session_id,
+                       substr(r.error,1,1000) AS error,r.session_id,r.session_backend AS backend,
                        coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core') AS plugin_id,
                        coalesce(json_extract(r.task_json,'$.metadata.request.title'),substr(json_extract(r.task_json,'$.prompt'),1,160),r.task_id) AS title,
                        r.coalesced_into
-                FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+                FROM ({TASKS}) r
                 WHERE {" AND ".join(where)}
                 ORDER BY (r.status='running') DESC,(r.status='queued') DESC,r.updated_at DESC
                 LIMIT ? OFFSET ?
@@ -149,17 +149,15 @@ def dashboard_router(
     @router.get("/tasks/{task_id}")
     async def task(task_id: str):
         with reader.connect() as conn:
-            row = conn.execute("SELECT * FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+            row = conn.execute(f"SELECT * FROM ({TASKS}) WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise HTTPException(404, "Task not found")
             data = dict(row)
             data["task"] = json.loads(data.pop("task_json"))
-            data["session_id"] = data["thread_id"]
             if data["coalesced_into"]:
                 target = conn.execute(
-                    "SELECT thread_id,turn_id FROM task_runs WHERE task_id=?", (data["coalesced_into"],)
+                    "SELECT turn_id FROM task_runs WHERE task_id=?", (data["coalesced_into"],)
                 ).fetchone()
-                data["session_id"] = target["thread_id"] if target else None
                 data["turn_id"] = target["turn_id"] if target else None
         data["entry_id"] = None
         if data["session_id"] and data["turn_id"]:
@@ -199,9 +197,10 @@ def dashboard_router(
         with reader.connect() as conn:
             leases = [dict(row) for row in conn.execute("SELECT * FROM context_leases ORDER BY expires_at DESC")]
         return {
-            "backend": config.codex.backend,
-            "model": config.codex.model,
-            "reasoning_effort": config.codex.reasoning_effort,
+            "backend": config.runtime.backend,
+            "model": config.process_config().model,
+            "reasoning_effort": config.process_config().reasoning_effort,
+            "bin": config.process_config().bin,
             "concurrency": config.runtime.concurrency,
             "leases": leases,
             "generated_at": time.time(),

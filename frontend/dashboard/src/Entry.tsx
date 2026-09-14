@@ -319,7 +319,7 @@ export const Entry = memo(function Entry({
             <div key={block.block_id}>
               {changed && (
                 <p className="notice">
-                  Codex content has changed since this search. Showing current content.
+                  Session content has changed since this search. Showing current content.
                 </p>
               )}
               {content}
