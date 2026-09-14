@@ -164,6 +164,7 @@ test('earlier history is prepended and asynchronous message expansion preserves 
     await route.continue();
   });
   const scroll = page.locator('.transcript-scroll');
+  await page.getByRole('button', { name: 'Following latest', exact: true }).click();
   await scroll.evaluate((element) => {
     element.scrollTop = 140;
   });
