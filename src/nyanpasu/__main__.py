@@ -55,6 +55,7 @@ def run_task(path: Annotated[PathArgument, typer.Argument(help="Path to a JSON t
                     {
                         "task_id": result.task_id,
                         "status": result.status.value,
+                        "backend": result.backend,
                         "thread_id": result.thread_id,
                         "turn_id": result.turn_id,
                     },
@@ -74,16 +75,7 @@ def status(limit: int = 20) -> None:
     typer.echo(
         json.dumps(
             {
-                "contexts": [
-                    {
-                        "context_key": context.context_key,
-                        "thread_id": context.thread_id,
-                        "session_worktree": str(context.session_worktree) if context.session_worktree else None,
-                        "workspace_key": context.workspace_key,
-                        "revision": context.revision,
-                    }
-                    for context in store.list_contexts()
-                ],
+                "contexts": [context.model_dump(mode="json") for context in store.list_contexts()],
                 "tasks": [task.model_dump(mode="json") for task in store.recent_tasks(limit)],
             },
             indent=2,

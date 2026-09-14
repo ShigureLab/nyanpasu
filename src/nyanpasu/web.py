@@ -138,19 +138,7 @@ def create_app(
     @app.get("/contexts")
     async def contexts() -> dict[str, Any]:
         store = StateStore(resolved_config.db_path)
-        return {
-            "contexts": [
-                {
-                    "context_key": context.context_key,
-                    "backend": context.backend,
-                    "thread_id": context.thread_id,
-                    "session_worktree": str(context.session_worktree) if context.session_worktree else None,
-                    "workspace_key": context.workspace_key,
-                    "revision": context.revision,
-                }
-                for context in store.list_contexts()
-            ]
-        }
+        return {"contexts": [context.model_dump(mode="json") for context in store.list_contexts()]}
 
     @app.get("/api/dashboard")
     async def dashboard_api(recent_limit: int = 50, backlog_limit: int = 100) -> dict[str, Any]:
