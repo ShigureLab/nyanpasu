@@ -552,3 +552,53 @@ async def test_preparer_can_skip_obsolete_work_without_a_codex_turn(tmp_path: Pa
 
 def fake_backends(config: NyanpasuConfig, execution: FakeCodex, name: str = "codex") -> Backends:
     return Backends(config, {name: Backend(execution, CodexHistorySource(execution))})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("existing_context", [False, True])
+async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: Path, existing_context):
+    from httpx import ASGITransport, AsyncClient
+
+    from nyanpasu.web import create_app
+
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        runtime=RuntimeConfig(backend="codex" if existing_context else "claude"),
+    )
+    agent = AgentService(config)
+    agent._semaphore = asyncio.Semaphore(0)  # Keep submissions queued while inspecting their metadata.
+    agent.add_task_preparer("demo", _prepare_demo)
+    if existing_context:
+        agent.store.upsert_context(
+            AgentContext(
+                context_key="demo:1",
+                backend="claude",
+                thread_id="claude-session",
+                session_worktree=None,
+                workspace_key=None,
+                revision=None,
+            )
+        )
+    try:
+        await agent.submit(_merge_task("queued"))
+        assert (await agent.submit(_merge_task("coalesced")))["coalesced_into"] == "queued"
+        await agent.submit(_task("ignored").model_copy(update={"action": TaskAction.IGNORED}))
+        result = await agent.run_now(_task("ignored-now").model_copy(update={"action": TaskAction.IGNORED}))
+        assert result.backend == "claude"
+        assert {task.backend for task in agent.store.recent_tasks()} == {"claude"}
+        for task_id in ("queued", "coalesced", "ignored", "ignored-now"):
+            task = agent.store.find_task_by_dedupe_key(task_id)
+            assert task is not None and task.backend == "claude"
+        app = create_app(config, agent=agent)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            assert {task["backend"] for task in (await client.get("/tasks")).json()["tasks"]} == {"claude"}
+            assert {task["backend"] for task in (await client.get("/api/tasks")).json()["items"]} == {"claude"}
+            # The parent's eventual execution binding is the single authority for a coalesced task.
+            agent.store.bind_task_execution("queued", "codex-session", "turn", "codex")
+            rows = {task["task_id"]: task for task in (await client.get("/api/tasks")).json()["items"]}
+            assert rows["coalesced"]["backend"] == rows["queued"]["backend"] == "codex"
+            assert rows["coalesced"]["session_id"] == rows["queued"]["session_id"] == "codex-session"
+            task = agent.store.find_task_by_dedupe_key("coalesced")
+            assert task is not None and task.backend == "codex"
+    finally:
+        await agent.shutdown()

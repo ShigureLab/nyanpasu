@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
+from nyanpasu.store import TASK_RUNS
 from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint, redact
 from nyanpasu.transcript.models import Coverage, TranscriptEntry
 from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
@@ -18,14 +19,14 @@ if TYPE_CHECKING:
     from nyanpasu.transcript.history import SessionSource
 
 BUDGET = 240 * 1024
-TASKS = """
+TASKS = f"""
     SELECT bound.*, CASE WHEN session_backend='codex' THEN session_thread_id
         ELSE session_backend || ':' || session_thread_id END AS session_id
     FROM (
         SELECT r.*, coalesce(r.thread_id,parent.thread_id) AS session_thread_id,
-               CASE WHEN r.coalesced_into IS NOT NULL THEN parent.backend ELSE r.backend END AS session_backend,
+               r.backend AS session_backend,
                (SELECT expires_at FROM context_leases WHERE context_key=r.context_key) AS lease_expires_at
-        FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+        FROM ({TASK_RUNS}) r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
     ) bound
 """
 

@@ -22,6 +22,14 @@ from nyanpasu.models import (
     json_dumps,
 )
 
+# A coalesced task is executed by its parent; do not maintain a second backend binding.
+TASK_RUNS = """
+    SELECT r.task_id, r.dedupe_key, r.context_key, r.action, r.status, r.event_worktree,
+           r.thread_id, r.turn_id, r.task_json, r.coalesced_into, r.error, r.created_at, r.updated_at,
+           coalesce(parent.backend, r.backend) AS backend
+    FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+"""
+
 
 class StateStore:
     def __init__(self, db_path: Path) -> None:
@@ -119,22 +127,29 @@ class StateStore:
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
 
-    def record_task(self, task: AgentTask) -> bool:
-        accepted, _ = self.enqueue_task(task)
+    def record_task(self, task: AgentTask, *, default_backend: str = "codex") -> bool:
+        accepted, _ = self.enqueue_task(task, default_backend=default_backend)
         return accepted
 
-    def enqueue_task(self, task: AgentTask, *, coalesce_since: float | None = None) -> tuple[bool, str | None]:
+    def enqueue_task(
+        self, task: AgentTask, *, default_backend: str = "codex", coalesce_since: float | None = None
+    ) -> tuple[bool, str | None]:
         """Record and optionally merge a task before another worker can claim either task."""
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            context = conn.execute(
+                "SELECT backend FROM agent_contexts WHERE context_key=? AND thread_id IS NOT NULL",
+                (task.context_key,),
+            ).fetchone()
+            backend = context["backend"] if context is not None else default_backend
             try:
                 conn.execute(
                     """
                     INSERT INTO task_runs (
-                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at
+                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at, backend
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task.task_id,
@@ -145,6 +160,7 @@ class StateStore:
                         json_dumps(_task_to_json(task)),
                         now,
                         now,
+                        backend,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -221,13 +237,18 @@ class StateStore:
             row = conn.execute("SELECT status FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()
         return str(row["status"]) if row is not None else None
 
+    def task_backend(self, task_id: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT backend FROM ({TASK_RUNS}) WHERE task_id=?", (task_id,)).fetchone()
+        return row["backend"]
+
     def find_task_by_dedupe_key(self, dedupe_key: str) -> TaskRunSummary | None:
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at
-                FROM task_runs WHERE dedupe_key = ?
+                FROM ({TASK_RUNS}) WHERE dedupe_key = ?
                 """,
                 (dedupe_key,),
             ).fetchone()
@@ -254,7 +275,7 @@ class StateStore:
         sql = f"""
             SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                 created_at, updated_at
-            FROM task_runs
+            FROM ({TASK_RUNS})
             WHERE {" AND ".join(where)}
             ORDER BY created_at ASC
             LIMIT 1
@@ -470,10 +491,10 @@ class StateStore:
     def recent_tasks(self, limit: int = 20) -> list[TaskRunSummary]:
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at
-                FROM task_runs ORDER BY updated_at DESC LIMIT ?
+                FROM ({TASK_RUNS}) ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
@@ -483,10 +504,10 @@ class StateStore:
         now = time.time()
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
                     created_at, updated_at, task_json
-                FROM task_runs
+                FROM ({TASK_RUNS})
                 ORDER BY updated_at DESC
                 """
             ).fetchall()

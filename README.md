@@ -13,6 +13,7 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Codex (`app-server` or `exec`) and Claude Code (`claude -p`) backends, including compatible wrapper executables.
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
 - Codex defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
+- Claude defaults: `permission_mode = "dontAsk"`; use `allowed_tools` to pre-approve tools, or select Claude's `auto` permission mode when available.
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
@@ -131,7 +132,7 @@ backend = "claude"
 
 [claude]
 bin = "/path/to/claude" # defaults to "claude" on PATH
-model = "sonnet"
+model = "sonnet" # Claude Code alias; a full model ID also works
 permission_mode = "dontAsk"
 allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
 command_timeout_seconds = 3600
@@ -143,9 +144,13 @@ CLAUDE_CONFIG_DIR = "/path/to/claude-home"
 
 Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) before using it. This integration was verified with Claude Code **2.1.270** and requires the stream-JSON input/output, user-message replay, `--permission-prompts none`, and `--system-prompt-snapshot off` options. A compatible wrapper must preserve those options and the native session format. `claude auth status` checks authentication; `claude --help` lists supported flags.
 
+`sonnet` is an official [Claude Code model alias](https://code.claude.com/docs/en/model-config#model-aliases). Its resolved version depends on the CLI, provider and local model settings. To pin a version, set a full model ID such as `claude-sonnet-5`, or the deployment ID required by your provider. Nyanpasu passes the configured value directly to `--model`.
+
 Claude starts one process per task and resumes the persisted session on the next task. Its final `result` determines success; an error result fails the task even if the process exits with status zero. Timeout and shutdown terminate the process group. Cleanup releases the context/workspace and preserves Claude's native history. Claude's own retention settings determine how long old transcripts remain available.
 
 `permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. The default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. Nyanpasu passes `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt and refreshed on every resumed turn.
+
+Claude also provides [automatic permission checks](https://code.claude.com/docs/en/permissions#permission-modes) through `permission_mode = "auto"` when supported by the account and model. Its [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is a separate filesystem/network boundary, configured through Claude's native settings (`sandbox.enabled`, `sandbox.allowUnsandboxedCommands`, and `sandbox.failIfUnavailable`). These settings can also be passed through `claude.args` with `--settings`. Nyanpasu leaves sandbox configuration to Claude; selecting a permission mode alone does not enable sandboxing.
 
 Both `[claude]` and `[codex]` share `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. For example, a corporate wrapper can receive its own prefix arguments before Nyanpasu adds the agent protocol arguments:
 

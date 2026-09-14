@@ -65,20 +65,18 @@ class AgentService:
             coalesce_since = time.time() - self.config.runtime.coalesce_window_seconds if task.coalesce_key else None
             self._preparer_for(task)
             is_new, active_task_id = await to_thread.run_sync(
-                functools.partial(self.store.enqueue_task, task, coalesce_since=coalesce_since)
+                functools.partial(
+                    self.store.enqueue_task,
+                    task,
+                    default_backend=self.config.runtime.backend,
+                    coalesce_since=coalesce_since,
+                )
             )
             if not is_new:
                 logger.info("task submit skipped duplicate task_id={} key={}", task.task_id, task.key)
                 return {"accepted": False, "duplicate": True, "task_id": task.task_id}
             if task.action is TaskAction.IGNORED:
-                result = TaskRunResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.COMPLETED,
-                    thread_id=None,
-                    turn_id=None,
-                    final_message="",
-                )
-                await to_thread.run_sync(self.store.mark_task_done, result)
+                await self._complete_ignored_task(task)
                 logger.info("task submit ignored task_id={} context={}", task.task_id, task.context_key)
                 return {"accepted": True, "ignored": True, "task_id": task.task_id}
             if active_task_id is not None:
@@ -107,20 +105,14 @@ class AgentService:
             task.action.value,
             task.context_key,
         )
-        is_new = await to_thread.run_sync(self.store.record_task, task)
+        is_new = await to_thread.run_sync(
+            functools.partial(self.store.record_task, task, default_backend=self.config.runtime.backend)
+        )
         if not is_new:
             logger.info("task run_now duplicate task_id={} key={}", task.task_id, task.key)
             raise ValueError(f"duplicate task id or dedupe key: {task.key}")
         if task.action is TaskAction.IGNORED:
-            result = TaskRunResult(
-                task_id=task.task_id,
-                status=TaskStatus.COMPLETED,
-                thread_id=None,
-                turn_id=None,
-                final_message="",
-            )
-            await to_thread.run_sync(self.store.mark_task_done, result)
-            return result
+            return await self._complete_ignored_task(task)
         try:
             return await self._run_task(task)
         except asyncio.CancelledError:
@@ -133,6 +125,18 @@ class AgentService:
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self._post_process_hooks.setdefault(plugin_id, []).append(hook)
+
+    async def _complete_ignored_task(self, task: AgentTask) -> TaskRunResult:
+        result = TaskRunResult(
+            task_id=task.task_id,
+            status=TaskStatus.COMPLETED,
+            backend=await to_thread.run_sync(self.store.task_backend, task.task_id),
+            thread_id=None,
+            turn_id=None,
+            final_message="",
+        )
+        await to_thread.run_sync(self.store.mark_task_done, result)
+        return result
 
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
         self._task_preparers[plugin_id] = preparer

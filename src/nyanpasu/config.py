@@ -94,7 +94,9 @@ class CodexConfig(ProcessConfig):
 class ClaudeConfig(ProcessConfig):
     label: ClassVar[str] = "Claude Code"
     bin: str = "claude"
-    permission_mode: Literal["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"] = "dontAsk"
+    permission_mode: Literal["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] = (
+        "dontAsk"
+    )
     allowed_tools: tuple[str, ...] = ()
 
 
