@@ -1,5 +1,117 @@
 import { expect, test } from '@playwright/test';
 import type { TranscriptWindow } from '../frontend/dashboard/src/api-types';
+import type { Page, Session } from '../frontend/dashboard/src/api';
+
+test('session list scrolls across pages and refreshes the loaded range without duplicates', async ({
+  page,
+  request,
+}) => {
+  const seed: Page<Session> = await (
+    await request.get('/api/sessions?context=demo:transcript')
+  ).json();
+  let sessions = Array.from({ length: 120 }, (_, index) => ({
+    ...seed.items[0]!,
+    session_id: index === 0 ? 'fixture-thread' : `session-${index}`,
+    title: `Session ${String(index).padStart(3, '0')}`,
+  }));
+  let fail = false;
+  await page.route('**/api/sessions?*', async (route) => {
+    if (fail) return route.fulfill({ status: 503, json: { detail: 'Session list unavailable' } });
+    const params = new URL(route.request().url()).searchParams;
+    const offset = Number(params.get('offset'));
+    const limit = Number(params.get('limit'));
+    const matching = sessions.filter((item) => item.title.includes(params.get('q') ?? ''));
+    await route.fulfill({
+      json: {
+        items: matching.slice(offset, offset + limit),
+        total: matching.length,
+        has_more: offset + limit < matching.length,
+      },
+    });
+  });
+  await page.goto('/dashboard?session=fixture-thread');
+  const list = page.locator('.session-list');
+  const rows = list.locator('.session-row');
+  await expect(rows).toHaveCount(50);
+  await page.getByRole('button', { name: '◉ Live', exact: true }).click();
+  await expect(page.locator('.session-index .pagination')).toHaveCount(0);
+  await list.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const position = await list.evaluate((element) => element.scrollTop);
+  await expect(rows).toHaveCount(100);
+  expect(Math.abs((await list.evaluate((element) => element.scrollTop)) - position)).toBeLessThan(
+    3,
+  );
+  await expect(rows.first()).toContainText('Session 000');
+  await expect(page).toHaveURL(/session=fixture-thread/);
+
+  sessions = [{ ...sessions[0]!, session_id: 'new-session', title: 'New session' }, ...sessions];
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(rows.first()).toContainText('New session');
+  await expect(rows).toHaveCount(100);
+  expect(new Set(await rows.locator('strong').allTextContents()).size).toBe(100);
+  await list.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(rows).toHaveCount(121);
+  await expect(rows.last()).toContainText('Session 119');
+
+  fail = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('.session-index .error')).toContainText('Session list unavailable');
+  await expect(rows).toHaveCount(121);
+  fail = false;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('.session-index .error')).toHaveCount(0);
+  await page.getByLabel('Find session').fill('Session 11');
+  await expect(rows).toHaveCount(10);
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
+  await page.getByLabel('Find session').clear();
+  await expect(rows).toHaveCount(50);
+});
+
+test('changing session filters discards an older pending page', async ({ page, request }) => {
+  const seed: Page<Session> = await (
+    await request.get('/api/sessions?context=demo:transcript')
+  ).json();
+  const sessions = Array.from({ length: 60 }, (_, index) => ({
+    ...seed.items[0]!,
+    session_id: `session-${index}`,
+    title: `Saved session ${index}`,
+  }));
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/sessions?*', async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const offset = Number(params.get('offset'));
+    if (offset > 0) await pending;
+    const matching = params.get('q') ? [{ ...sessions[0]!, title: 'Filtered session' }] : sessions;
+    await route.fulfill({
+      json: {
+        items: matching.slice(offset, offset + 50),
+        total: matching.length,
+        has_more: offset + 50 < matching.length,
+      },
+    });
+  });
+  await page.goto('/dashboard?session=fixture-thread');
+  await expect(page.locator('.session-row')).toHaveCount(50);
+  const requested = page.waitForRequest(
+    (request) => new URL(request.url()).searchParams.get('offset') === '50',
+  );
+  await page.locator('.session-list').evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await requested;
+  await page.getByLabel('Find session').fill('Filtered');
+  await expect(page.locator('.session-row')).toHaveCount(1);
+  release();
+  await expect(page.locator('.session-row')).toHaveText(/Filtered session/);
+  await expect(page.locator('.session-list')).toHaveAttribute('aria-busy', 'false');
+});
 
 test('messages render and copy in full; tool previews contain only consecutive source text', async ({
   page,

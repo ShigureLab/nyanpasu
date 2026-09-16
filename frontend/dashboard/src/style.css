@@ -8,6 +8,7 @@
   --muted: light-dark(#647882, #94a9b2);
   --line: light-dark(#dce5e8, #293b45);
   --accent: light-dark(#08786b, #70debf);
+  --running: light-dark(#2459bd, #8bb8ff);
   --error: light-dark(#b13447, #ff8ca0);
   --warning: light-dark(#94601b, #e4bb78);
   --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
@@ -215,6 +216,7 @@ small {
   margin: 0 -8px;
 }
 .session-row {
+  position: relative;
   display: block;
   width: 100%;
   text-align: left;
@@ -228,6 +230,53 @@ small {
   background: var(--hover);
   border-color: var(--line);
   box-shadow: inset 2px 0 var(--accent);
+}
+.session-row[data-state='running'] {
+  background: color-mix(in srgb, var(--running) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--running) 35%, var(--line));
+}
+.session-row[data-state='running']:hover,
+.session-row[data-state='running'].selected {
+  background: color-mix(in srgb, var(--running) 14%, var(--surface));
+}
+.session-row[data-state='running'].selected {
+  box-shadow: inset 3px 0 var(--running);
+}
+@property --session-border-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.session-row[data-state='running']::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  padding: 2px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--session-border-angle),
+    transparent 0deg 230deg,
+    var(--running) 300deg,
+    light-dark(#4e90f5, #d4e7ff) 345deg,
+    transparent 360deg
+  );
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: session-border-flow 3s linear infinite;
+}
+@keyframes session-border-flow {
+  to {
+    --session-border-angle: 360deg;
+  }
+}
+.session-list-end {
+  min-height: 1px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
 }
 .session-row > div {
   display: flex;
@@ -303,12 +352,17 @@ small {
   padding: 1px 5px;
   color: var(--muted);
 }
-.status.running,
 .status.active,
 .status.completed,
 .status.connected,
 .status.enabled {
   color: var(--accent);
+}
+.status.running {
+  color: var(--running);
+  background: color-mix(in srgb, var(--running) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--running) 45%, var(--line));
+  font-weight: 650;
 }
 .status.failed,
 .status.interrupted,
@@ -886,6 +940,10 @@ dd code {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .session-row[data-state='running']::before {
+    animation: none;
+    background: var(--running);
+  }
   * {
     scroll-behavior: auto !important;
     transition: none !important;
