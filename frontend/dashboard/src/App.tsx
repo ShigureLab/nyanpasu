@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   get,
   backendLabel,
@@ -7,7 +7,6 @@ import {
   useResource,
   type Navigate,
   type Page,
-  type Session,
   type Task,
   type TaskDetail,
   type Diagnostic,
@@ -15,6 +14,7 @@ import {
 import { Copy, Status } from './Entry';
 import { Transcript } from './Transcript';
 import { Time } from './Time';
+import { useSessions } from './useSessions';
 
 interface Overview {
   service: string;
@@ -50,17 +50,14 @@ export function App() {
   const overview = useResource<Overview>('/api/overview', live, refresh);
   const [sessionQuery, setSessionQuery] = useState('');
   const [sessionState, setSessionState] = useState('');
-  const [sessionOffset, setSessionOffset] = useState(0);
-  const sessions = useResource<Page<Session>>(
-    query('/api/sessions', {
-      q: sessionQuery,
-      state: sessionState,
-      context: selection.get('context'),
-      offset: sessionOffset,
-    }),
-    live,
-    refresh,
-  );
+  const sessionList = useRef<HTMLDivElement>(null);
+  const sessionEnd = useRef<HTMLDivElement>(null);
+  const sessionPath = query('/api/sessions', {
+    q: sessionQuery,
+    state: sessionState,
+    context: selection.get('context'),
+  });
+  const sessions = useSessions(sessionPath, live, refresh);
   const session = selection.get('session');
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -70,6 +67,25 @@ export function App() {
     if (view === 'sessions' && !session && sessions.data?.items[0])
       navigate({ session: sessions.data.items[0].session_id }, true);
   }, [view, session, sessions.data]);
+  useEffect(() => {
+    if (!sessionEnd.current || sessions.loading || sessions.error || !sessions.data?.has_more)
+      return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) sessions.loadMore();
+      },
+      { root: sessionList.current, rootMargin: '160px' },
+    );
+    observer.observe(sessionEnd.current);
+    return () => observer.disconnect();
+  }, [
+    view,
+    indexOpen,
+    sessions.loading,
+    sessions.error,
+    sessions.data?.has_more,
+    sessions.loadMore,
+  ]);
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -132,7 +148,6 @@ export function App() {
                 value={sessionQuery}
                 onChange={(event) => {
                   setSessionQuery(event.target.value);
-                  setSessionOffset(0);
                 }}
               />
               <select
@@ -140,7 +155,6 @@ export function App() {
                 value={sessionState}
                 onChange={(event) => {
                   setSessionState(event.target.value);
-                  setSessionOffset(0);
                 }}
               >
                 <option value="">All statuses</option>
@@ -152,11 +166,19 @@ export function App() {
                 <button onClick={() => navigate({ context: null })}>Clear context filter</button>
               )}
               {sessions.error && <p className="notice error">{sessions.error}</p>}
-              <div className="session-list">
+              <div
+                key={sessionPath}
+                className="session-list"
+                ref={sessionList}
+                aria-label="Session list"
+                aria-busy={sessions.loading}
+              >
                 {sessions.data?.items.map((item) => (
                   <button
                     key={item.session_id}
                     className={session === item.session_id ? 'session-row selected' : 'session-row'}
+                    data-state={item.execution_uncertain ? 'unconfirmed' : item.state}
+                    aria-current={session === item.session_id ? 'true' : undefined}
                     onClick={() => {
                       navigate({
                         session: item.session_id,
@@ -180,22 +202,15 @@ export function App() {
                     </small>
                   </button>
                 ))}
+                <div ref={sessionEnd} className="session-list-end" role="status">
+                  {sessions.loading
+                    ? 'Loading sessions…'
+                    : sessions.data?.has_more
+                      ? 'Scroll for more'
+                      : ''}
+                </div>
               </div>
               {sessions.data?.items.length === 0 && <p className="empty">No matching sessions.</p>}
-              <div className="pagination">
-                <button
-                  disabled={sessionOffset === 0}
-                  onClick={() => setSessionOffset(Math.max(0, sessionOffset - 50))}
-                >
-                  Previous
-                </button>
-                <button
-                  disabled={!sessions.data?.has_more}
-                  onClick={() => setSessionOffset(sessionOffset + 50)}
-                >
-                  Next
-                </button>
-              </div>
             </aside>
             {session ? (
               <Transcript
