@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
 import json
 import os
@@ -70,7 +69,7 @@ class JsonProcessRunner:
                 input_text=input_text,
                 timeout=timeout,
                 received=receive,
-                diagnostic=lambda text: self.diagnostics.append(diagnostic(redact(text[-8192:]))),
+                diagnostic=lambda text: self.diagnostics.append(diagnostic(text[-8192:])),
             )
         )
         self._runs.add(task)
@@ -116,6 +115,7 @@ async def run_json_process(
     received: Callable[[dict[str, Any]], Awaitable[None]],
     diagnostic: Callable[[str], None],
 ) -> tuple[int, str]:
+    """Run JSONL output with stderr redacted before diagnostics or tail truncation."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
@@ -133,14 +133,34 @@ async def run_json_process(
             await received(event)
 
     async def read_stderr() -> None:
-        nonlocal stderr_tail
         assert proc.stderr is not None
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        while chunk := await proc.stderr.read(65536):
-            value = decoder.decode(chunk)
-            stderr_tail = (stderr_tail + value)[-8192:]
+        maximum = 64 * 1024
+
+        def emit(raw: bytes) -> None:
+            nonlocal stderr_tail
+            value = (
+                redact(raw.decode("utf-8", "replace"))
+                if len(raw) <= maximum
+                else "stderr line exceeded 64 KiB; content omitted."
+            )
+            stderr_tail = (stderr_tail + value + "\n")[-8192:]
             diagnostic(value)
-        stderr_tail = (stderr_tail + decoder.decode(b"", final=True))[-8192:]
+
+        pending = b""
+        oversized = False
+        while chunk := await proc.stderr.read(maximum):
+            *lines, pending = (pending + chunk).split(b"\n")
+            for line in lines:
+                if not oversized:
+                    emit(line)
+                oversized = False
+            if len(pending) > maximum:
+                if not oversized:
+                    emit(pending)
+                pending = b""
+                oversized = True
+        if pending and not oversized:
+            emit(pending)
 
     async def communicate() -> None:
         assert proc.stdin is not None
