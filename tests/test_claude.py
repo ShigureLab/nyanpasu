@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.agent import AgentService
 from nyanpasu.claude import ClaudeBackend
-from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig
+from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig, load_config
 from nyanpasu.models import AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.claude import ClaudeHistorySource, claude_history
@@ -76,6 +76,29 @@ async def test_session_resume_and_updated_instructions(configured: NyanpasuConfi
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     assert argv[argv.index("--permission-prompts") + 1] == "none"
     assert "test-model" in argv and "medium" in argv
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("args", [[], ["--profile", "agent profile"]])
+async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeypatch, process, args):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f'[claude]\nbin = "/opt/agent wrapper"\nargs = {json.dumps(args)}\n')
+    backend = ClaudeBackend(load_config())
+    first = await backend.run_turn(cwd=tmp_path, prompt="first", thread_id=None)
+    await backend.run_turn(
+        cwd=tmp_path, prompt="second", thread_id=first.thread_id, developer_instructions="updated instructions"
+    )
+    for invocation, session_flag in zip(process.call_args_list, ("--session-id", "--resume"), strict=True):
+        argv = invocation.args[0]
+        assert argv[: 1 + len(args)] == ["/opt/agent wrapper", *args]
+        assert "--permission-prompts" not in argv and "--system-prompt-snapshot" not in argv
+        assert argv[argv.index("--input-format") + 1] == "stream-json"
+        assert argv[argv.index("--output-format") + 1] == "stream-json"
+        assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+        assert argv[argv.index(session_flag) + 1] == first.thread_id
+    argv = process.call_args.args[0]
+    assert argv[argv.index("--append-system-prompt") + 1] == "updated instructions"
 
 
 @pytest.mark.anyio

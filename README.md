@@ -142,13 +142,22 @@ pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 CLAUDE_CONFIG_DIR = "/path/to/claude-home"
 ```
 
-Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) before using it. This integration was verified with Claude Code **2.1.270** and requires the stream-JSON input/output, user-message replay, `--permission-prompts none`, and `--system-prompt-snapshot off` options. A compatible wrapper must preserve those options and the native session format. `claude auth status` checks authentication; `claude --help` lists supported flags.
+Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) before using it. This integration was verified with Claude Code **2.1.204** and **2.1.270** and requires stream-JSON input/output, user-message replay, session resume, and the native session format. Compatible wrappers must preserve these capabilities. `claude auth status` checks authentication.
+
+`claude.args` defaults to `["--permission-prompts", "none", "--system-prompt-snapshot", "off"]`. For older CLIs that reject these options, including **2.1.204**, override the list:
+
+```toml
+[claude]
+args = []
+```
+
+An explicit `args` list **replaces** the defaults. When adding wrapper or CLI arguments, include any default options you still need and the CLI supports. Nyanpasu does not infer option support from help text or version numbers.
 
 `sonnet` is an official [Claude Code model alias](https://code.claude.com/docs/en/model-config#model-aliases). Its resolved version depends on the CLI, provider and local model settings. To pin a version, set a full model ID such as `claude-sonnet-5`, or the deployment ID required by your provider. Nyanpasu passes the configured value directly to `--model`.
 
 Claude starts one process per task and resumes the persisted session on the next task. Its final `result` determines success; an error result fails the task even if the process exits with status zero. Timeout and shutdown terminate the process group. Cleanup releases the context/workspace and preserves Claude's native history. Claude's own retention settings determine how long old transcripts remain available.
 
-`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. The default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. Nyanpasu passes `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt and refreshed on every resumed turn.
+`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. The default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. The default arguments include `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt on every resumed turn. On CLIs supporting prompt snapshots, retain `--system-prompt-snapshot off` in `args` so a saved prompt does not override updated instructions.
 
 Claude also provides [automatic permission checks](https://code.claude.com/docs/en/permissions#permission-modes) through `permission_mode = "auto"` when supported by the account and model. Its [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is a separate filesystem/network boundary, configured through Claude's native settings (`sandbox.enabled`, `sandbox.allowUnsandboxedCommands`, and `sandbox.failIfUnavailable`). These settings can also be passed through `claude.args` with `--settings`. Nyanpasu leaves sandbox configuration to Claude; selecting a permission mode alone does not enable sandboxing.
 
@@ -302,7 +311,7 @@ AgentTask(
 
 Core executes the task and calls post-process hooks registered for `metadata["plugin_id"]`.
 
-`developer_instructions` and configured `instruction_docs` form the session instructions. The Codex app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Claude uses `--append-system-prompt` with prompt snapshots disabled for updated instructions on resume. Each agent’s built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard renders the native turn input without prepending session instructions.
+`developer_instructions` and configured `instruction_docs` form the session instructions. The Codex app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Claude uses `--append-system-prompt`; its default `args` disable prompt snapshots for updated instructions on resume. Each agent’s built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard renders the native turn input without prepending session instructions.
 
 Plugins that need current external state before execution can register `runtime.add_task_preparer(self.id, self.prepare_task)`. The async preparer receives `(task, coalesced_tasks, context)` after the context lease is acquired, and returns a task with the current workspace, instructions, and message. Keep the task ID and context key unchanged; return an ignored task when the work is no longer applicable.
 

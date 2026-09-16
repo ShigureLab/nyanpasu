@@ -39,10 +39,6 @@ class ClaudeBackend:
             "--replay-user-messages",
             "--permission-mode",
             self.config.permission_mode,
-            "--permission-prompts",
-            "none",
-            "--system-prompt-snapshot",
-            "off",
             "--resume" if resume else "--session-id",
             session_id,
         ]
