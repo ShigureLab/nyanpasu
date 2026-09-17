@@ -23,7 +23,7 @@ allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 
 [runtime]
-backend = "codex" # Select "claude" for new contexts.
+backend = "codex" # Switching backends starts a new session on the next task after restart.
 concurrency = 4
 coalesce_window_seconds = 600
 clean_event_snapshots = true

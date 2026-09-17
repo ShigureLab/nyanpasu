@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from nyanpasu.agent import AgentService
 from nyanpasu.claude import ClaudeBackend
 from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig, load_config
-from nyanpasu.models import AgentTask, TaskAction
+from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.claude import ClaudeHistorySource, claude_history
 from nyanpasu.web import create_app
@@ -76,6 +76,52 @@ async def test_session_resume_and_updated_instructions(configured: NyanpasuConfi
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     assert argv[argv.index("--permission-prompts") + 1] == "none"
     assert "test-model" in argv and "medium" in argv
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fail_before_start", [False, True])
+async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Path, process, fail_before_start):
+    agent = AgentService(configured, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    task = AgentTask(task_id="old", context_key="switch", action=TaskAction.RUN, prompt="inspect")
+    agent.store.record_task(task)
+    agent.store.bind_task_execution("old", "old-codex", "old-turn", "codex")
+    old_context = AgentContext(
+        context_key="switch",
+        backend="codex",
+        thread_id="old-codex",
+        session_worktree=tmp_path / "worktrees" / "switch",
+        workspace_key=None,
+        revision="old-head",
+    )
+    agent.store.upsert_context(old_context)
+    try:
+        if fail_before_start:
+            respond = process.side_effect
+            process.side_effect = RuntimeError("CLI unavailable")
+            with pytest.raises(RuntimeError, match="CLI unavailable"):
+                await agent.run_now(task.model_copy(update={"task_id": "failed"}))
+            assert agent.store.get_context("switch") == old_context
+            assert agent.store.task_backend("failed") == "claude"
+            process.side_effect = respond
+            process.reset_mock()
+        first = await agent.run_now(task.model_copy(update={"task_id": "new"}))
+        second = await agent.run_now(task.model_copy(update={"task_id": "resume"}))
+        assert first.backend == second.backend == "claude"
+        assert first.thread_id is not None
+        assert first.thread_id == second.thread_id != "old-codex"
+        start_argv, resume_argv = [invocation.args[0] for invocation in process.call_args_list]
+        assert "--resume" not in start_argv
+        assert start_argv[start_argv.index("--session-id") + 1] == first.thread_id
+        assert resume_argv[resume_argv.index("--resume") + 1] == first.thread_id
+        old_history = MemorySessionSource([turn("old-turn", tool("old-tool", "old conversation"))])
+        app = create_app(configured, agent=agent, session_sources={"codex": old_history}.__getitem__)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            sessions = (await client.get("/api/sessions")).json()["items"]
+            assert {row["session_id"] for row in sessions} == {"old-codex", "claude:" + first.thread_id}
+            assert "old conversation" in (await client.get("/api/sessions/old-codex/export")).text
+            assert (await client.get("/api/tasks/old")).json()["backend"] == "codex"
+    finally:
+        await agent.shutdown()
 
 
 @pytest.mark.anyio

@@ -124,7 +124,7 @@ Commands run once when that backend is first used, with the original service env
 
 ## Claude Code and wrapper executables
 
-Choose the default backend for **new contexts** with `runtime.backend` or `NYANPASU_BACKEND`. Existing contexts stay bound to their original backend and resume there. Use a new context key to switch an ongoing workflow to another backend; conversation migration between agents is not automatic. Keep both backends configured when retaining mixed history.
+Choose the execution backend with `runtime.backend` or `NYANPASU_BACKEND`. After changing it and restarting Nyanpasu, the next task in an existing context starts a new native session on the selected backend, retaining its context key and workspace. Later tasks resume that session while the backend stays the same; switching back also starts a new session. Previous sessions remain available in history, but their conversations are not migrated. Keep both backends configured to read mixed history.
 
 ```toml
 [runtime]
@@ -262,7 +262,7 @@ GET /plugins/github-pr-maker/tasks/{task_id}
 
 It accepts a repository and task description, builds a concrete PR plan, and asks the selected agent to implement the change, create a branch, commit, push, and open one pull request with `gh pr create` inside the managed worktree. The post-process hook only parses the agent's final `PR: <url>` or `NO_PR: <reason>` marker and records the result. Core still never performs GitHub writes directly.
 
-When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so the agent keeps the same session and the core runtime serializes work for that PR. Follow-up tasks ask the agent to commit and push to the existing PR branch instead of opening a second PR.
+When `follow_up_enabled = true`, PR maker records PRs it created and polls only those PRs for actionable follow-up signals. A follow-up task reuses the original task context key and PR branch workspace, so the agent keeps the same session while the backend stays the same, and the core runtime serializes work for that PR. Follow-up tasks ask the agent to commit and push to the existing PR branch instead of opening a second PR.
 
 ## Plugin Contract
 

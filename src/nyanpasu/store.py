@@ -138,11 +138,13 @@ class StateStore:
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            context = conn.execute(
-                "SELECT backend FROM agent_contexts WHERE context_key=? AND thread_id IS NOT NULL",
-                (task.context_key,),
-            ).fetchone()
-            backend = context["backend"] if context is not None else default_backend
+            backend = default_backend
+            if task.action is TaskAction.CLEANUP:
+                context = conn.execute(
+                    "SELECT backend FROM agent_contexts WHERE context_key=?", (task.context_key,)
+                ).fetchone()
+                if context is not None:
+                    backend = context["backend"]
             try:
                 conn.execute(
                     """
@@ -169,13 +171,18 @@ class StateStore:
                 return True, None
             row = conn.execute(
                 """
-                SELECT task_id, action, task_json, created_at FROM task_runs
+                SELECT task_id, action, task_json, created_at, backend FROM task_runs
                 WHERE context_key = ? AND status = ? AND task_id <> ?
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 (task.context_key, TaskStatus.QUEUED.value, task.task_id),
             ).fetchone()
-            if row is None or row["action"] != TaskAction.RUN.value or row["created_at"] < coalesce_since:
+            if (
+                row is None
+                or row["action"] != TaskAction.RUN.value
+                or row["created_at"] < coalesce_since
+                or row["backend"] != backend
+            ):
                 return True, None
             queued = AgentTask.model_validate(json.loads(row["task_json"]))
             if queued.coalesce_key != task.coalesce_key or queued.metadata.get("plugin_id") != task.metadata.get(

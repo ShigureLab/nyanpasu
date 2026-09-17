@@ -166,7 +166,9 @@ class AgentService:
         async with self._context_execution(task):
             started_at = time.monotonic()
             existing = await to_thread.run_sync(self.store.get_context, task.context_key)
-            backend_name = existing.backend if existing and existing.thread_id else self.config.runtime.backend
+            backend_name = self.config.runtime.backend
+            if existing and existing.backend != backend_name:
+                existing = replace_context(existing, backend=backend_name, thread_id=None, revision=None)
             await to_thread.run_sync(self.store.mark_task_running, task.task_id, None, backend_name)
             task = await self._prepare_task(task, existing)
             await to_thread.run_sync(self.store.update_task_input, task)

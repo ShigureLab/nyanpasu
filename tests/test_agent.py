@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from unittest.mock import Mock
 
 import pytest
 
 from nyanpasu.agent import AgentService
 from nyanpasu.backends import Backend, Backends
-from nyanpasu.config import NyanpasuConfig, RuntimeConfig
+from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig
 from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, RunResult, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.codex import CodexHistorySource
@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 
 
 class FakeCodex:
-    def __init__(self) -> None:
+    def __init__(self, *, new_session_id: str = "thread-1") -> None:
+        self.new_session_id = new_session_id
         self.calls: list[tuple[Path, str | None]] = []
         self.prompts: list[str] = []
         self.instructions: list[str] = []
@@ -38,9 +39,9 @@ class FakeCodex:
         self.instructions.append(developer_instructions)
         self.calls.append((cwd, thread_id))
         if on_started:
-            await on_started(thread_id or "thread-1", "turn-1")
+            await on_started(thread_id or self.new_session_id, "turn-1")
         return RunResult(
-            thread_id=thread_id or "thread-1",
+            thread_id=thread_id or self.new_session_id,
             turn_id="turn-1",
             final_message="done",
         )
@@ -417,7 +418,7 @@ async def test_freeform_tasks_are_not_automatically_merged(tmp_path: Path) -> No
     await agent.shutdown()
 
 
-def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None):
+def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None, config: NyanpasuConfig | None = None):
     import importlib
 
     from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings
@@ -446,9 +447,11 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
         )
     )
     backend = codex or FakeCodex()
-    config = _config(tmp_path)
+    config = config or _config(tmp_path)
     agent = AgentService(
-        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+        config,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=fake_backends(config, backend, config.runtime.backend),
     )
     plugin.runtime = Mock(config=agent.config)
     agent.add_task_preparer(plugin.id, plugin.prepare_task)
@@ -555,6 +558,85 @@ def fake_backends(config: NyanpasuConfig, execution: FakeCodex, name: str = "cod
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("initial_backend", ["codex", "claude"])
+async def test_backend_switch_starts_fresh_session_and_preserves_history(
+    tmp_path: Path, initial_backend: Literal["codex", "claude"]
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from nyanpasu.web import create_app
+
+    other_backend: Literal["codex", "claude"] = "claude" if initial_backend == "codex" else "codex"
+    store = StateStore(_config(tmp_path).db_path)
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    sessions = set()
+    executions = []
+    for index, name in enumerate((initial_backend, other_backend, initial_backend)):
+        config = _config(tmp_path).model_copy(update={"runtime": RuntimeConfig(backend=name)})
+        execution = FakeCodex(new_session_id=f"session-{index}")
+        executions.append(execution)
+        instances: dict[str, Backend] = {name: Backend(execution, CodexHistorySource(execution))}
+        if index:
+            previous_name = other_backend if name == initial_backend else initial_backend
+            previous = executions[index - 1]
+            instances[previous_name] = Backend(previous, CodexHistorySource(previous))
+        agent = AgentService(config, store=store, worktrees=worktrees, backends=Backends(config, instances))
+        try:
+            first = await agent.run_now(_task(f"{index}-first"))
+            second = await agent.run_now(_task(f"{index}-second"))
+            assert first.backend == second.backend == name
+            assert first.thread_id == second.thread_id == f"session-{index}"
+            sessions.add((name, first.thread_id))
+            context = store.get_context("demo:1")
+            assert context and context.backend == name and context.thread_id == first.thread_id
+            # Each backend gets a fresh session after a switch, then resumes it normally.
+            for position, called in enumerate(executions):
+                assert called.calls == [
+                    (worktrees.root / "demo-1", None),
+                    (worktrees.root / "demo-1", f"session-{position}"),
+                ]
+                assert called.archived == []
+            app = create_app(config, agent=agent)
+            async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+                rows = (await client.get("/api/sessions")).json()["items"]
+                assert {(row["backend"], row["thread_id"]) for row in rows} == sessions
+            assert {(task.backend, task.thread_id) for task in store.recent_tasks()} == sessions
+            assert worktrees.removed == []
+        finally:
+            await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_reviewer_backend_switch_uses_fresh_review_and_current_model(tmp_path: Path, monkeypatch):
+    config = _config(tmp_path).model_copy(
+        update={
+            "runtime": RuntimeConfig(backend="claude"),
+            "claude": ClaudeConfig(model="claude-test", reasoning_effort="medium"),
+        }
+    )
+    agent, plugin, execution, _ = _review_setup(tmp_path, monkeypatch, config=config)
+    task = _review_task(plugin, "synchronize", "head-b")
+    agent.store.upsert_context(
+        AgentContext(
+            context_key=task.context_key,
+            backend="codex",
+            thread_id="old-codex-session",
+            session_worktree=tmp_path / "worktrees",
+            workspace_key="ExampleOrg/ExampleRepo",
+            revision="head-a",
+        )
+    )
+    try:
+        result = await agent.run_now(task)
+        assert result.backend == "claude" and execution.calls[0][1] is None
+        assert execution.prompts[0].startswith("Review ")
+        assert "Previous task head" not in execution.prompts[0]
+        assert "Powered by Nyanpasu with claude-test medium" in execution.prompts[0]
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("existing_context", [False, True])
 async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: Path, existing_context):
     from httpx import ASGITransport, AsyncClient
@@ -563,7 +645,7 @@ async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: 
 
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        runtime=RuntimeConfig(backend="codex" if existing_context else "claude"),
+        runtime=RuntimeConfig(backend="claude"),
     )
     agent = AgentService(config)
     agent._semaphore = asyncio.Semaphore(0)  # Keep submissions queued while inspecting their metadata.
@@ -572,8 +654,8 @@ async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: 
         agent.store.upsert_context(
             AgentContext(
                 context_key="demo:1",
-                backend="claude",
-                thread_id="claude-session",
+                backend="codex",
+                thread_id="codex-session",
                 session_worktree=None,
                 workspace_key=None,
                 revision=None,

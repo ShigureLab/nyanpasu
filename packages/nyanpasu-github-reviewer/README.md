@@ -42,7 +42,7 @@ required = false
 
 `instruction_docs` are resolved when the review is prepared for execution. Plugin-level documents apply to every reviewer task; repo-level documents apply to that repo. They join the session's developer instructions rather than being appended to every user message. Configure these as trusted policy documents; PR content and comments remain external task material.
 
-For Claude Code, set `runtime.backend = "claude"` and configure `[claude]`; see the [runtime and wrapper configuration](../../README.md#claude-code-and-wrapper-executables). Install the reviewer skills for the selected CLI and pass GitHub credentials through its `env` or `pass_env`. Existing PR contexts retain their original backend.
+For Claude Code, set `runtime.backend = "claude"` and configure `[claude]`; see the [runtime and wrapper configuration](../../README.md#claude-code-and-wrapper-executables). Install the reviewer skills for the selected CLI and pass GitHub credentials through its `env` or `pass_env`. After switching backends and restarting Nyanpasu, the next review starts a new session on the selected backend, using its configured model and reasoning effort in the disclosure footer. Previous sessions remain available in history.
 
 ## Session Instructions And Turn Input
 
