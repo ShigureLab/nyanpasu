@@ -126,10 +126,12 @@ async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Pat
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("args", [[], ["--profile", "agent profile"]])
-async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeypatch, process, args):
+@pytest.mark.parametrize("permission_mode", [None, "dontAsk"])
+async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeypatch, process, args, permission_mode):
     monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
     config_path = tmp_path / "config.toml"
-    config_path.write_text(f'[claude]\nbin = "/opt/agent wrapper"\nargs = {json.dumps(args)}\n')
+    permission_setting = f'permission_mode = "{permission_mode}"\n' if permission_mode else ""
+    config_path.write_text(f'[claude]\nbin = "/opt/agent wrapper"\nargs = {json.dumps(args)}\n{permission_setting}')
     backend = ClaudeBackend(load_config())
     first = await backend.run_turn(cwd=tmp_path, prompt="first", thread_id=None)
     await backend.run_turn(
@@ -141,7 +143,7 @@ async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeyp
         assert "--permission-prompts" not in argv and "--system-prompt-snapshot" not in argv
         assert argv[argv.index("--input-format") + 1] == "stream-json"
         assert argv[argv.index("--output-format") + 1] == "stream-json"
-        assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+        assert argv[argv.index("--permission-mode") + 1] == (permission_mode or "auto")
         assert argv[argv.index(session_flag) + 1] == first.thread_id
     argv = process.call_args.args[0]
     assert argv[argv.index("--append-system-prompt") + 1] == "updated instructions"

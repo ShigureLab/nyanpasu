@@ -96,7 +96,7 @@ class ClaudeConfig(ProcessConfig):
     bin: str = "claude"
     args: tuple[str, ...] = ("--permission-prompts", "none", "--system-prompt-snapshot", "off")
     permission_mode: Literal["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] = (
-        "dontAsk"
+        "auto"
     )
     allowed_tools: tuple[str, ...] = ()
 

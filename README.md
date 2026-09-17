@@ -1,6 +1,6 @@
 # Nyanpasu
 
-Nyanpasu is a plugin-oriented agent service supporting Codex and Claude Code. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses native agent sessions per context, records state in SQLite, and runs the selected agent with explicit runtime settings.
+Nyanpasu is a plugin-oriented agent service. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses native agent sessions per context, records state in SQLite, and runs the selected agent with explicit runtime settings.
 
 GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 
@@ -10,10 +10,9 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Context workspace management. By default, one `context_key` owns one reusable managed clone that is reset to the task revision before each run.
 - Optional event snapshots for plugins that explicitly need per-event isolation.
 - Persistent task, thread, and context state.
-- Codex (`app-server` or `exec`) and Claude Code (`claude -p`) backends, including compatible wrapper executables.
+- Pluggable execution backends: Codex and Claude Code.
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
-- Codex defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
-- Claude permissions: examples use `permission_mode = "auto"` for automatic permission checks; omitting the setting defaults to `dontAsk`. Use `allowed_tools` to pre-approve tools.
+- Runtime safety defaults: automatic permission review for both Codex (`approvals_reviewer = "auto_review"`) and Claude Code (`permission_mode = "auto"`). Codex also defaults to `sandbox = "workspace-write"` and `approval_policy = "on-request"`.
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
@@ -41,6 +40,12 @@ approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 command_timeout_seconds = 3600
 pass_env = ["NYANPASU_GITHUB_TOKEN"]
+
+[claude]
+model = "sonnet"
+reasoning_effort = "medium"
+permission_mode = "auto"
+pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 
 [runtime]
 backend = "codex" # or "claude"
@@ -99,13 +104,28 @@ To pin plugin-side API calls to one locally authenticated account without storin
 token = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
 ```
 
-Token commands follow the same execution, validation, and error reporting rules as `codex.env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
+Token commands follow the same execution, validation, and error reporting rules as the runtime `env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
 
 Agent-driven GitHub tasks that run `gh`, such as PR maker, also need the token environment variable to be visible to the selected runtime. Add that variable name to `codex.pass_env` or `claude.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
 
-Set `codex.model` and `codex.reasoning_effort` to pin Nyanpasu's model independently of your interactive Codex configuration. Both `app-server` and `exec` apply these settings to every turn, including resumed sessions. `NYANPASU_CODEX_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` override the TOML values. An omitted setting inherits Codex's defaults; use a reasoning effort supported by the selected model. Restart Nyanpasu after changing the configuration. The Dashboard's Runtime page shows the configured values, and the reviewer's disclosure footer uses the same configuration.
+## Runtime configuration
 
-To define environment variables specifically for Codex, use `codex.env`. A string is a literal value; a `cmd` table reads a value from a command's stdout:
+Choose `codex` or `claude` with `runtime.backend` or `NYANPASU_BACKEND`. Install and authenticate the selected CLI before starting Nyanpasu. Configure it in the corresponding `[codex]` or `[claude]` section; see the [complete example](examples/config.toml).
+
+Both backends support `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. `bin` is an executable name or path, and `args` is a literal argument list that replaces the defaults when specified. Arguments are passed directly without a shell.
+
+Set `model` and `reasoning_effort` to pin the agent's configuration for new and resumed sessions. Omitted values inherit the CLI's defaults. The Dashboard's Runtime page and the reviewer's disclosure footer use the configured values. `NYANPASU_CODEX_MODEL` / `NYANPASU_CLAUDE_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` / `NYANPASU_CLAUDE_REASONING_EFFORT` override the TOML settings.
+
+Automatic permission review is enabled by default for both backends, including when these settings are omitted:
+
+| Backend     | Default safety settings                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------- |
+| Codex       | `sandbox = "workspace-write"`, `approval_policy = "on-request"`, `approvals_reviewer = "auto_review"` |
+| Claude Code | `permission_mode = "auto"`                                                                            |
+
+Codex routes approval requests to its automatic reviewer. Claude's [auto mode](https://code.claude.com/docs/en/permission-modes#eliminate-permission-prompts-with-auto-mode) uses a separate classifier for actions requiring approval and requires account and model support. Automatic checks do not guarantee safety. Claude's [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is configured separately through its native settings; permission mode alone does not enable filesystem or network isolation.
+
+Use `env` for literal or command-backed environment variables and `pass_env` to forward named variables from the service environment. For example:
 
 ```toml
 [codex.env]
@@ -114,71 +134,11 @@ GH_PROMPT_DISABLED = "1"
 GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
 ```
 
-For a static value, use `GH_TOKEN = "your-token"` instead. Values in `codex.env` override the base environment and `codex.pass_env`; their names do not need to appear in `pass_env`.
+The same settings work under `[claude.env]`. Values in `env` override inherited values and `pass_env`; their names do not need to appear in `pass_env`. These settings affect agent child processes, while `integrations.github` configures plugin-side GitHub credentials. Configure both for the same account when the agent and plugin need to publish as one bot.
 
-Commands run once when that backend is first used, with the original service environment and `NYANPASU_HOME` as the working directory. Arguments are passed directly without a shell, and commands cannot reference other `codex.env` entries. Only trailing CR/LF characters are removed from stdout. A command that cannot start, exits unsuccessfully, exceeds 10 seconds, or returns empty, invalid UTF-8, or NUL-containing output prevents that backend from starting. Errors identify the variable and failure without including command output. Resolved values stay in memory and are reused for every Codex turn, including app-server restarts; restart Nyanpasu to refresh them.
+Environment commands run once when the backend is first used, with the service environment and `NYANPASU_HOME` as the working directory. They cannot reference other `env` entries. Trailing CR/LF characters are removed from stdout. Failure, a timeout after 10 seconds, or empty, invalid UTF-8 or NUL-containing output prevents startup. Errors omit command output, and resolved values stay in memory until the service restarts.
 
-`codex.env` only affects Codex child processes. It does not modify the service environment or configure plugin-side GitHub credentials: `integrations.github.token_env` reads the service's environment at plugin startup. Configure both `codex.env.GH_TOKEN` and `integrations.github.token` for the same account when the agent and plugin need to publish as one bot. Pinning credentials this way prevents local `gh auth switch` from changing the account used by a running service.
-
-`approval_policy` and `approvals_reviewer` are separate Codex controls. `approval_policy` decides when an approval request is created; `approvals_reviewer = "auto_review"` routes those requests to Codex's automatic approval reviewer instead of a human prompt. Set `approval_policy = "never"` only when you want failed or blocked operations returned directly to the model with no approval path.
-
-## Claude Code and wrapper executables
-
-Choose the execution backend with `runtime.backend` or `NYANPASU_BACKEND`. After changing it and restarting Nyanpasu, the next task in an existing context starts a new native session on the selected backend, retaining its context key and workspace. Later tasks resume that session while the backend stays the same; switching back also starts a new session. Previous sessions remain available in history, but their conversations are not migrated. Keep both backends configured to read mixed history.
-
-```toml
-[runtime]
-backend = "claude"
-
-[claude]
-bin = "/path/to/claude" # defaults to "claude" on PATH
-model = "sonnet" # Claude Code alias; a full model ID also works
-permission_mode = "auto"
-allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
-command_timeout_seconds = 3600
-pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
-
-[claude.env]
-CLAUDE_CONFIG_DIR = "/path/to/claude-home"
-```
-
-Install and authenticate [Claude Code](https://code.claude.com/docs/en/setup) before using it. This integration was verified with Claude Code **2.1.204** and **2.1.270** and requires stream-JSON input/output, user-message replay, session resume, and the native session format. Compatible wrappers must preserve these capabilities. `claude auth status` checks authentication.
-
-`claude.args` defaults to `["--permission-prompts", "none", "--system-prompt-snapshot", "off"]`. For older CLIs that reject these options, including **2.1.204**, override the list:
-
-```toml
-[claude]
-args = []
-```
-
-An explicit `args` list **replaces** the defaults. When adding wrapper or CLI arguments, include any default options you still need and the CLI supports. Nyanpasu does not infer option support from help text or version numbers.
-
-`sonnet` is an official [Claude Code model alias](https://code.claude.com/docs/en/model-config#model-aliases). Its resolved version depends on the CLI, provider and local model settings. To pin a version, set a full model ID such as `claude-sonnet-5`, or the deployment ID required by your provider. Nyanpasu passes the configured value directly to `--model`.
-
-Claude starts one process per task and resumes the persisted session on the next task. Its final `result` determines success; an error result fails the task even if the process exits with status zero. Timeout and shutdown terminate the process group. Cleanup releases the context/workspace and preserves Claude's native history. Claude's own retention settings determine how long old transcripts remain available.
-
-`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. If `permission_mode` is omitted, the default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. The default arguments include `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt on every resumed turn. On CLIs supporting prompt snapshots, retain `--system-prompt-snapshot off` in `args` so a saved prompt does not override updated instructions.
-
-The examples select `permission_mode = "auto"` for Claude's [automatic permission checks](https://code.claude.com/docs/en/permissions#permission-modes), which require account and model support. Its [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is a separate filesystem/network boundary, configured through Claude's native settings (`sandbox.enabled`, `sandbox.allowUnsandboxedCommands`, and `sandbox.failIfUnavailable`). These settings can also be passed through `claude.args` with `--settings`. Nyanpasu leaves sandbox configuration to Claude; selecting a permission mode alone does not enable sandboxing.
-
-Both `[claude]` and `[codex]` share `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. For example, a corporate wrapper can receive its own prefix arguments before Nyanpasu adds the agent protocol arguments:
-
-```toml
-[claude]
-bin = "/opt/company/bin/claude-wrapper"
-args = ["--profile", "review-bot"]
-
-[codex]
-bin = "/opt/company/bin/codex-wrapper"
-args = ["--profile", "review-bot"]
-backend = "app-server"
-```
-
-`bin` is a single executable name or path, not a shell command. Paths containing spaces work. Relative paths such as `./wrapper` are resolved against the service startup directory; executable symlinks are preserved. `args` is a literal argument list, with no shell interpolation. Codex uses this same command for execution and history access. Claude wrappers that change the history directory must expose the same `CLAUDE_CONFIG_DIR` through `claude.env` so both execution and the Dashboard find it.
-
-`NYANPASU_CODEX_BIN` and `NYANPASU_CLAUDE_BIN` override executable paths. Claude also accepts `NYANPASU_CLAUDE_MODEL`, `NYANPASU_CLAUDE_REASONING_EFFORT`, and `NYANPASU_CLAUDE_PERMISSION_MODE`. `NYANPASU_COMMAND_TIMEOUT_SECONDS` overrides both backends' timeouts. Restart Nyanpasu after configuration changes.
-
-Environment filtering and command-backed values work identically for both backends. API credentials and custom endpoint variables must be explicitly passed with `claude.pass_env` or set in `claude.env`; a local Claude login can be read through the inherited home directory. `CLAUDE_CONFIG_DIR` is inherited when present. Project instructions, skills and MCP settings are loaded by the selected CLI; install reviewer skills in Claude's supported skill locations when using that backend. Task `instruction_docs` can supply shared repository instructions explicitly.
+Restart Nyanpasu after configuration changes. Changing `runtime.backend` makes the next task in an existing context start a new native session, retaining its context key and workspace. Tasks resume the current session while the backend stays the same; switching back also creates a new session. Previous conversations remain available in history and are not migrated. Keep the original runtime and history files available to read them.
 
 ## Run
 
@@ -205,9 +165,7 @@ Open the dashboard to read session transcripts, inspect tool input/output and fa
 http://127.0.0.1:8765/dashboard
 ```
 
-Each backend owns its conversation history. Nyanpasu stores task scheduling metadata and backend/session/turn references. The Dashboard reads Codex history through app-server and Claude history from its native JSONL files, without maintaining another conversation database. Both sources produce the same message, reasoning, tool, file-change, search, export, and pagination contract. Tool inputs and results stay linked, and native timestamps are shown when available. Unknown content remains inspectable; unavailable metadata is not invented.
-
-Existing database records migrate to the Codex backend. Codex session URLs stay unchanged; Claude URLs use `claude:<native-session-id>` so equal IDs from different backends cannot collide. Session details show the owning backend and the native ID to use with its CLI. History remains readable after changing the default backend, provided the original runtime and its history files remain available.
+Each backend owns its native conversation history. Nyanpasu stores scheduling metadata and session references; the Dashboard reads native messages, reasoning, tool calls, edits, and results without maintaining another conversation database. Session details identify the backend and native session ID. Historical conversations remain readable after changing backends while their runtime and history files remain available.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
@@ -311,7 +269,7 @@ AgentTask(
 
 Core executes the task and calls post-process hooks registered for `metadata["plugin_id"]`.
 
-`developer_instructions` and configured `instruction_docs` form the session instructions. The Codex app-server backend binds them with `developerInstructions` on thread creation and resume; the exec backend uses the `developer_instructions` configuration override. Claude uses `--append-system-prompt`; its default `args` disable prompt snapshots for updated instructions on resume. Each agent’s built-in base instructions remain in place. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard renders the native turn input without prepending session instructions.
+`developer_instructions` and configured `instruction_docs` form the session instructions, applied when creating or resuming a session alongside the agent's built-in instructions. `prompt` is the current turn's user message. Keep changing facts and requests there, and use skills or reference documents for detailed tool workflows. The Dashboard renders the native turn input without prepending session instructions.
 
 Plugins that need current external state before execution can register `runtime.add_task_preparer(self.id, self.prepare_task)`. The async preparer receives `(task, coalesced_tasks, context)` after the context lease is acquired, and returns a task with the current workspace, instructions, and message. Keep the task ID and context key unchanged; return an ignored task when the work is no longer applicable.
 
