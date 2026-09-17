@@ -18,7 +18,7 @@ pass_env = ["NYANPASU_GITHUB_TOKEN"]
 bin = "claude"
 # Defaults; use args = [] for older CLIs without these options.
 args = ["--permission-prompts", "none", "--system-prompt-snapshot", "off"]
-permission_mode = "dontAsk"
+permission_mode = "auto"
 allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 

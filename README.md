@@ -13,7 +13,7 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 - Codex (`app-server` or `exec`) and Claude Code (`claude -p`) backends, including compatible wrapper executables.
 - Plugin lifecycle hooks, HTTP router registration, and post-process hooks.
 - Codex defaults: `sandbox = "workspace-write"`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`.
-- Claude defaults: `permission_mode = "dontAsk"`; use `allowed_tools` to pre-approve tools, or select Claude's `auto` permission mode when available.
+- Claude permissions: examples use `permission_mode = "auto"` for automatic permission checks; omitting the setting defaults to `dontAsk`. Use `allowed_tools` to pre-approve tools.
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
@@ -133,7 +133,7 @@ backend = "claude"
 [claude]
 bin = "/path/to/claude" # defaults to "claude" on PATH
 model = "sonnet" # Claude Code alias; a full model ID also works
-permission_mode = "dontAsk"
+permission_mode = "auto"
 allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
 command_timeout_seconds = 3600
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
@@ -157,9 +157,9 @@ An explicit `args` list **replaces** the defaults. When adding wrapper or CLI ar
 
 Claude starts one process per task and resumes the persisted session on the next task. Its final `result` determines success; an error result fails the task even if the process exits with status zero. Timeout and shutdown terminate the process group. Cleanup releases the context/workspace and preserves Claude's native history. Claude's own retention settings determine how long old transcripts remain available.
 
-`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. The default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. The default arguments include `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt on every resumed turn. On CLIs supporting prompt snapshots, retain `--system-prompt-snapshot off` in `args` so a saved prompt does not override updated instructions.
+`permission_mode` and `allowed_tools` are Claude settings, independent of Codex sandbox and approval policies. If `permission_mode` is omitted, the default `dontAsk` denies operations requiring ungranted permissions. Configure the tools the workflow actually needs; PR creation needs more write permissions than a read-only inspection. The default arguments include `--permission-prompts none` so unattended work does not wait for a terminal answer. Session instructions are appended to Claude's built-in prompt on every resumed turn. On CLIs supporting prompt snapshots, retain `--system-prompt-snapshot off` in `args` so a saved prompt does not override updated instructions.
 
-Claude also provides [automatic permission checks](https://code.claude.com/docs/en/permissions#permission-modes) through `permission_mode = "auto"` when supported by the account and model. Its [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is a separate filesystem/network boundary, configured through Claude's native settings (`sandbox.enabled`, `sandbox.allowUnsandboxedCommands`, and `sandbox.failIfUnavailable`). These settings can also be passed through `claude.args` with `--settings`. Nyanpasu leaves sandbox configuration to Claude; selecting a permission mode alone does not enable sandboxing.
+The examples select `permission_mode = "auto"` for Claude's [automatic permission checks](https://code.claude.com/docs/en/permissions#permission-modes), which require account and model support. Its [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is a separate filesystem/network boundary, configured through Claude's native settings (`sandbox.enabled`, `sandbox.allowUnsandboxedCommands`, and `sandbox.failIfUnavailable`). These settings can also be passed through `claude.args` with `--settings`. Nyanpasu leaves sandbox configuration to Claude; selecting a permission mode alone does not enable sandboxing.
 
 Both `[claude]` and `[codex]` share `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. For example, a corporate wrapper can receive its own prefix arguments before Nyanpasu adds the agent protocol arguments:
 
