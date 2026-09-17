@@ -95,6 +95,34 @@ def test_active_task_can_filter_statuses(tmp_path: Path) -> None:
     assert active.task_id == "task-1"
 
 
+def test_tasks_for_different_backends_do_not_coalesce(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    first = _task("task-1").model_copy(update={"coalesce_key": "batch"})
+    second = _task("task-2").model_copy(update={"coalesce_key": "batch"})
+    assert store.enqueue_task(first, default_backend="codex", coalesce_since=0) == (True, None)
+    assert store.enqueue_task(second, default_backend="claude", coalesce_since=0) == (True, None)
+    assert {task.status for task in store.recent_tasks()} == {TaskStatus.QUEUED}
+    assert store.task_backend("task-1") == "codex"
+    assert store.task_backend("task-2") == "claude"
+
+
+def test_cleanup_keeps_context_backend_after_configuration_switch(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.upsert_context(
+        AgentContext(
+            context_key="demo:1",
+            backend="codex",
+            thread_id="old-session",
+            session_worktree=None,
+            workspace_key=None,
+            revision=None,
+        )
+    )
+    task = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
+    assert store.record_task(task, default_backend="claude")
+    assert store.task_backend("cleanup") == "codex"
+
+
 def test_mark_task_done_roundtrip(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     task = _task("task-1")

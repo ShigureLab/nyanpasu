@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
 import json
 import os
 import tempfile
 from collections import deque
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-import anyio
-
 from nyanpasu.diagnostics import diagnostic
-from nyanpasu.environment import resolve_env_value
-from nyanpasu.models import CodexRunResult
+from nyanpasu.environment import process_env
+from nyanpasu.execution import ExecutionStarted, JsonProcessRunner, json_lines, stop_process
+from nyanpasu.models import RunResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -25,7 +22,6 @@ if TYPE_CHECKING:
     from nyanpasu.diagnostics import Diagnostic
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
-ExecutionStarted = Callable[[str, str | None], Awaitable[None]]
 
 
 class CodexSessionSource(Protocol):
@@ -34,35 +30,15 @@ class CodexSessionSource(Protocol):
     async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict[str, Any]: ...
 
 
-class CodexBackend(CodexSessionSource, Protocol):
-    async def run_turn(
-        self,
-        *,
-        cwd: Path,
-        prompt: str,
-        thread_id: str | None,
-        developer_instructions: str = "",
-        on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult: ...
-
-    async def cleanup_thread(self, thread_id: str) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-def backend_from_config(config: NyanpasuConfig) -> CodexBackend:
-    if config.codex.backend == "exec":
-        return CodexExecBackend(config)
-    if config.codex.backend == "app-server":
-        return CodexAppServerBackend(config)
-    raise ValueError(f"unknown codex backend: {config.codex.backend}")
-
-
 class CodexExecBackend:
     def __init__(self, config: NyanpasuConfig) -> None:
         self.config = config
         self._env = MappingProxyType(safe_codex_env(config))
         self._history = CodexAppServerBackend(config, env=self._env)
+        self._runner = JsonProcessRunner()
+
+    def runtime_info(self) -> dict:
+        return self._runner.runtime_info()
 
     async def run_turn(
         self,
@@ -72,7 +48,7 @@ class CodexExecBackend:
         thread_id: str | None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult:
+    ) -> RunResult:
         with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as output_file:
             output_path = Path(output_file.name)
         argv = self._argv(
@@ -82,17 +58,7 @@ class CodexExecBackend:
             developer_instructions=developer_instructions,
         )
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=self._env,
-                limit=SUBPROCESS_BUFFER_LIMIT,
-            )
             parsed_thread_id, turn_id = thread_id, None
-            stderr_tail = ""
 
             async def received(event: dict[str, Any]) -> None:
                 nonlocal parsed_thread_id, turn_id
@@ -103,42 +69,20 @@ class CodexExecBackend:
                 if event.get("type") in {"thread.started", "turn.started"} and parsed_thread_id and on_started:
                     await on_started(parsed_thread_id, turn_id)
 
-            async def read_stdout() -> None:
-                assert proc.stdout is not None
-                async for event in json_lines(proc.stdout):
-                    await received(event)
-
-            async def read_stderr() -> None:
-                nonlocal stderr_tail
-                assert proc.stderr is not None
-                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                while chunk := await proc.stderr.read(65536):
-                    text = decoder.decode(chunk)
-                    stderr_tail = (stderr_tail + text)[-8192:]
-                stderr_tail = (stderr_tail + decoder.decode(b"", final=True))[-8192:]
-
-            async def communicate() -> None:
-                assert proc.stdin is not None
-                async with asyncio.TaskGroup() as group:
-                    group.create_task(read_stdout())
-                    group.create_task(read_stderr())
-                    proc.stdin.write(prompt.encode("utf-8"))
-                    await proc.stdin.drain()
-                    proc.stdin.close()
-                    await proc.wait()
-
-            try:
-                await asyncio.wait_for(communicate(), timeout=self.config.codex.command_timeout_seconds)
-            finally:
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
-            if proc.returncode != 0:
-                raise RuntimeError(stderr_tail.strip() or f"codex exited {proc.returncode}")
+            returncode, stderr_tail = await self._runner.run(
+                argv,
+                cwd=cwd,
+                env=self._env,
+                input_text=prompt,
+                timeout=self.config.codex.command_timeout_seconds,
+                received=received,
+            )
+            if returncode != 0:
+                raise RuntimeError(stderr_tail or f"codex exited {returncode}")
             final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
             if not parsed_thread_id:
                 raise RuntimeError("codex did not report a thread id")
-            return CodexRunResult(
+            return RunResult(
                 thread_id=parsed_thread_id,
                 turn_id=turn_id,
                 final_message=final_message.strip(),
@@ -150,9 +94,9 @@ class CodexExecBackend:
         self, *, cwd: Path, thread_id: str | None, output_path: Path, developer_instructions: str = ""
     ) -> list[str]:
         if thread_id:
-            argv = [self.config.codex.bin, "exec", "resume", thread_id, "-"]
+            argv = [*self.config.codex.command, "exec", "resume", thread_id, "-"]
         else:
-            argv = [self.config.codex.bin, "exec", "-", "-C", str(cwd)]
+            argv = [*self.config.codex.command, "exec", "-", "-C", str(cwd)]
         if self.config.codex.model:
             argv.extend(["--model", self.config.codex.model])
         if self.config.codex.reasoning_effort:
@@ -175,6 +119,7 @@ class CodexExecBackend:
         return argv
 
     async def close(self) -> None:
+        await self._runner.close()
         await self._history.close()
 
     async def cleanup_thread(self, thread_id: str) -> None:
@@ -202,6 +147,12 @@ class CodexAppServerBackend:
         self._stderr_task: asyncio.Task[None] | None = None
         self.diagnostics: deque[Diagnostic] = deque(maxlen=100)
 
+    def runtime_info(self) -> dict:
+        return {
+            "connection": "connected" if self._proc is not None and self._proc.returncode is None else "idle",
+            "diagnostics": list(self.diagnostics),
+        }
+
     async def run_turn(
         self,
         *,
@@ -210,7 +161,7 @@ class CodexAppServerBackend:
         thread_id: str | None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
-    ) -> CodexRunResult:
+    ) -> RunResult:
         key: tuple[str, str] | None = None
         try:
             await self._ensure_started()
@@ -264,7 +215,7 @@ class CodexAppServerBackend:
             if status != "completed":
                 error = completed.get("turn", {}).get("error")
                 raise RuntimeError(f"codex turn ended with status {status}: {error}")
-            return CodexRunResult(
+            return RunResult(
                 thread_id=active_thread_id,
                 turn_id=turn_id,
                 final_message=final_message.strip(),
@@ -294,7 +245,7 @@ class CodexAppServerBackend:
                 return
             await self._reset_dead_process()
             self._proc = await asyncio.create_subprocess_exec(
-                self.config.codex.bin,
+                *self.config.codex.command,
                 "app-server",
                 "--listen",
                 "stdio://",
@@ -303,6 +254,7 @@ class CodexAppServerBackend:
                 stderr=asyncio.subprocess.PIPE,
                 env=self._env,
                 limit=SUBPROCESS_BUFFER_LIMIT,
+                start_new_session=os.name == "posix",
             )
             self._reader_task = asyncio.create_task(self._read_loop())
             self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -345,6 +297,7 @@ class CodexAppServerBackend:
         if self._proc.returncode is None:
             return
         self._fail_pending(RuntimeError(f"codex app-server exited with {self._proc.returncode}"))
+        await stop_process(self._proc)
         if self._reader_task is not None:
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -536,13 +489,7 @@ class CodexAppServerBackend:
     async def close(self) -> None:
         if self._proc is None:
             return
-        if self._proc.returncode is None:
-            self._proc.terminate()
-        with anyio.move_on_after(5):
-            await self._proc.wait()
-        if self._proc.returncode is None:
-            self._proc.kill()
-            await self._proc.wait()
+        await stop_process(self._proc)
         if self._reader_task is not None:
             self._reader_task.cancel()
         if self._stderr_task is not None:
@@ -551,75 +498,4 @@ class CodexAppServerBackend:
 
 
 def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
-    inherited = dict(os.environ)
-    allowed = {
-        "ALL_PROXY",
-        "CODEX_HOME",
-        "CODEX_NETWORK_ALLOW_LOCAL_BINDING",
-        "CODEX_NETWORK_PROXY_ACTIVE",
-        "HOME",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "LANG",
-        "LC_ALL",
-        "LOGNAME",
-        "NO_PROXY",
-        "PATH",
-        "SHELL",
-        "TERM",
-        "TMPDIR",
-        "USER",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "all_proxy",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-    }
-    allowed.update(config.codex.pass_env)
-    env = {key: value for key in allowed if (value := inherited.get(key))}
-    for key, source in config.codex.env.items():
-        env[key] = resolve_env_value(source, name=f"codex.env.{key}", cwd=config.state_dir, env=inherited)
-    return env
-
-
-async def json_lines(stream: asyncio.StreamReader):
-    """Read bounded JSONL, retaining malformed/oversized lines as visible records."""
-    pending = bytearray()
-    oversized = False
-    maximum = 16 * 1024 * 1024
-    while chunk := await stream.read(65536):
-        pending.extend(chunk)
-        while b"\n" in pending:
-            raw, _, remainder = pending.partition(b"\n")
-            pending = bytearray(remainder)
-            if oversized:
-                yield {"type": "nyanpasu.invalid_json", "text": raw.decode("utf-8", "replace")}
-                oversized = False
-            elif raw.strip():
-                yield parse_json_line(bytes(raw))
-        if len(pending) > maximum:
-            yield {
-                "type": "nyanpasu.capture_gap",
-                "text": "JSON line exceeded 16 MiB; raw fragments retained, semantic parsing unavailable.",
-            }
-            yield {"type": "nyanpasu.invalid_json", "text": pending.decode("utf-8", "replace")}
-            pending.clear()
-            oversized = True
-    if pending:
-        yield (
-            parse_json_line(bytes(pending))
-            if not oversized
-            else {"type": "nyanpasu.invalid_json", "text": pending.decode("utf-8", "replace")}
-        )
-
-
-def parse_json_line(raw: bytes) -> dict[str, Any]:
-    try:
-        value = json.loads(raw.decode("utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError("Expected a JSON object")
-        return value
-    except (ValueError, UnicodeDecodeError) as exc:
-        return {"type": "nyanpasu.invalid_json", "text": raw.decode("utf-8", "replace"), "error": str(exc)}
+    return process_env(config.codex, cwd=config.state_dir, backend="codex")

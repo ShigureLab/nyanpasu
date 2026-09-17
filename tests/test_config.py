@@ -129,6 +129,10 @@ def test_load_config_allows_no_plugins(tmp_path: Path, monkeypatch) -> None:
     assert config.enabled_plugins == ()
     assert config.codex.model is None
     assert config.codex.reasoning_effort is None
+    assert config.codex.sandbox == "workspace-write"
+    assert config.codex.approval_policy == "on-request"
+    assert config.codex.approvals_reviewer == "auto_review"
+    assert config.claude.permission_mode == "auto"
 
 
 def test_load_config_uses_nyanpasu_home_config_by_default(tmp_path: Path, monkeypatch) -> None:

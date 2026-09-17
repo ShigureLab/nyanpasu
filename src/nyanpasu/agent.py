@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import anyio.to_thread as to_thread
 from loguru import logger
 
-from nyanpasu.codex import CodexBackend, backend_from_config
+from nyanpasu.backends import Backends
 from nyanpasu.git_ops import WorktreeManager
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore, replace_context
@@ -40,12 +40,12 @@ class AgentService:
         *,
         store: StateStore | None = None,
         worktrees: WorktreeBackend | None = None,
-        codex: CodexBackend | None = None,
+        backends: Backends | None = None,
     ) -> None:
         self.config = config
         self.store = store or StateStore(config.db_path)
         self.worktrees = worktrees or WorktreeManager(config)
-        self.codex = codex or backend_from_config(config)
+        self.backends = backends or Backends(config)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
         self._context_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
@@ -65,20 +65,18 @@ class AgentService:
             coalesce_since = time.time() - self.config.runtime.coalesce_window_seconds if task.coalesce_key else None
             self._preparer_for(task)
             is_new, active_task_id = await to_thread.run_sync(
-                functools.partial(self.store.enqueue_task, task, coalesce_since=coalesce_since)
+                functools.partial(
+                    self.store.enqueue_task,
+                    task,
+                    default_backend=self.config.runtime.backend,
+                    coalesce_since=coalesce_since,
+                )
             )
             if not is_new:
                 logger.info("task submit skipped duplicate task_id={} key={}", task.task_id, task.key)
                 return {"accepted": False, "duplicate": True, "task_id": task.task_id}
             if task.action is TaskAction.IGNORED:
-                result = TaskRunResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.COMPLETED,
-                    thread_id=None,
-                    turn_id=None,
-                    final_message="",
-                )
-                await to_thread.run_sync(self.store.mark_task_done, result)
+                await self._complete_ignored_task(task)
                 logger.info("task submit ignored task_id={} context={}", task.task_id, task.context_key)
                 return {"accepted": True, "ignored": True, "task_id": task.task_id}
             if active_task_id is not None:
@@ -107,20 +105,14 @@ class AgentService:
             task.action.value,
             task.context_key,
         )
-        is_new = await to_thread.run_sync(self.store.record_task, task)
+        is_new = await to_thread.run_sync(
+            functools.partial(self.store.record_task, task, default_backend=self.config.runtime.backend)
+        )
         if not is_new:
             logger.info("task run_now duplicate task_id={} key={}", task.task_id, task.key)
             raise ValueError(f"duplicate task id or dedupe key: {task.key}")
         if task.action is TaskAction.IGNORED:
-            result = TaskRunResult(
-                task_id=task.task_id,
-                status=TaskStatus.COMPLETED,
-                thread_id=None,
-                turn_id=None,
-                final_message="",
-            )
-            await to_thread.run_sync(self.store.mark_task_done, result)
-            return result
+            return await self._complete_ignored_task(task)
         try:
             return await self._run_task(task)
         except asyncio.CancelledError:
@@ -133,6 +125,18 @@ class AgentService:
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self._post_process_hooks.setdefault(plugin_id, []).append(hook)
+
+    async def _complete_ignored_task(self, task: AgentTask) -> TaskRunResult:
+        result = TaskRunResult(
+            task_id=task.task_id,
+            status=TaskStatus.COMPLETED,
+            backend=await to_thread.run_sync(self.store.task_backend, task.task_id),
+            thread_id=None,
+            turn_id=None,
+            final_message="",
+        )
+        await to_thread.run_sync(self.store.mark_task_done, result)
+        return result
 
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
         self._task_preparers[plugin_id] = preparer
@@ -162,13 +166,17 @@ class AgentService:
         async with self._context_execution(task):
             started_at = time.monotonic()
             existing = await to_thread.run_sync(self.store.get_context, task.context_key)
-            await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
+            backend_name = self.config.runtime.backend
+            if existing and existing.backend != backend_name:
+                existing = replace_context(existing, backend=backend_name, thread_id=None, revision=None)
+            await to_thread.run_sync(self.store.mark_task_running, task.task_id, None, backend_name)
             task = await self._prepare_task(task, existing)
             await to_thread.run_sync(self.store.update_task_input, task)
             if task.action is TaskAction.IGNORED:
                 run_result = TaskRunResult(
                     task_id=task.task_id,
                     status=TaskStatus.COMPLETED,
+                    backend=backend_name,
                     thread_id=existing.thread_id if existing else None,
                     turn_id=None,
                     final_message=task.prompt,
@@ -176,6 +184,7 @@ class AgentService:
                 await to_thread.run_sync(self.store.mark_task_done, run_result)
                 return run_result
             context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
+            context = replace_context(context, backend=backend_name)
             if context.session_worktree is None:
                 context = replace_context(context, session_worktree=Path.cwd())
             event_worktree = None
@@ -197,9 +206,11 @@ class AgentService:
             )
 
             async def on_started(thread_id: str, turn_id: str | None) -> None:
-                await to_thread.run_sync(self.store.bind_task_execution, task.task_id, thread_id, turn_id)
+                await to_thread.run_sync(self.store.bind_task_execution, task.task_id, thread_id, turn_id, backend_name)
+                # Persist the binding immediately, including when execution later fails.
+                await to_thread.run_sync(self.store.upsert_context, replace_context(context, thread_id=thread_id))
 
-            result = await self.codex.run_turn(
+            result = await self.backends.get(backend_name).execution.run_turn(
                 cwd=context.session_worktree or Path.cwd(),
                 prompt=prompt,
                 developer_instructions=self._runtime_instructions(task),
@@ -215,6 +226,7 @@ class AgentService:
             run_result = TaskRunResult(
                 task_id=task.task_id,
                 status=TaskStatus.COMPLETED,
+                backend=backend_name,
                 thread_id=result.thread_id,
                 turn_id=result.turn_id,
                 final_message=result.final_message,
@@ -263,11 +275,12 @@ class AgentService:
             context = await to_thread.run_sync(self.store.delete_context, task.context_key)
             if context is not None:
                 if context.thread_id:
-                    await self.codex.cleanup_thread(context.thread_id)
+                    await self.backends.get(context.backend).execution.cleanup_thread(context.thread_id)
                 await to_thread.run_sync(self.worktrees.remove_worktree, task.workspace, context.session_worktree)
             result = TaskRunResult(
                 task_id=task.task_id,
                 status=TaskStatus.COMPLETED,
+                backend=context.backend if context else self.config.runtime.backend,
                 thread_id=context.thread_id if context else None,
                 turn_id=None,
                 final_message="",
@@ -394,5 +407,5 @@ class AgentService:
         released = await to_thread.run_sync(self.store.release_context_leases_for_owner, self._owner_id)
         if released:
             logger.info("agent shutdown released context leases owner={} count={}", self._owner_id, released)
-        await self.codex.close()
+        await self.backends.close()
         logger.info("agent shutdown finished")

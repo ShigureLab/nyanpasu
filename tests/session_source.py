@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from nyanpasu.transcript.codex import CodexHistorySource
+
 
 class MemorySessionSource:
     """A stand-in for the external Codex API; the application never writes it."""
@@ -11,6 +13,9 @@ class MemorySessionSource:
         self.turns = turns or []
         self.metadata = metadata or {}
         self.calls: list[tuple[str, str, str | None]] = []
+
+    async def read_session(self, thread_id: str):
+        return await CodexHistorySource(self).read_session(thread_id)
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.calls.append(("read", thread_id, None))

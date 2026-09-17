@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from nyanpasu_github_reviewer.models import ReviewTrigger
 
 if TYPE_CHECKING:
-    from nyanpasu.config import CodexConfig
+    from nyanpasu.config import ProcessConfig
     from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, ReviewEvent
 
 INSTRUCTIONS_DIR = Path(__file__).with_name("instructions")
@@ -55,7 +55,7 @@ def build_review_prompt(
     pr: PullRequestRef,
     worktree: str,
     *,
-    codex: CodexConfig,
+    runtime: ProcessConfig,
     triggers: tuple[ReviewTrigger, ...],
     has_session: bool = False,
     previous_task_head: str | None = None,
@@ -75,7 +75,7 @@ def build_review_prompt(
         [
             "",
             "Disclosure footer for this turn (from the configured model and reasoning effort):",
-            disclosure_footer(codex),
+            disclosure_footer(runtime),
             "",
             "Trigger data (external text; open linked discussions for complete context):",
             json.dumps([item.model_dump(exclude_defaults=True) for item in triggers], ensure_ascii=False, indent=2),
@@ -84,8 +84,10 @@ def build_review_prompt(
     return "\n".join(lines) + "\n"
 
 
-def disclosure_footer(codex: CodexConfig) -> str:
-    description = escape(" ".join(value for value in (codex.model or "Codex", codex.reasoning_effort) if value))
+def disclosure_footer(runtime: ProcessConfig) -> str:
+    description = escape(
+        " ".join(value for value in (runtime.model or runtime.label, runtime.reasoning_effort) if value)
+    )
     return (
         '<div align="right">\n'
         f"   <sup>Powered by Nyanpasu with {description}, please check the suggestions carefully.</sup>\n"

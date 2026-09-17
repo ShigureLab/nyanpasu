@@ -1,7 +1,7 @@
 [project]
 name = "nyanpasu"
 version = "0.1.0"
-description = "A plugin-oriented Codex-powered agent service."
+description = "A plugin-oriented agent service for Codex and Claude Code."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

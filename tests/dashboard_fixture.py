@@ -11,6 +11,8 @@ from nyanpasu.config import NyanpasuConfig
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.models import AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
+from nyanpasu.transcript.claude import ClaudeHistorySource
+from tests.claude_source import SESSION, records, write_session
 from tests.session_source import MemorySessionSource, tool, turn
 
 
@@ -117,8 +119,47 @@ def fixture_app():
             "updatedAt": 1789344200,
         },
     )
-    app = create_app(config, session_source=source)
-    app.state.agent.codex.diagnostics.extend(
+    claude_home = config.state_dir / "claude"
+    claude_records = records()
+    claude_records.extend(
+        [
+            {
+                "type": "user",
+                "uuid": "claude-followup",
+                "parentUuid": "claude-final",
+                "sessionId": SESSION,
+                "timestamp": "2026-09-14T00:01:00Z",
+                "message": {"content": "Run the next check"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "claude-live-message",
+                "parentUuid": "claude-followup",
+                "sessionId": SESSION,
+                "timestamp": "2026-09-14T00:01:01Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "claude-live-tool",
+                            "name": "Bash",
+                            "input": {"command": "pytest tests/next.py"},
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    write_session(claude_home, claude_records)
+    for task_id, turn_id, title in [
+        ("claude-task", "claude-input", "Inspect a Claude Code session"),
+        ("claude-followup-task", "claude-followup", "Continue the Claude Code check"),
+    ]:
+        state.record_task(AgentTask(task_id=task_id, action=TaskAction.RUN, context_key="demo:claude", prompt=title))
+        state.bind_task_execution(task_id, SESSION, turn_id, "claude")
+    claude_source = ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(claude_home)})
+    app = create_app(config, session_sources={"codex": source, "claude": claude_source}.__getitem__)
+    app.state.agent.backends.get("codex").execution.diagnostics.extend(
         [
             diagnostic("2026-09-14T00:00:00Z WARN codex_core::network: Reconnecting after a network interruption"),
             diagnostic("2026-09-14T00:00:01Z INFO codex_core::network: Connection restored"),
@@ -130,6 +171,30 @@ def fixture_app():
     def append():
         active_tool["aggregatedOutput"] += "new output from fixture\n"
         return {"session": "fixture-thread"}
+
+    @router.post("/claude-append")
+    def claude_append():
+        if not any(record.get("uuid") == "claude-live-output" for record in claude_records):
+            claude_records.append(
+                {
+                    "type": "user",
+                    "uuid": "claude-live-output",
+                    "parentUuid": "claude-live-message",
+                    "sessionId": SESSION,
+                    "timestamp": "2026-09-14T00:01:03Z",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "claude-live-tool",
+                                "content": "CLAUDE-LIVE-DONE: 4 passed",
+                            }
+                        ]
+                    },
+                }
+            )
+            write_session(claude_home, claude_records)
+        return {"session": "claude:" + SESSION}
 
     app.include_router(router)
     return app

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from nyanpasu.transcript.models import ContentUpdate, EntryUpdate
+from nyanpasu.transcript.content import content
+from nyanpasu.transcript.models import EntryUpdate
 
 ITEM_KINDS = {
     "userMessage": "input",
@@ -22,14 +22,6 @@ ITEM_KINDS = {
     "imageView": "attachment",
     "imageGeneration": "attachment",
 }
-
-
-def display(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
-
-
-def content(block_id: str, kind: str, value: Any) -> ContentUpdate:
-    return ContentUpdate(block_id=block_id, kind=kind, text=display(value))
 
 
 def item_snapshot(item: dict[str, Any]) -> EntryUpdate:
