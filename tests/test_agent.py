@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -422,8 +422,9 @@ async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path
 @pytest.mark.anyio
 @pytest.mark.parametrize("backend", ["codex", "claude"])
 @pytest.mark.parametrize("workspace_policy", ["context", "event_snapshot"])
+@pytest.mark.parametrize("switch_backend", [False, True])
 async def test_restart_resumes_session_in_place_then_runs_queued_task(
-    tmp_path: Path, backend, workspace_policy
+    tmp_path: Path, backend, workspace_policy, switch_backend
 ) -> None:
     config = _config(tmp_path, concurrency=1)
     config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"backend": backend})})
@@ -450,30 +451,90 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
     assert [task.task_id for task in first.store.unfinished_tasks()] == ["interrupted", "queued"]
     assert first.store.task_run("interrupted").thread_id == "thread-1"
     assert first.store.task_run("interrupted").backend == backend
+    original_snapshot = first.store.task_run("interrupted").event_worktree
+    if original_snapshot:
+        (original_snapshot / "unfinished.txt").write_text("snapshot work in progress")
+
+    if switch_backend:
+        backend = "claude" if backend == "codex" else "codex"
+        config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"backend": backend})})
 
     class ResumedBackend(FakeCodex):
         async def run_turn(self, **kwargs):
             assert (kwargs["cwd"] / "unfinished.txt").read_text() == "work in progress"
+            if original_snapshot:
+                assert (original_snapshot / "unfinished.txt").read_text() == "snapshot work in progress"
             return await super().run_turn(**kwargs)
 
-    resumed_backend = ResumedBackend()
+    session_id = "replacement-session" if switch_backend else "thread-1"
+    resumed_backend = ResumedBackend(new_session_id=session_id)
     second_worktrees = FakeWorktrees(tmp_path / "worktrees")
     second_worktrees.prepare_context = Mock(wraps=second_worktrees.prepare_context)
     second = AgentService(config, worktrees=second_worktrees, backends=fake_backends(config, resumed_backend, backend))
+    second._prepare_task = AsyncMock(wraps=second._prepare_task)
     await second.startup()
+    assert second.store.task_run("queued").backend == backend
     await second.startup()  # Repeated startup must not enqueue the same task twice.
     await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
     await second.shutdown()
 
-    assert [thread for _, thread in resumed_backend.calls] == ["thread-1", "thread-1"]
+    assert [thread for _, thread in resumed_backend.calls] == [None if switch_backend else "thread-1", session_id]
     assert resumed_backend.instructions[0] == "Keep the original role."
-    assert "Continue from the saved conversation" in resumed_backend.prompts[0]
+    if not switch_backend:
+        assert "Continue from the saved conversation" in resumed_backend.prompts[0]
     assert "Continue from the saved conversation" not in resumed_backend.prompts[1]
     assert second_worktrees.event_paths == []  # The interrupted snapshot was reused, not recreated.
     assert [call.args[0].task_id for call in second_worktrees.prepare_context.call_args_list] == ["queued"]
+    assert [call.args[0].task_id for call in second._prepare_task.call_args_list] == (
+        ["interrupted", "queued"] if switch_backend else ["queued"]
+    )
     assert second.store.task_status("interrupted") == second.store.task_status("queued") == "completed"
     assert second.store.task_run("interrupted").error is None
+    assert second.store.task_run("interrupted").backend == second.store.task_run("queued").backend == backend
+    assert second.store.task_run("interrupted").thread_id == second.store.task_run("queued").thread_id == session_id
     assert len(second.store.recent_tasks()) == 2
+
+
+@pytest.mark.anyio
+async def test_interrupted_backend_switch_keeps_original_session_identity_until_replacement_starts(tmp_path: Path):
+    config = _config(tmp_path)
+    store = StateStore(config.db_path)
+    task = _task("interrupted")
+    workspace = tmp_path / "preserved"
+    workspace.mkdir()
+    context = AgentContext(
+        context_key=task.context_key,
+        backend="claude",
+        thread_id=None,
+        session_worktree=workspace,
+        workspace_key=None,
+        revision=None,
+    )
+    store.record_task(task, default_backend="claude")
+    store.bind_task_execution(task.task_id, "old-claude-session", "old-turn", "claude", context=context)
+    started = asyncio.Event()
+
+    class InterruptedStart(FakeCodex):
+        async def run_turn(self, **kwargs):
+            assert kwargs["thread_id"] is None
+            started.set()
+            await asyncio.Event().wait()
+
+    first = AgentService(config, store=store, backends=fake_backends(config, InterruptedStart()))
+    await first.startup()
+    await asyncio.wait_for(started.wait(), 2)
+    await first.shutdown()
+    record = store.task_run(task.task_id)
+    assert (record.backend, record.thread_id, record.turn_id) == ("claude", "old-claude-session", "old-turn")
+
+    replacement = FakeCodex(new_session_id="new-codex-session")
+    second = AgentService(config, store=store, backends=fake_backends(config, replacement))
+    await second.startup()
+    await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
+    await second.shutdown()
+    assert replacement.calls == [(workspace, None)]
+    record = store.task_run(task.task_id)
+    assert (record.backend, record.thread_id, record.turn_id) == ("codex", "new-codex-session", "turn-1")
 
 
 @pytest.mark.anyio
@@ -508,7 +569,9 @@ async def test_recovery_waits_for_live_owner_and_does_not_replay_completed_work(
 
 @pytest.mark.anyio
 async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backend(tmp_path: Path) -> None:
-    config = _config(tmp_path)
+    config = _config(tmp_path).model_copy(
+        update={"runtime": RuntimeConfig(backend="claude", context_lease_wait_seconds=0.01)}
+    )
     state = StateStore(config.db_path)
     task = _task("orphan")
     state.record_task(task, default_backend="claude")

@@ -203,6 +203,14 @@ class StateStore:
     def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
 
+    def update_pending_task_backend(self, task_id: str, backend: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE task_runs SET backend=? WHERE task_id=?
+                   AND status IN ('queued', 'running') AND thread_id IS NULL""",
+                (backend, task_id),
+            )
+
     def update_task_input(self, task: AgentTask) -> None:
         with self._connect() as conn:
             # Persist the execution request so an interrupted turn can resume with the same instructions.

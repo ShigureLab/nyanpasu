@@ -64,6 +64,9 @@ class AgentService:
                     )
                     continue
                 self._preparer_for(task)
+                await to_thread.run_sync(
+                    self.store.update_pending_task_backend, task.task_id, self.config.runtime.backend
+                )
                 self._schedule(task)
                 logger.info("task recovery scheduled task_id={} context={}", task.task_id, task.context_key)
 
@@ -192,11 +195,13 @@ class AgentService:
     async def _run_context_task(self, task: AgentTask, record: TaskRunSummary) -> TaskRunResult:
         started_at = time.monotonic()
         existing = await to_thread.run_sync(self.store.get_context, task.context_key)
-        resuming = record.thread_id is not None
-        backend_name = record.backend if resuming else self.config.runtime.backend
+        recovering = record.thread_id is not None
+        backend_name = self.config.runtime.backend
+        resuming = recovering and record.backend == backend_name
         if existing and existing.backend != backend_name:
             existing = replace_context(existing, backend=backend_name, thread_id=None, revision=None)
-        await to_thread.run_sync(self.store.mark_task_running, task.task_id, None, backend_name)
+        # Keep the old session's backend identity until the replacement session starts.
+        await to_thread.run_sync(self.store.mark_task_running, task.task_id, None, None if recovering else backend_name)
         if not resuming:
             task = await self._prepare_task(task, existing)
             await to_thread.run_sync(self.store.update_task_input, task)
@@ -204,25 +209,25 @@ class AgentService:
             run_result = TaskRunResult(
                 task_id=task.task_id,
                 status=TaskStatus.COMPLETED,
-                backend=backend_name,
-                thread_id=existing.thread_id if existing else None,
+                backend=record.backend if recovering else backend_name,
+                thread_id=record.thread_id if recovering else existing.thread_id if existing else None,
                 turn_id=None,
                 final_message=task.prompt,
             )
             await to_thread.run_sync(self.store.mark_task_done, run_result)
             return run_result
-        if resuming:
+        if recovering:
             if existing is None or existing.session_worktree is None or not existing.session_worktree.is_dir():
                 raise RuntimeError("Cannot resume task: its session workspace is unavailable")
-            context = replace_context(existing, thread_id=record.thread_id)
+            context = replace_context(existing, thread_id=record.thread_id if resuming else None)
         else:
             context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
         context = replace_context(context, backend=backend_name)
         if context.session_worktree is None:
             context = replace_context(context, session_worktree=Path.cwd())
-        event_worktree = record.event_worktree if resuming else None
+        event_worktree = record.event_worktree if recovering else None
         if task.workspace_policy == "event_snapshot":
-            if not resuming:
+            if not recovering:
                 event_worktree = await to_thread.run_sync(self.worktrees.prepare_event_snapshot, task)
             elif event_worktree is not None and not event_worktree.is_dir():
                 raise RuntimeError("Cannot resume task: its event workspace is unavailable")
@@ -240,10 +245,19 @@ class AgentService:
             event_worktree=event_worktree,
             session_worktree=context.session_worktree,
         )
-        if resuming:
+        if recovering:
+            continuation = (
+                "Continue from the saved conversation and existing workspace. "
+                if resuming
+                else f"The backend changed from {record.backend} to {backend_name}; this is a new native session. "
+                f"The previous session was {record.backend}:{record.thread_id}. "
+                "The existing workspace is preserved and may contain unfinished work or an earlier revision. "
+                "Reconcile it with the current task request before continuing. "
+            )
             prompt = (
-                "The service interrupted this task. Continue from the saved conversation and existing workspace. "
-                "Check which actions have already completed before repeating any operation. "
+                "The service interrupted this task. "
+                + continuation
+                + "Check which actions have already completed before repeating any operation. "
                 "If the task is already complete, report its result.\n\nTask request:\n" + prompt
             )
 

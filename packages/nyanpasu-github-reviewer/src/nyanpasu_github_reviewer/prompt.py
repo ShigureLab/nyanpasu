@@ -66,6 +66,7 @@ def build_review_prompt(
         f"Base branch: {pr.base_ref}; head branch: {pr.head_ref}",
         f"Worktree: {worktree}",
         f"Publication mode: {publication_mode(config)}.",
+        f"Start here (dashboard first): {INSTRUCTIONS_DIR / 'review-output.md'}",
         f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
     ]
     if previous_task_head:
