@@ -64,7 +64,12 @@ class GitHubReviewerPlugin:
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
         runtime.add_task_preparer(self.id, self.prepare_task)
-        runtime.add_router(self._router(), prefix="/plugins/github-reviewer", tags=["github-reviewer"])
+        runtime.add_router(
+            self._router(),
+            prefix="/plugins/github-reviewer",
+            tags=["github-reviewer"],
+            require_auth=not bool(config.webhook_secret),
+        )
         if config.poll_enabled:
             self.poller = GitHubEventsPoller(
                 config,

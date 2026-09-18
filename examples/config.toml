@@ -3,6 +3,9 @@ enabled_plugins = ["github_reviewer", "github_pr_maker"]
 [server]
 host = "127.0.0.1"
 port = 8765
+# Set a random bearer token before exposing the service beyond localhost.
+# token = "replace-with-a-random-token"
+# NYANPASU_TOKEN overrides this value; omitting both keeps authentication disabled.
 
 [codex]
 bin = "codex"

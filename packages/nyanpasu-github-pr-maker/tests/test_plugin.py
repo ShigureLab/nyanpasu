@@ -454,7 +454,7 @@ class FakeRuntime:
     async def run_now(self, task: AgentTask):
         raise NotImplementedError
 
-    def add_router(self, router, *, prefix: str = "", tags=None) -> None:
+    def add_router(self, router, *, prefix: str = "", tags=None, require_auth: bool = True) -> None:
         _ = router, prefix, tags
 
     def add_task_preparer(self, plugin_id, preparer) -> None:

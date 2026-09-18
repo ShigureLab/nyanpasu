@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  get,
+  useApi,
   backendLabel,
   query,
   useNavigation,
@@ -40,7 +40,7 @@ interface Runtime {
   backends: Record<string, { connection: string; bin: string; diagnostics: Diagnostic[] }>;
 }
 
-export function App() {
+export function App({ onSignOut }: { onSignOut?: () => void }) {
   const { selection, navigate } = useNavigation();
   const view = selection.get('view') ?? 'sessions';
   const [live, setLive] = useState(true);
@@ -123,6 +123,7 @@ export function App() {
           <option value="dark">Dark</option>
           <option value="light">Light</option>
         </select>
+        {onSignOut && <button onClick={onSignOut}>Sign out</button>}
       </header>
       {overview.error && (
         <p className="global-error" role="alert">
@@ -260,6 +261,7 @@ function Tasks({
   live: boolean;
   refresh: number;
 }) {
+  const { get } = useApi();
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [offset, setOffset] = useState(0);

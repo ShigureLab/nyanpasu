@@ -3,7 +3,8 @@ import { memo, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { TranscriptBlock, TranscriptEntry } from './api-types';
-import { get, query, type ContentPage, type Navigate } from './api';
+import { useApi, query, type ContentPage, type Navigate } from './api';
+import { Download } from './Download';
 
 export function Status({ state }: { state: string }) {
   const symbol = ['failed', 'interrupted', 'declined'].includes(state)
@@ -75,6 +76,7 @@ export function ContentBlock({
   streaming?: boolean;
   focusOffset?: number;
 }) {
+  const { get } = useApi();
   const [page, setPage] = useState<ContentPage | null>(null);
   const [error, setError] = useState('');
   const [plain, setPlain] = useState(false);
@@ -151,9 +153,12 @@ export function ContentBlock({
             </button>
           )}
           <Copy text={text} label={complete ? 'Copy source' : 'Copy displayed text'} />
-          <a href={query(endpoint, { download: true })} download>
+          <Download
+            path={query(endpoint, { download: true })}
+            filename={`${block.content_ref}.txt`}
+          >
             Download full content
-          </a>
+          </Download>
         </div>
       </div>
       {error && (

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { get, type Page, type Session } from './api';
+import { useApi, type Page, type Session } from './api';
 
 const PAGE_SIZE = 50;
 
 export function useSessions(path: string, live: boolean, refresh: number) {
+  const { get } = useApi();
   const [range, setRange] = useState({ path, pages: 1 });
   const pages = range.path === path ? range.pages : 1;
   const [state, setState] = useState<{
@@ -60,7 +61,7 @@ export function useSessions(path: string, live: boolean, refresh: number) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [path, pages, live, refresh]);
+  }, [get, path, pages, live, refresh]);
 
   const data = state.path === path ? state.data : undefined;
   const loading = state.path !== path || state.pages !== pages || state.loading;

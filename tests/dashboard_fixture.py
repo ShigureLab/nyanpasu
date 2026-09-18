@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import SecretStr
 
-from nyanpasu.config import NyanpasuConfig
+from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.models import AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
@@ -19,7 +20,11 @@ from tests.session_source import MemorySessionSource, tool, turn
 def fixture_app():
     from nyanpasu.web import create_app
 
-    config = NyanpasuConfig(state_dir=Path(os.environ["NYANPASU_HOME"]))
+    token = os.getenv("NYANPASU_TEST_TOKEN")
+    config = NyanpasuConfig(
+        state_dir=Path(os.environ["NYANPASU_HOME"]),
+        server=ServerConfig(token=SecretStr(token) if token else None),
+    )
     state = StateStore(config.db_path)
     task = AgentTask(
         task_id="fixture-task",
@@ -216,4 +221,4 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory(prefix="nyanpasu-dashboard-test-") as state_dir:
         os.environ["NYANPASU_HOME"] = state_dir
-        uvicorn.run(fixture_app, factory=True, host="127.0.0.1", port=8766)
+        uvicorn.run(fixture_app, factory=True, host="127.0.0.1", port=int(os.getenv("NYANPASU_TEST_PORT", "8766")))

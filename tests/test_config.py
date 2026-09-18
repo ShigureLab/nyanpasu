@@ -4,10 +4,34 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from nyanpasu.config import CodexConfig, EnvCommand, default_config_path, load_config, nyanpasu_home
+from nyanpasu.config import CodexConfig, EnvCommand, ServerConfig, default_config_path, load_config, nyanpasu_home
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def test_server_token_from_config_and_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[server]\ntoken = "file-secret"\n')
+    config = load_config()
+    assert config.server.token is not None
+    assert config.server.token.get_secret_value() == "file-secret"
+    assert "file-secret" not in repr(config)
+    assert "file-secret" not in config.model_dump_json()
+    monkeypatch.setenv("NYANPASU_TOKEN", "env-secret")
+    token = load_config().server.token
+    assert token is not None
+    assert token.get_secret_value() == "env-secret"
+    monkeypatch.setenv("NYANPASU_TOKEN", "")
+    with pytest.raises(ValueError, match="nonempty bearer token"):
+        load_config()
+
+
+@pytest.mark.parametrize("token", ["", " ", "secret token", "secret\n", "secret\0", "秘密", 123])
+def test_server_token_rejects_invalid_values_without_disclosing_them(token) -> None:
+    with pytest.raises(ValueError) as error:
+        ServerConfig(token=token)
+    assert "secret" not in str(error.value)
 
 
 def test_load_config_reads_home_config_toml(tmp_path: Path, monkeypatch) -> None:

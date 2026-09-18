@@ -37,6 +37,27 @@
 body {
   margin: 0;
 }
+.auth-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.auth-panel {
+  width: min(100%, 420px);
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.auth-panel form {
+  display: grid;
+  gap: 12px;
+  margin: 24px 0 16px;
+}
+.auth-panel input {
+  min-width: 0;
+}
 button,
 input,
 select {

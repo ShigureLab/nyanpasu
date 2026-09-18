@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
-from nyanpasu.config import CodexConfig, NyanpasuConfig
+from nyanpasu.config import CodexConfig, NyanpasuConfig, ServerConfig
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 
@@ -55,6 +56,67 @@ class FakePlugin:
 
     async def shutdown(self) -> None:
         return None
+
+
+@pytest.mark.anyio
+async def test_token_protects_all_data_routes_and_plugins(tmp_path) -> None:
+    config = NyanpasuConfig(
+        state_dir=tmp_path, server=ServerConfig(token=SecretStr("test-secret")), enabled_plugins=("fake",)
+    )
+    registry = PluginRegistry({"fake": FakePlugin()})
+    app = create_app(config, agent=FakeAgent(), plugin_registry=registry)
+    paths = [
+        "/tasks",
+        "/contexts",
+        "/api/dashboard",
+        "/api/overview",
+        "/api/runtime",
+        "/api/plugins",
+        "/api/tasks",
+        "/api/tasks/missing",
+        "/api/sessions",
+        "/api/sessions/missing",
+        "/api/sessions/missing/transcript",
+        "/api/sessions/missing/entries/entry",
+        "/api/sessions/missing/search?q=secret",
+        "/api/sessions/missing/content/ref?download=true",
+        "/api/sessions/missing/export?format=jsonl",
+        "/plugins/fake/ping",
+    ]
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            for path in paths:
+                for authorization in [None, "Bearer wrong", "Basic test-secret", "Bearer"]:
+                    response = await client.get(path, headers={"Authorization": authorization} if authorization else {})
+                    assert response.status_code == 401, (path, authorization)
+                    assert response.headers["WWW-Authenticate"] == "Bearer"
+                    assert response.headers["Cache-Control"] == "no-store"
+                response = await client.get(path, headers={"Authorization": "bearer test-secret"})
+                assert response.status_code != 401, path
+                assert "test-secret" not in response.text
+                assert response.headers["Cache-Control"] == "no-store"
+            # Tokens are accepted only in the Authorization header, never in URLs or cookies.
+            assert (
+                await client.get("/api/overview?token=test-secret", headers={"Cookie": "token=test-secret"})
+            ).status_code == 401
+            for path in ["/health", "/dashboard"]:
+                assert (await client.get(path)).status_code == 200
+
+
+@pytest.mark.anyio
+async def test_dashboard_assets_remain_public_with_auth(tmp_path, monkeypatch) -> None:
+    static = tmp_path / "assets"
+    static.mkdir()
+    (static / "index.html").write_text('<script src="/dashboard/assets/app.js"></script>')
+    (static / "app.js").write_text("console.log('login shell')")
+    monkeypatch.setattr("nyanpasu.web.DASHBOARD_STATIC_DIR", static)
+    app = create_app(
+        NyanpasuConfig(state_dir=tmp_path, server=ServerConfig(token=SecretStr("test-secret"))),
+        agent=FakeAgent(),
+        plugin_registry=PluginRegistry(),
+    )
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        assert (await client.get("/dashboard/assets/app.js")).status_code == 200
 
 
 @pytest.mark.anyio

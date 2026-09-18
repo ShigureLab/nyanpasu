@@ -167,6 +167,32 @@ Open the dashboard to read session transcripts, inspect tool input/output and fa
 http://127.0.0.1:8765/dashboard
 ```
 
+To allow remote access, set a random bearer token and the listening address:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8765
+token = "replace-with-a-random-token"
+```
+
+Generate a token with `uv run python -c 'import secrets; print(secrets.token_urlsafe(32))'`.
+Alternatively, set `NYANPASU_TOKEN` in the service environment; it overrides `server.token`.
+An empty token is rejected. Omitting both settings keeps local unauthenticated access available.
+Restart the service after changing the token or listening address. Use HTTPS through a reverse
+proxy when accessing the service over an untrusted network.
+
+The Dashboard asks for the token and stores it only in browser local storage. **Sign out** removes
+it and clears the displayed data. All `/api/*`, `/tasks`, `/contexts`, and plugin routes require
+`Authorization: Bearer <token>` when configured, including exports and content downloads. Tokens
+are never accepted in query strings. `/dashboard`, its static assets, and `/health` remain public.
+For example, `curl -H "Authorization: Bearer $NYANPASU_TOKEN" http://127.0.0.1:8765/tasks`.
+
+Plugin routers inherit this authentication by default. A plugin with its own authentication may
+register a router with `require_auth=False`. The GitHub reviewer does this only when
+`webhook_secret` is configured, so GitHub deliveries use their HMAC signature instead of the
+Dashboard token. Without a webhook secret, that endpoint requires the server token too.
+
 Each backend owns its native conversation history. Nyanpasu stores scheduling metadata and session references; the Dashboard reads native messages, reasoning, tool calls, edits, and results without maintaining another conversation database. Session details identify the backend and native session ID. Historical conversations remain readable after changing backends while their runtime and history files remain available.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm

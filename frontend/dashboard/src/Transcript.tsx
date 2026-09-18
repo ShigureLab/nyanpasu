@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TranscriptChanges, TranscriptEntry, TranscriptWindow } from './api-types';
 import {
-  get,
+  useApi,
   backendLabel,
   query,
   useResource,
@@ -12,6 +12,7 @@ import {
 } from './api';
 import { ContentBlock, Copy, Entry, Status } from './Entry';
 import { Time } from './Time';
+import { Download } from './Download';
 import {
   applyChanges,
   type TranscriptState,
@@ -36,6 +37,7 @@ export function Transcript({
   live: boolean;
   refresh: number;
 }) {
+  const { get } = useApi();
   const base = `/api/sessions/${session}`;
   const detail = useResource<SessionDetail>(base, live, refresh);
   const [{ entries, unread, bounds: window }, setTranscript] = useState<TranscriptState>({
@@ -391,12 +393,12 @@ export function Transcript({
         >
           Recent error
         </button>
-        <a href={`${base}/export?format=markdown`} download>
+        <Download path={`${base}/export?format=markdown`} filename={`${session}.md`}>
           Markdown ↓
-        </a>
-        <a href={`${base}/export?format=jsonl`} download>
+        </Download>
+        <Download path={`${base}/export?format=jsonl`} filename={`${session}.jsonl`}>
           JSONL ↓
-        </a>
+        </Download>
       </div>
       <form
         className="transcript-search"

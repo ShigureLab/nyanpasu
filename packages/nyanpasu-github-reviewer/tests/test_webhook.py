@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from test_github_events import pr_payload
 
-from nyanpasu.config import NyanpasuConfig
+from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, verify_signature
@@ -60,9 +61,13 @@ def test_verify_signature_rejects_invalid_signature() -> None:
 
 
 @pytest.mark.anyio
-async def test_webhook_accepts_event(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "server_token,webhook_secret", [(None, None), ("dashboard-token", None), ("dashboard-token", "webhook-secret")]
+)
+async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secret) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
+        server=ServerConfig(token=SecretStr(server_token) if server_token else None),
         enabled_plugins=("github_reviewer",),
         integrations={"github": {"token": "webhook-token"}},
         plugins={
@@ -70,6 +75,7 @@ async def test_webhook_accepts_event(tmp_path: Path) -> None:
                 "poll_enabled": False,
                 "dry_run": True,
                 "post_reviews": False,
+                "webhook_secret": webhook_secret,
                 "repos": {"ExampleOrg/ExampleRepo": {"local_path": str(tmp_path / "repo")}},
             }
         },
@@ -79,15 +85,28 @@ async def test_webhook_accepts_event(tmp_path: Path) -> None:
     registry.register(GitHubReviewerPlugin())
     app = create_app(config, agent=fake_agent, plugin_registry=registry)
     body = json.dumps(pr_payload()).encode()
+    headers = {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "delivery-1"}
+    if webhook_secret:
+        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+    elif server_token:
+        headers["Authorization"] = f"Bearer {server_token}"
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            if server_token:
+                rejected = await client.post("/plugins/github-reviewer/webhook", content=body)
+                assert rejected.status_code == 401
+                assert fake_agent.tasks == []
+            if webhook_secret:
+                rejected = await client.post(
+                    "/plugins/github-reviewer/webhook",
+                    content=body,
+                    headers={"Authorization": f"Bearer {server_token}"},
+                )
+                assert rejected.status_code == 401
             response = await client.post(
                 "/plugins/github-reviewer/webhook",
                 content=body,
-                headers={
-                    "X-GitHub-Event": "pull_request",
-                    "X-GitHub-Delivery": "delivery-1",
-                },
+                headers=headers,
             )
 
     assert response.status_code == 202

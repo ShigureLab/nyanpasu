@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from nyanpasu.agent import AgentService, PostProcessHook
+from nyanpasu.auth import require_server_token
 from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
 from nyanpasu.plugins import PluginManager, PluginRegistry, TaskPreparer
@@ -51,11 +52,15 @@ class WebPluginRuntime:
     async def run_now(self, task: AgentTask) -> TaskRunResult:
         return await self.agent.run_now(task)
 
-    def add_router(self, router: APIRouter, *, prefix: str = "", tags: list[str] | None = None) -> None:
+    def add_router(
+        self, router: APIRouter, *, prefix: str = "", tags: list[str] | None = None, require_auth: bool = True
+    ) -> None:
         if self.app is None:
             raise RuntimeError("web plugin runtime is not bound to an app")
         tag_values: list[str | Enum] | None = list(tags) if tags is not None else None
-        self.app.include_router(router, prefix=prefix, tags=tag_values)
+        self.app.include_router(
+            router, prefix=prefix, tags=tag_values, dependencies=[Depends(require_server_token)] if require_auth else []
+        )
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self.agent.add_post_process_hook(plugin_id, hook)
@@ -107,7 +112,15 @@ def create_app(
         active = info["backends"].get(resolved_config.runtime.backend, {})
         return {"connection": active.get("connection", "idle"), "diagnostics": active.get("diagnostics", []), **info}
 
-    app.include_router(dashboard_router(resolved_config, reader, runtime_info))
+    protected = APIRouter(dependencies=[Depends(require_server_token)])
+    protected.include_router(dashboard_router(resolved_config, reader, runtime_info))
+
+    @app.middleware("http")
+    async def prevent_data_caching(request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/dashboard/assets/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.exception_handler(RecordNotFound)
     async def missing_record(request, exc: RecordNotFound):
@@ -133,17 +146,17 @@ def create_app(
             "enabled_plugins": list(resolved_config.enabled_plugins or resolved_config.plugins),
         }
 
-    @app.get("/tasks")
+    @protected.get("/tasks")
     async def tasks(limit: int = 20) -> dict[str, Any]:
         store = StateStore(resolved_config.db_path)
         return {"tasks": [task.model_dump(mode="json") for task in store.recent_tasks(limit)]}
 
-    @app.get("/contexts")
+    @protected.get("/contexts")
     async def contexts() -> dict[str, Any]:
         store = StateStore(resolved_config.db_path)
         return {"contexts": [context.model_dump(mode="json") for context in store.list_contexts()]}
 
-    @app.get("/api/dashboard")
+    @protected.get("/api/dashboard")
     async def dashboard_api(recent_limit: int = 50, backlog_limit: int = 100) -> dict[str, Any]:
         store = StateStore(resolved_config.db_path)
         snapshot = store.dashboard_snapshot(
@@ -156,6 +169,7 @@ def create_app(
     async def dashboard_page() -> HTMLResponse:
         return HTMLResponse(dashboard_html())
 
+    app.include_router(protected)
     return app
 
 

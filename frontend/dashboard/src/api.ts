@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createApi } from './api-client';
 import type { Coverage } from './api-types';
 
 export interface Page<T> {
@@ -94,16 +95,8 @@ export interface ContentPage {
   recorded_bytes: number;
 }
 
-export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, { signal, cache: 'no-store' });
-  if (!response.ok) {
-    const message = (await response.json().catch(() => ({ detail: response.statusText }))) as {
-      detail?: unknown;
-    };
-    throw new Error(`${response.status}: ${String(message.detail ?? response.statusText)}`);
-  }
-  return response.json() as Promise<T>;
-}
+export const ApiContext = createContext(createApi(''));
+export const useApi = () => useContext(ApiContext);
 
 export function query(
   path: string,
@@ -121,6 +114,7 @@ export function useResource<T>(
   refresh: number,
   interval = 5000,
 ) {
+  const { get } = useApi();
   const [state, setState] = useState<{
     key: string | null;
     data?: T;
@@ -157,7 +151,7 @@ export function useResource<T>(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [path, live, refresh, interval]);
+  }, [get, path, live, refresh, interval]);
   return state.key === path
     ? state
     : { key: path, loading: true, data: undefined, error: undefined, received: undefined };

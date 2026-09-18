@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 DEFAULT_HOME = Path("~/.nyanpasu")
 CONFIG_FILE_NAME = "config.toml"
@@ -102,10 +103,18 @@ class ClaudeConfig(ProcessConfig):
 
 
 class ServerConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     host: str = "127.0.0.1"
     port: int = 8765
+    token: SecretStr | None = Field(default=None, repr=False)
+
+    @field_validator("token")
+    @classmethod
+    def _token(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", value.get_secret_value()):
+            raise ValueError("server token must be a nonempty bearer token without whitespace")
+        return value
 
 
 class RuntimeConfig(BaseModel):
@@ -200,6 +209,8 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
         server["host"] = host
     if port := os.getenv("NYANPASU_PORT"):
         server["port"] = int(port)
+    if (token := os.getenv("NYANPASU_TOKEN")) is not None:
+        server["token"] = token
     if server:
         data["server"] = server
     codex = dict(data.get("codex") or {})
