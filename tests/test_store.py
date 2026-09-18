@@ -146,7 +146,7 @@ def test_mark_task_done_roundtrip(tmp_path: Path) -> None:
     assert recent[0].thread_id == "thread-1"
 
 
-def test_mark_task_interrupted_keeps_dedupe_and_marks_failed(tmp_path: Path) -> None:
+def test_mark_task_interrupted_keeps_dedupe_and_requeues(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     task = _task("task-1")
     assert store.record_task(task)
@@ -154,7 +154,7 @@ def test_mark_task_interrupted_keeps_dedupe_and_marks_failed(tmp_path: Path) -> 
 
     store.mark_task_interrupted("task-1", "shutdown")
 
-    assert store.task_status("task-1") == "failed"
+    assert store.task_status("task-1") == "queued"
     assert not store.record_task(task)
     recent = store.recent_tasks()
     assert recent[0].task_id == "task-1"

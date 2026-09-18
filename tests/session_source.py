@@ -17,6 +17,9 @@ class MemorySessionSource:
     async def read_session(self, thread_id: str):
         return await CodexHistorySource(self).read_session(thread_id)
 
+    async def read_metadata(self, thread_id: str):
+        return await CodexHistorySource(self).read_metadata(thread_id)
+
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         self.calls.append(("read", thread_id, None))
         return {"id": thread_id, "createdAt": 1, "cliVersion": "test", **self.metadata}

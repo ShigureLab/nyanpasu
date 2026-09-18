@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from nyanpasu.store import TASK_RUNS
@@ -103,7 +105,7 @@ class TranscriptReader:
             self.sources(tasks[0]["session_backend"]), tasks[0]["session_thread_id"], task_by_turn
         )
 
-    def sessions(
+    async def sessions(
         self, q: str = "", state: str = "", context: str = "", offset: int = 0, limit: int = 50
     ) -> dict[str, Any]:
         with self.connect() as conn:
@@ -111,7 +113,7 @@ class TranscriptReader:
         groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             groups.setdefault(row["session_id"], []).append(dict(row))
-        items = [self._session(session_id, tasks) for session_id, tasks in groups.items()]
+        items = await asyncio.gather(*(self._session(session_id, tasks) for session_id, tasks in groups.items()))
         items = [
             item
             for item in items
@@ -119,7 +121,7 @@ class TranscriptReader:
             and (not state or item["state"] == state)
             and (not context or context in item["context_key"])
         ]
-        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        items.sort(key=lambda item: (datetime.fromisoformat(item["updated_at"]), item["session_id"]), reverse=True)
         return {
             "items": items[offset : offset + limit],
             "total": len(items),
@@ -127,9 +129,19 @@ class TranscriptReader:
             "has_more": offset + limit < len(items),
         }
 
-    @staticmethod
-    def _session(session_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _session(
+        self, session_id: str, tasks: list[dict[str, Any]], *, include_runtime: bool = False
+    ) -> dict[str, Any]:
         latest = tasks[-1]
+        updated_at = max(task["updated_at"] for task in tasks)
+        runtime: dict[str, Any] = {"runtime": None}
+        try:
+            metadata = await self.sources(latest["session_backend"]).read_metadata(latest["session_thread_id"])
+            if metadata.updated_at is not None:
+                updated_at = max(updated_at, datetime.fromisoformat(metadata.updated_at).timestamp())
+            runtime["runtime"] = redact(metadata.model_dump())
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            runtime["history_error"] = str(exc)
         return {
             "session_id": session_id,
             "thread_id": latest["session_thread_id"],
@@ -138,17 +150,18 @@ class TranscriptReader:
             "backend": latest["session_backend"],
             "origin": "native",
             "created_at": iso_time(tasks[0]["created_at"]),
-            "updated_at": iso_time(max(task["updated_at"] for task in tasks)),
+            "updated_at": iso_time(updated_at),
             "state": latest["status"],
             "execution_uncertain": latest["status"] == "running" and (latest["lease_expires_at"] or 0) < time.time(),
             "task_count": len(tasks),
             "coverage": Coverage().model_dump(),
             "previous_session_id": None,
+            **(runtime if include_runtime else {}),
         }
 
     async def session(self, session_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
         tasks = self._tasks(session_id)
-        data = self._session(session_id, tasks)
+        data = await self._session(session_id, tasks, include_runtime=True)
         data["tasks"] = []
         for row in tasks[offset : offset + limit]:
             task = json.loads(row["task_json"])
@@ -166,12 +179,6 @@ class TranscriptReader:
                 }
             )
         data["has_more_tasks"] = offset + limit < len(tasks)
-        try:
-            history = await self.sources(tasks[0]["session_backend"]).read_session(tasks[0]["session_thread_id"])
-            data["runtime"] = history.metadata.model_dump()
-        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            data["runtime"] = None
-            data["history_error"] = str(exc)
         return redact(data)
 
     @staticmethod

@@ -140,6 +140,8 @@ Environment commands run once when the backend is first used, with the service e
 
 Restart Nyanpasu after configuration changes. Changing `runtime.backend` makes the next task in an existing context start a new native session, retaining its context key and workspace. Tasks resume the current session while the backend stays the same; switching back also creates a new session. Previous conversations remain available in history and are not migrated. Keep the original runtime and history files available to read them.
 
+Service restarts automatically recover queued and interrupted tasks. An interrupted task continues in its original backend and native session, preserving its workspace and execution instructions; new tasks use the configured backend. After an unclean exit, recovery waits for any remaining context lease to expire. Completed and failed tasks are not retried, and tasks from disabled plugins remain queued. Recovery starts a continuation turn and asks the agent to check saved history and existing results before repeating actions.
+
 ## Run
 
 For direct Uvicorn use, load the application factory with `uvicorn nyanpasu.web:app_from_env --factory`.

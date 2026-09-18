@@ -57,6 +57,19 @@ test('session list scrolls across pages and refreshes the loaded range without d
   await expect(rows).toHaveCount(121);
   await expect(rows.last()).toContainText('Session 119');
 
+  const updated = {
+    ...sessions.at(-1)!,
+    created_at: '2026-09-01T00:00:00Z',
+    updated_at: '2026-09-18T08:30:00Z',
+  };
+  sessions = [updated, ...sessions.slice(0, -1)];
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(rows.first()).toContainText('Session 119');
+  await expect(rows.first().locator('time')).toHaveAttribute('datetime', '2026-09-18T08:30:00.000Z');
+  await expect(rows.first().locator('time')).toHaveAttribute('title', /^Updated:/);
+  await expect(rows).toHaveCount(121);
+  await expect(page).toHaveURL(/session=fixture-thread/);
+
   fail = true;
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.locator('.session-index .error')).toContainText('Session list unavailable');

@@ -333,7 +333,7 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
 
 
 @pytest.mark.anyio
-async def test_agent_shutdown_marks_running_tasks_failed_and_releases_lease(tmp_path: Path) -> None:
+async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path: Path) -> None:
     config = _config(tmp_path, concurrency=1)
     store = StateStore(config.db_path)
     started = asyncio.Event()
@@ -352,11 +352,193 @@ async def test_agent_shutdown_marks_running_tasks_failed_and_releases_lease(tmp_
 
     await agent.shutdown()
 
-    assert store.task_status("task-1") == "failed"
+    assert store.task_status("task-1") == "queued"
     assert store.get_context_lease("demo:1") is None
     recent = store.recent_tasks()
     assert recent[0].task_id == "task-1"
-    assert recent[0].error == "task interrupted by agent shutdown"
+    assert recent[0].error == "Service stopped; awaiting recovery"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("backend", ["codex", "claude"])
+@pytest.mark.parametrize("workspace_policy", ["context", "event_snapshot"])
+async def test_restart_resumes_session_in_place_then_runs_queued_task(
+    tmp_path: Path, backend, workspace_policy
+) -> None:
+    config = _config(tmp_path, concurrency=1)
+    config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"backend": backend})})
+    started = asyncio.Event()
+
+    class InterruptedBackend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            await super().run_turn(**kwargs)
+            (kwargs["cwd"] / "unfinished.txt").write_text("work in progress")
+            started.set()
+            await asyncio.Event().wait()
+
+    first_worktrees = FakeWorktrees(tmp_path / "worktrees")
+    first = AgentService(
+        config, worktrees=first_worktrees, backends=fake_backends(config, InterruptedBackend(), backend)
+    )
+    request = _task("interrupted").model_copy(
+        update={"workspace_policy": workspace_policy, "developer_instructions": "Keep the original role."}
+    )
+    await first.submit(request)
+    await started.wait()
+    await first.submit(_task("queued"))
+    await first.shutdown()
+    assert [task.task_id for task in first.store.unfinished_tasks()] == ["interrupted", "queued"]
+    assert first.store.task_run("interrupted").thread_id == "thread-1"
+    assert first.store.task_run("interrupted").backend == backend
+
+    class ResumedBackend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            assert (kwargs["cwd"] / "unfinished.txt").read_text() == "work in progress"
+            return await super().run_turn(**kwargs)
+
+    resumed_backend = ResumedBackend()
+    second_worktrees = FakeWorktrees(tmp_path / "worktrees")
+    second_worktrees.prepare_context = Mock(wraps=second_worktrees.prepare_context)
+    second = AgentService(config, worktrees=second_worktrees, backends=fake_backends(config, resumed_backend, backend))
+    await second.startup()
+    await second.startup()  # Repeated startup must not enqueue the same task twice.
+    await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
+    await second.shutdown()
+
+    assert [thread for _, thread in resumed_backend.calls] == ["thread-1", "thread-1"]
+    assert resumed_backend.instructions[0] == "Keep the original role."
+    assert "Continue from the saved conversation" in resumed_backend.prompts[0]
+    assert "Continue from the saved conversation" not in resumed_backend.prompts[1]
+    assert second_worktrees.event_paths == []  # The interrupted snapshot was reused, not recreated.
+    assert [call.args[0].task_id for call in second_worktrees.prepare_context.call_args_list] == ["queued"]
+    assert second.store.task_status("interrupted") == second.store.task_status("queued") == "completed"
+    assert second.store.task_run("interrupted").error is None
+    assert len(second.store.recent_tasks()) == 2
+
+
+@pytest.mark.anyio
+async def test_recovery_waits_for_live_owner_and_does_not_replay_completed_work(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    started, release = asyncio.Event(), asyncio.Event()
+    owner = AgentService(
+        config,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=fake_backends(config, SlowCodex(started, release)),
+    )
+    candidate_backend = FakeCodex()
+    candidate = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, candidate_backend)
+    )
+    await owner.submit(_task("task"))
+    await started.wait()
+    await candidate.startup()
+    await asyncio.sleep(0.03)
+    assert not candidate_backend.calls
+    await candidate.shutdown()
+    assert owner.store.task_status("task") == "running"
+    assert owner.store.task_run("task").error is None
+    await candidate.startup()
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*owner._tasks, *candidate._tasks), 2)
+    assert owner.store.task_status("task") == "completed"
+    assert not candidate_backend.calls
+    await owner.shutdown()
+    await candidate.shutdown()
+
+
+@pytest.mark.anyio
+async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backend(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    state = StateStore(config.db_path)
+    task = _task("orphan")
+    state.record_task(task, default_backend="claude")
+    state.mark_task_running(task.task_id, None, "claude")
+    workspace = tmp_path / "preserved"
+    workspace.mkdir()
+    context = AgentContext(
+        backend="claude",
+        context_key=task.context_key,
+        thread_id="original-session",
+        session_worktree=workspace,
+        workspace_key=None,
+        revision=None,
+    )
+    state.bind_task_execution(task.task_id, "original-session", "old-turn", "claude", context=context)
+    state.try_acquire_context_lease(task.context_key, owner_id="previous-process", task_id=task.task_id, ttl_seconds=60)
+    backend = FakeCodex()
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "unused"), backends=fake_backends(config, backend, "claude")
+    )
+    await agent.startup()
+    await asyncio.sleep(0.03)
+    assert not backend.calls
+    with state._connect() as conn:
+        conn.execute("UPDATE context_leases SET expires_at=0")
+    await asyncio.wait_for(asyncio.gather(*agent._tasks), 2)
+    assert backend.calls == [(workspace, "original-session")]
+    assert state.task_run(task.task_id).backend == "claude"
+    assert state.task_status(task.task_id) == "completed"
+    await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_service_startup_recovers_only_unfinished_tasks(tmp_path: Path) -> None:
+    from nyanpasu.plugins import PluginRegistry
+    from nyanpasu.web import create_app
+
+    config = _config(tmp_path)
+    backend = FakeCodex()
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
+    await agent.run_now(_task("completed"))
+    agent.store.record_task(_task("failed"))
+    agent.store.mark_task_failed("failed", "real backend failure")
+    agent.store.record_task(_task("queued"))
+    app = create_app(config, agent=agent, plugin_registry=PluginRegistry())
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(asyncio.gather(*agent._tasks), 2)
+    assert len(backend.calls) == 2
+    assert agent.store.task_status("queued") == "completed"
+    assert agent.store.task_status("failed") == "failed"
+
+
+@pytest.mark.anyio
+async def test_restart_keeps_prepared_request_and_does_not_run_coalesced_children(tmp_path: Path) -> None:
+    config = _config(tmp_path, concurrency=1).model_copy(update={"enabled_plugins": ("demo",)})
+    started = asyncio.Event()
+
+    class InterruptedBackend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            await super().run_turn(**kwargs)
+            started.set()
+            await asyncio.Event().wait()
+
+    first = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, InterruptedBackend())
+    )
+    first.add_task_preparer("demo", _prepare_demo)
+    first._semaphore = asyncio.Semaphore(0)
+    await first.submit(_merge_task("parent"))
+    await first.submit(_merge_task("child"))
+    first._semaphore.release()
+    await started.wait()
+    await first.shutdown()
+    backend = FakeCodex()
+    second = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
+
+    async def should_not_prepare(*args):
+        raise AssertionError("A started task must use its persisted execution request")
+
+    second.add_task_preparer("demo", should_not_prepare)
+    await second.startup()
+    await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
+    await second.shutdown()
+    assert len(backend.calls) == 1
+    assert backend.prompts[0].endswith("Task request:\nHandle parent, child")
+    assert second.store.task_status("parent") == second.store.task_status("child") == "completed"
 
 
 @pytest.mark.anyio

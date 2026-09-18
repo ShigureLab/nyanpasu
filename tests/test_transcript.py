@@ -35,7 +35,7 @@ async def test_sessions_group_native_threads_and_read_every_source_page(history)
         state.record_task(AgentTask(task_id=task_id, context_key="test:1", action=TaskAction.RUN, prompt="next"))
         state.bind_task_execution(task_id, "thread", f"turn-{index}")
         source.turns.append(turn(f"turn-{index}", tool(f"item-{index}", str(index))))
-    assert reader.sessions()["total"] == 1
+    assert (await reader.sessions())["total"] == 1
     assert (await reader.session("thread"))["task_count"] == 4
     window = TranscriptWindow.model_validate(await reader.window("thread"))
     assert window.session_id == "thread"

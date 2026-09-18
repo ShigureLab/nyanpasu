@@ -26,6 +26,15 @@ class ClaudeHistorySource:
         return await to_thread.run_sync(self._read, thread_id)
 
     def _read(self, thread_id: str) -> SessionHistory:
+        return claude_history(str(UUID(thread_id)), self._records(thread_id))
+
+    async def read_metadata(self, thread_id: str) -> SessionMetadata:
+        return await to_thread.run_sync(self._read_metadata, thread_id)
+
+    def _read_metadata(self, thread_id: str) -> SessionMetadata:
+        return claude_metadata(str(UUID(thread_id)), conversation_chain(self._records(thread_id)))
+
+    def _records(self, thread_id: str) -> list[dict[str, Any]]:
         session_id = str(UUID(thread_id))
         paths = list(self.projects.glob(f"*/{session_id}.jsonl"))
         if len(paths) != 1:
@@ -43,7 +52,7 @@ class ClaudeHistorySource:
                     raise ValueError("Claude transcript record must be an object")
                 if record.get("sessionId") == session_id:
                     records.append(record)
-        return claude_history(session_id, records)
+        return records
 
 
 def conversation_chain(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -221,14 +230,7 @@ def history_items(original: dict, results: dict[str, tuple[dict, dict]], cwd: st
     return items
 
 
-def claude_history(session_id: str, records: list[dict[str, Any]]) -> SessionHistory:
-    chain = conversation_chain(records)
-    results = {
-        block["tool_use_id"]: (block, record)
-        for record in chain
-        for block in message_blocks(record)
-        if block.get("type") == "tool_result"
-    }
+def claude_metadata(session_id: str, chain: list[dict[str, Any]]) -> SessionMetadata:
     metadata = {key: next((r.get(key) for r in reversed(chain) if r.get(key)), None) for key in ("cwd", "version")}
     model = next(
         (
@@ -239,6 +241,26 @@ def claude_history(session_id: str, records: list[dict[str, Any]]) -> SessionHis
         None,
     )
     timestamps = [r["timestamp"] for r in chain if r.get("timestamp")]
+    return SessionMetadata(
+        id=session_id,
+        backend="claude",
+        cwd=metadata["cwd"],
+        cli_version=metadata["version"],
+        model=model,
+        created_at=timestamps[0] if timestamps else None,
+        updated_at=timestamps[-1] if timestamps else None,
+    )
+
+
+def claude_history(session_id: str, records: list[dict[str, Any]]) -> SessionHistory:
+    chain = conversation_chain(records)
+    metadata = claude_metadata(session_id, chain)
+    results = {
+        block["tool_use_id"]: (block, record)
+        for record in chain
+        for block in message_blocks(record)
+        if block.get("type") == "tool_result"
+    }
     turns: dict[str, list[HistoryItem]] = {}
     turn_id = None
     for record in chain:
@@ -254,16 +276,8 @@ def claude_history(session_id: str, records: list[dict[str, Any]]) -> SessionHis
             turn_id = record["uuid"]
         if turn_id is None:
             turn_id = record["uuid"]
-        turns.setdefault(turn_id, []).extend(history_items(record, results, metadata["cwd"]))
+        turns.setdefault(turn_id, []).extend(history_items(record, results, metadata.cwd))
     return SessionHistory(
-        metadata=SessionMetadata(
-            id=session_id,
-            backend="claude",
-            cwd=metadata["cwd"],
-            cli_version=metadata["version"],
-            model=model,
-            created_at=timestamps[0] if timestamps else None,
-            updated_at=timestamps[-1] if timestamps else None,
-        ),
+        metadata=metadata,
         turns=tuple(HistoryTurn(id=key, items=tuple(items)) for key, items in turns.items() if items),
     )

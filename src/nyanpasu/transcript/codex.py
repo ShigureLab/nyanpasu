@@ -53,6 +53,23 @@ class CodexHistorySource:
         self.client = client
 
     @staticmethod
+    def _metadata(thread: dict[str, Any]) -> SessionMetadata:
+        return SessionMetadata(
+            id=thread["id"],
+            backend="codex",
+            cwd=thread.get("cwd"),
+            model=thread.get("model"),
+            provider=thread.get("modelProvider"),
+            reasoning_effort=thread.get("reasoningEffort"),
+            cli_version=thread.get("cliVersion"),
+            created_at=iso_time(thread["createdAt"]) if thread.get("createdAt") is not None else None,
+            updated_at=iso_time(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
+        )
+
+    async def read_metadata(self, thread_id: str) -> SessionMetadata:
+        return self._metadata(await self.client.read_thread(thread_id))
+
+    @staticmethod
     def _item(item: dict, times: dict) -> HistoryItem:
         safe = redact(item)
         return HistoryItem(id=item["id"], presentation=item_snapshot(safe), raw=safe, redacted=safe != item, **times)
@@ -69,17 +86,7 @@ class CodexHistorySource:
                 break
         times = await to_thread.run_sync(item_times, thread)
         return SessionHistory(
-            metadata=SessionMetadata(
-                id=thread_id,
-                backend="codex",
-                cwd=thread.get("cwd"),
-                model=thread.get("model"),
-                provider=thread.get("modelProvider"),
-                reasoning_effort=thread.get("reasoningEffort"),
-                cli_version=thread.get("cliVersion"),
-                created_at=iso_time(thread["createdAt"]) if thread.get("createdAt") is not None else None,
-                updated_at=iso_time(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
-            ),
+            metadata=self._metadata(thread),
             turns=tuple(
                 HistoryTurn(
                     id=turn["id"],

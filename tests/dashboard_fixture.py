@@ -156,7 +156,16 @@ def fixture_app():
         ("claude-followup-task", "claude-followup", "Continue the Claude Code check"),
     ]:
         state.record_task(AgentTask(task_id=task_id, action=TaskAction.RUN, context_key="demo:claude", prompt=title))
-        state.bind_task_execution(task_id, SESSION, turn_id, "claude")
+        state.mark_task_done(
+            TaskRunResult(
+                task_id=task_id,
+                status=TaskStatus.COMPLETED,
+                backend="claude",
+                thread_id=SESSION,
+                turn_id=turn_id,
+                final_message="",
+            )
+        )
     claude_source = ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(claude_home)})
     app = create_app(config, session_sources={"codex": source, "claude": claude_source}.__getitem__)
     app.state.agent.backends.get("codex").execution.diagnostics.extend(

@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 
 class AgentBackend(Protocol):
+    async def startup(self) -> None: ...
+
     async def submit(self, task: AgentTask) -> dict[str, Any]: ...
 
     async def run_now(self, task: AgentTask) -> TaskRunResult: ...
@@ -85,6 +87,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         await plugin_manager.setup()
         try:
+            await resolved_agent.startup()
             yield
         finally:
             await plugin_manager.shutdown()

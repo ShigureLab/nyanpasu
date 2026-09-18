@@ -26,6 +26,9 @@ class FakeAgent:
         self.tasks.append(task)
         raise NotImplementedError
 
+    async def startup(self) -> None:
+        return None
+
     async def shutdown(self) -> None:
         return None
 

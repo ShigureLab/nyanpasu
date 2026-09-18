@@ -114,7 +114,14 @@ async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Pat
         assert start_argv[start_argv.index("--session-id") + 1] == first.thread_id
         assert resume_argv[resume_argv.index("--resume") + 1] == first.thread_id
         old_history = MemorySessionSource([turn("old-turn", tool("old-tool", "old conversation"))])
-        app = create_app(configured, agent=agent, session_sources={"codex": old_history}.__getitem__)
+        app = create_app(
+            configured,
+            agent=agent,
+            session_sources={
+                "codex": old_history,
+                "claude": ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(tmp_path / "claude")}),
+            }.__getitem__,
+        )
         async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
             sessions = (await client.get("/api/sessions")).json()["items"]
             assert {row["session_id"] for row in sessions} == {"old-codex", "claude:" + first.thread_id}

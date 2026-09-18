@@ -172,7 +172,7 @@ class StateStore:
             row = conn.execute(
                 """
                 SELECT task_id, action, task_json, created_at, backend FROM task_runs
-                WHERE context_key = ? AND status = ? AND task_id <> ?
+                WHERE context_key = ? AND status = ? AND task_id <> ? AND thread_id IS NULL
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 (task.context_key, TaskStatus.QUEUED.value, task.task_id),
@@ -205,22 +205,28 @@ class StateStore:
 
     def update_task_input(self, task: AgentTask) -> None:
         with self._connect() as conn:
-            original = json.loads(
-                conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task.task_id,)).fetchone()[0]
-            )
-            # Keep the scheduler request; the runtime owns the resulting conversation.
-            prepared = task.model_dump(mode="json", exclude={"prompt", "developer_instructions", "instruction_docs"})
+            # Persist the execution request so an interrupted turn can resume with the same instructions.
             conn.execute(
                 "UPDATE task_runs SET task_json = ?, action = ?, updated_at = ? WHERE task_id = ?",
-                (json_dumps({**original, **prepared}), task.action.value, time.time(), task.task_id),
+                (json_dumps(_task_to_json(task)), task.action.value, time.time(), task.task_id),
             )
 
-    def bind_task_execution(self, task_id: str, thread_id: str, turn_id: str | None, backend: str = "codex") -> None:
+    def bind_task_execution(
+        self,
+        task_id: str,
+        thread_id: str,
+        turn_id: str | None,
+        backend: str = "codex",
+        *,
+        context: AgentContext | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE task_runs SET backend=?,thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
                 (backend, thread_id, turn_id, time.time(), task_id),
             )
+            if context is not None:
+                self._upsert_context(conn, replace_context(context, thread_id=thread_id))
 
     def mark_task_done(self, result: TaskRunResult) -> None:
         self._update_task(
@@ -237,7 +243,31 @@ class StateStore:
         self._update_task(task_id, TaskStatus.FAILED, error=error)
 
     def mark_task_interrupted(self, task_id: str, error: str) -> None:
-        self._update_task(task_id, TaskStatus.FAILED, error=error)
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE task_runs SET status='queued', error=?, updated_at=?
+                   WHERE task_id=? AND status IN ('queued', 'running')""",
+                (error, time.time(), task_id),
+            )
+
+    def unfinished_tasks(self) -> list[AgentTask]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT task_json FROM task_runs
+                   WHERE status IN ('queued', 'running') AND coalesced_into IS NULL
+                   ORDER BY created_at, task_id"""
+            ).fetchall()
+        return [AgentTask.model_validate(json.loads(row["task_json"])) for row in rows]
+
+    def task_run(self, task_id: str) -> TaskRunSummary:
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT * FROM ({TASK_RUNS}) WHERE task_id=?", (task_id,)).fetchone()
+        return _task_summary_from_row(row)
+
+    def task_request(self, task_id: str) -> AgentTask:
+        with self._connect() as conn:
+            row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        return AgentTask.model_validate(json.loads(row["task_json"]))
 
     def task_status(self, task_id: str) -> str | None:
         with self._connect() as conn:
@@ -441,33 +471,37 @@ class StateStore:
         )
 
     def upsert_context(self, context: AgentContext) -> None:
-        now = time.time()
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO agent_contexts (
-                    context_key, backend, thread_id, session_worktree, workspace_key, revision, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(context_key) DO UPDATE SET
-                    backend = excluded.backend,
-                    thread_id = excluded.thread_id,
-                    session_worktree = excluded.session_worktree,
-                    workspace_key = excluded.workspace_key,
-                    revision = excluded.revision,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    context.context_key,
-                    context.backend,
-                    context.thread_id,
-                    str(context.session_worktree) if context.session_worktree else None,
-                    context.workspace_key,
-                    context.revision,
-                    now,
-                    now,
-                ),
+            self._upsert_context(conn, context)
+
+    @staticmethod
+    def _upsert_context(conn: sqlite3.Connection, context: AgentContext) -> None:
+        now = time.time()
+        conn.execute(
+            """
+            INSERT INTO agent_contexts (
+                context_key, backend, thread_id, session_worktree, workspace_key, revision, created_at, updated_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(context_key) DO UPDATE SET
+                backend = excluded.backend,
+                thread_id = excluded.thread_id,
+                session_worktree = excluded.session_worktree,
+                workspace_key = excluded.workspace_key,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            """,
+            (
+                context.context_key,
+                context.backend,
+                context.thread_id,
+                str(context.session_worktree) if context.session_worktree else None,
+                context.workspace_key,
+                context.revision,
+                now,
+                now,
+            ),
+        )
 
     def delete_context(self, context_key: str) -> AgentContext | None:
         context = self.get_context(context_key)
@@ -583,8 +617,8 @@ class StateStore:
         turn_id: str | None = None,
         error: str | None = None,
     ) -> None:
-        updates = ["status = ?", "updated_at = ?"]
-        values: list[Any] = [status.value, time.time()]
+        updates = ["status = ?", "updated_at = ?", "error = ?"]
+        values: list[Any] = [status.value, time.time(), error]
         if backend is not None:
             updates.append("backend = ?")
             values.append(backend)
@@ -597,9 +631,6 @@ class StateStore:
         if turn_id is not None:
             updates.append("turn_id = ?")
             values.append(turn_id)
-        if error is not None:
-            updates.append("error = ?")
-            values.append(error)
         values.append(task_id)
         with self._connect() as conn:
             conn.execute(f"UPDATE task_runs SET {', '.join(updates)} WHERE task_id = ?", values)

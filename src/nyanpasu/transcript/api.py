@@ -41,8 +41,8 @@ def dashboard_router(
         }
 
     @router.get("/sessions")
-    def sessions(q: Search = "", state: str = "", context: str = "", offset: Offset = 0, limit: PageSize = 50):
-        return reader.sessions(q, state, context, offset, limit)
+    async def sessions(q: Search = "", state: str = "", context: str = "", offset: Offset = 0, limit: PageSize = 50):
+        return await reader.sessions(q, state, context, offset, limit)
 
     @router.get("/sessions/{session_id}")
     async def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):

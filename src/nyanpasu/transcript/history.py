@@ -53,4 +53,6 @@ class SessionHistory(BaseModel):
 
 
 class SessionSource(Protocol):
+    async def read_metadata(self, thread_id: str) -> SessionMetadata: ...
+
     async def read_session(self, thread_id: str) -> SessionHistory: ...
