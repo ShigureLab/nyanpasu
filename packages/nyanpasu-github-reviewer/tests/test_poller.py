@@ -863,6 +863,73 @@ def test_event_from_pr_timeline_item_parses_review_thread_replies() -> None:
     assert event.raw["nyanpasu"]["trigger"] == "review_thread_comment"
 
 
+def _timeline_review_request_item(event_id: int = 300, *, created_at: str = "2026-05-30T10:05:00Z") -> dict[str, Any]:
+    return {
+        "id": event_id,
+        "node_id": f"RRE_{event_id}",
+        "event": "review_requested",
+        "actor": {"login": "maintainer"},
+        "requested_reviewer": {"login": "review-bot"},
+        "created_at": created_at,
+    }
+
+
+@pytest.mark.parametrize("reviewer", ["review-bot", "REVIEW-BOT", "someone-else", None])
+def test_event_from_pr_timeline_item_parses_review_requests(reviewer) -> None:
+    raw = _timeline_review_request_item()
+    raw["requested_reviewer"] = {"login": reviewer} if reviewer else None
+    if reviewer is None:
+        raw["requested_team"] = {"slug": "review-team"}
+    event = event_from_pr_timeline_item(
+        raw, _snapshot_from_test_pr(), delivery_id="timeline-1", agent_login="review-bot"
+    )
+
+    assert event is not None
+    assert event.github_event == "pull_request"
+    if reviewer in {"review-bot", "REVIEW-BOT"}:
+        assert event.action is ReviewAction.REVIEW
+        assert event.after_sha == _snapshot_from_test_pr().head_sha
+        assert event.raw["nyanpasu"]["trigger"] == "review_requested"
+        assert event.raw["nyanpasu"]["actor"] == "maintainer"
+        assert event.raw["nyanpasu"]["source"] == "pr_timeline_poll"
+    else:
+        assert event.action is ReviewAction.IGNORED
+
+
+@pytest.mark.anyio
+async def test_pr_timeline_poll_dispatches_repeated_review_requests_on_same_head(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    pull = _pull_request_api_item()
+    timeline: list[dict[str, Any]] = []
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: [pull],
+        list_pull_request_timeline=lambda *_: timeline,
+    )
+    await poller.run_once()
+
+    timeline.append(_timeline_review_request_item())
+    pull["updated_at"] = "2026-05-30T10:05:00Z"
+    assert (await poller.run_once()).submitted == 1
+    # Another PR update rereads the timeline without replaying the request.
+    pull["updated_at"] = "2026-05-30T10:06:00Z"
+    assert (await poller.run_once()).submitted == 0
+
+    timeline.append({"id": 301, "event": "review_request_removed", "created_at": "2026-05-30T10:07:00Z"})
+    timeline.append(_timeline_review_request_item(302, created_at="2026-05-30T10:08:00Z"))
+    pull["updated_at"] = "2026-05-30T10:08:00Z"
+    assert (await poller.run_once()).submitted == 1
+    assert len(agent.events) == 2
+    assert all(event.raw["nyanpasu"]["trigger"] == "review_requested" for event in agent.events)
+    assert agent.events[0].after_sha == agent.events[1].after_sha == pull["head"]["sha"]
+    assert agent.events[0].delivery_id != agent.events[1].delivery_id
+
+
 @pytest.mark.anyio
 async def test_pr_state_poll_does_not_dedupe_distinct_edited_events_on_same_head(tmp_path: Path) -> None:
     config = _config(tmp_path)

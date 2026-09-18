@@ -132,7 +132,7 @@ class TranscriptReader:
     async def _session(
         self, session_id: str, tasks: list[dict[str, Any]], *, include_runtime: bool = False
     ) -> dict[str, Any]:
-        latest = tasks[-1]
+        latest = next(task for task in reversed(tasks) if not task["coalesced_into"])
         updated_at = max(task["updated_at"] for task in tasks)
         runtime: dict[str, Any] = {"runtime": None}
         try:

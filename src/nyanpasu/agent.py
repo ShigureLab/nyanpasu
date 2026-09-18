@@ -159,17 +159,17 @@ class AgentService:
         self._task_preparers[plugin_id] = preparer
 
     async def _run_task_guarded(self, task: AgentTask) -> None:
-        async with self._semaphore:
-            try:
-                await self._run_task(task)
-            except asyncio.CancelledError:
-                logger.info("task cancelled task_id={} context={}", task.task_id, task.context_key)
-                raise
-            except Exception:
-                logger.exception("task failed task_id={} context={}", task.task_id, task.context_key)
+        try:
+            await self._run_task(task)
+        except asyncio.CancelledError:
+            logger.info("task cancelled task_id={} context={}", task.task_id, task.context_key)
+            raise
+        except Exception:
+            logger.exception("task failed task_id={} context={}", task.task_id, task.context_key)
 
     async def _run_task(self, task: AgentTask) -> TaskRunResult | None:
-        async with self._context_execution(task):
+        # Waiting for a busy context must not reserve capacity needed by other contexts.
+        async with self._context_execution(task), self._semaphore:
             record = await to_thread.run_sync(self.store.task_run, task.task_id)
             if record.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
                 return None  # Another worker finished it while we waited for its lease.

@@ -878,6 +878,12 @@ def event_from_pr_timeline_item(
     agent_login: str | None,
 ) -> ReviewEvent | None:
     event_type = str(raw_item.get("event") or "")
+    if event_type == "review_requested":
+        payload = _base_pr_payload(snapshot, event_type)
+        payload["requested_reviewer"] = raw_item.get("requested_reviewer")
+        payload["sender"] = raw_item.get("actor")
+        payload["nyanpasu"] = _timeline_context(raw_item, source="pr_timeline_poll")
+        return parse_github_event("pull_request", delivery_id, payload, agent_login=agent_login)
     if _timeline_item_is_issue_comment(raw_item):
         payload = _issue_comment_payload_from_timeline_item(
             raw_item, snapshot, action=_timeline_comment_action(raw_item)

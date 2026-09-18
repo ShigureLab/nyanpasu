@@ -295,6 +295,66 @@ async def test_agent_queues_one_followup_while_context_is_running_and_coalesces_
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("blocked_by", ["context_lock", "context_lease"])
+async def test_waiting_context_does_not_consume_execution_capacity(tmp_path: Path, blocked_by: str) -> None:
+    config = _config(tmp_path, concurrency=2 if blocked_by == "context_lock" else 1)
+    started = {name: asyncio.Event() for name in ("first", "waiting", "independent", "overflow")}
+    release = {name: asyncio.Event() for name in started}
+
+    class GatedCodex(FakeCodex):
+        async def run_turn(self, **kwargs):
+            name = kwargs["prompt"]
+            result = await super().run_turn(**kwargs)
+            started[name].set()
+            await release[name].wait()
+            return result
+
+    agent = AgentService(
+        config,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=fake_backends(config, GatedCodex()),
+    )
+
+    async def submit(name: str, context_key: str = "demo:1") -> None:
+        await agent.submit(_task(name, context_key=context_key).model_copy(update={"prompt": name}))
+
+    try:
+        if blocked_by == "context_lock":
+            await submit("first")
+            await asyncio.wait_for(started["first"].wait(), 2)
+        else:
+            assert agent.store.try_acquire_context_lease(
+                "demo:1", owner_id="another-worker", task_id="first", ttl_seconds=60
+            )
+        await submit("waiting")
+        await submit("independent", "demo:2")
+        await asyncio.wait_for(started["independent"].wait(), 2)
+        assert not started["waiting"].is_set()
+
+        # Execution still obeys the concurrency limit while another context waits.
+        await submit("overflow", "demo:3")
+        await asyncio.sleep(0.05)
+        assert not started["overflow"].is_set()
+        release["independent"].set()
+        await asyncio.wait_for(started["overflow"].wait(), 2)
+        assert not started["waiting"].is_set()
+        release["overflow"].set()
+
+        if blocked_by == "context_lock":
+            release["first"].set()
+        else:
+            agent.store.release_context_lease("demo:1", owner_id="another-worker", task_id="first")
+        await asyncio.wait_for(started["waiting"].wait(), 2)
+        release["waiting"].set()
+        await asyncio.wait_for(asyncio.gather(*agent._tasks), 2)
+        assert agent.store.unfinished_tasks() == []
+        assert all(agent.store.get_context_lease(key) is None for key in ("demo:1", "demo:2", "demo:3"))
+    finally:
+        await agent.shutdown()
+        agent.store.release_context_lease("demo:1", owner_id="another-worker", task_id="first")
+
+
+@pytest.mark.anyio
 async def test_agent_context_lease_serializes_same_context_across_service_instances(tmp_path: Path) -> None:
     config = _config(tmp_path, concurrency=2)
     store = StateStore(config.db_path)

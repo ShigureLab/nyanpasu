@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import AgentTask, TaskAction
+from nyanpasu.models import AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.web import create_app
@@ -72,6 +72,62 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
         with state._connect() as conn:
             task_time = conn.execute("SELECT updated_at FROM task_runs WHERE task_id='claude'").fetchone()[0]
         assert datetime.fromisoformat(latest["updated_at"]).timestamp() == pytest.approx(task_time, abs=1e-6, rel=0)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("backend", ["codex", "claude"])
+@pytest.mark.parametrize(
+    "status,lease_active",
+    [("running", True), ("running", False), ("queued", False), ("failed", False), ("completed", False)],
+)
+async def test_session_state_comes_from_execution_not_coalesced_events(tmp_path: Path, backend, status, lease_active):
+    config = NyanpasuConfig(state_dir=tmp_path)
+    state = StateStore(config.db_path)
+    parent = AgentTask(
+        task_id="parent", context_key="demo", action=TaskAction.RUN, prompt="Actual review", coalesce_key="review"
+    )
+    previous = parent.model_copy(update={"task_id": "previous"})
+    state.record_task(previous, default_backend=backend)
+    state.bind_task_execution("previous", SESSION, "previous-turn", backend)
+    state.mark_task_failed("previous", "Timed out")
+    state.record_task(parent, default_backend=backend)
+    child = parent.model_copy(update={"task_id": "child", "prompt": "Merged event"})
+    assert state.enqueue_task(child, default_backend=backend, coalesce_since=0) == (True, "parent")
+    assert state.task_status("child") == "completed"
+    state.mark_task_running("parent", None)
+    state.bind_task_execution("parent", SESSION, "current-turn", backend)
+    if status == "queued":
+        state.mark_task_interrupted("parent", "Awaiting recovery")
+    elif status == "failed":
+        state.mark_task_failed("parent", "Backend failed")
+    elif status == "completed":
+        state.mark_task_done(
+            TaskRunResult(
+                task_id="parent",
+                status=TaskStatus.COMPLETED,
+                backend=backend,
+                thread_id=SESSION,
+                turn_id="current-turn",
+                final_message="done",
+            )
+        )
+    if lease_active:
+        assert state.try_acquire_context_lease("demo", owner_id="worker", task_id="parent", ttl_seconds=60)
+
+    app = create_app(config, session_sources=lambda _: MemorySessionSource())
+    session_id = SESSION if backend == "codex" else "claude:" + SESSION
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        detail = (await client.get("/api/sessions/" + session_id)).json()
+        listed = (await client.get("/api/sessions", params={"state": status})).json()
+        assert listed["total"] == 1
+        for session in (detail, listed["items"][0]):
+            assert session["state"] == status
+            assert session["title"] == "Actual review"
+            assert session["execution_uncertain"] == (status == "running" and not lease_active)
+            assert session["task_count"] == 3
+        assert [task["task_id"] for task in detail["tasks"]] == ["previous", "parent", "child"]
+        if status != "completed":
+            assert (await client.get("/api/sessions?state=completed")).json()["total"] == 0
 
 
 @pytest.mark.anyio
