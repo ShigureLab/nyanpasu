@@ -48,7 +48,9 @@ Choose the backend with `runtime.backend` and configure its `[codex]` or `[claud
 
 The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the agent session. Each execution renders its disclosure footer from the owning backend’s `model` and `reasoning_effort` configuration. If the model is unset, the footer names Codex or Claude Code without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
 
-Every execution prepares one short user message containing the target head, worktree, publication mode, the current model's disclosure footer, and trigger summaries or request links. Supplying the footer in each turn also updates the declaration when an existing session resumes with a different model. The previous task head is a navigation hint, not proof that a review was completed. Existing GitHub reviews and threads remain the evidence for prior review coverage.
+Every execution prepares one short user message containing the target head, worktree, publication mode, the current model's disclosure footer, and trigger summaries or request links. Supplying the footer in each turn also updates the declaration when an existing session resumes with a different model. The previous task head is a navigation hint, not proof that a review was completed. Submitted GitHub reviews and published threads remain the evidence for prior review coverage.
+
+When publication is enabled, the agent resumes unfinished review and publication work before applying the silence rule. It may edit or replace its own unpublished review drafts after preserving their content and revalidating findings against the target head. Published discussions remain canonical. A review is complete only after its required publication is verified on GitHub; a completed task or updated dashboard alone does not prove publication succeeded.
 
 The plugin prepares the task after the core acquires its context lease. It refreshes the PR from GitHub, checks that it remains eligible, and uses the same head for the workspace and turn input. Merged events preserve their request context without embedding other prompts. Events arriving while a task is running are handled by a later turn, which reads the context left by the preceding task.
 
@@ -104,7 +106,7 @@ gh-slate render nyanpasu-review \
   --data packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/templates/review.example.json
 ```
 
-When a review warrants a visible update, the agent updates the dashboard while reviewing and again with the outcome before finishing. Automatic follow-ups with no new code, evidence, finding status, or explicit request leave it unchanged. `dry_run = true` or `post_reviews = false` prohibits all GitHub writes, including dashboard updates. Comments authored by the bot are ignored by event handling, preventing self-triggered review tasks.
+When a review warrants a visible update, the agent updates the dashboard while reviewing and again with the outcome before finishing. After earlier review and publication are verified complete, automatic follow-ups with no new code, evidence, finding status, decision, or explicit request leave it unchanged. `dry_run = true` or `post_reviews = false` prohibits all GitHub writes, including draft management and dashboard updates. Comments authored by the bot are ignored by event handling, preventing self-triggered review tasks.
 
 Publication receipts and failures are available through the agent's tool output and final message in the session transcript. If the agent is interrupted before updating the dashboard, inspect its task record; the service does not publish on its behalf.
 
