@@ -476,17 +476,30 @@ export function Transcript({
               setFollow(false);
             }
           }}
-          onPointerDown={() => setFollow(false)}
           onScroll={(event) => {
             const list = event.currentTarget;
             anchor.current = readAnchor(list);
-            if (following.current || loadingHistory.current || kind) return;
+            const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+            if (!atBottom) {
+              following.current = false;
+              setFollow(false);
+            }
+            if (loadingHistory.current || kind) return;
+            if (
+              atBottom &&
+              window &&
+              !window.has_newer &&
+              !selected &&
+              !searchQuery &&
+              !document.getSelection()?.toString()
+            ) {
+              // Reload the tail to include entries received while reading history.
+              if (!following.current) latest();
+              return;
+            }
+            if (following.current) return;
             if (list.scrollTop < 80 && window?.has_older) loadMore('older');
-            else if (
-              list.scrollHeight - list.scrollTop - list.clientHeight < 80 &&
-              window?.has_newer
-            )
-              loadMore('newer');
+            else if (atBottom && window?.has_newer) loadMore('newer');
           }}
         >
           <div className="transcript-content" ref={content}>

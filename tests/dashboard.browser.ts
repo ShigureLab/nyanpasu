@@ -218,6 +218,101 @@ test('messages render and copy in full; tool previews contain only consecutive s
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(expanded);
 });
 
+test('the transcript follows new messages at the bottom and resumes after scrolling back', async ({
+  page,
+  request,
+}) => {
+  const seed: TranscriptWindow = await (
+    await request.get('/api/sessions/fixture-thread/transcript')
+  ).json();
+  const message = seed.entries.find((entry) => entry.entry_id.startsWith('message-'))!;
+  const messages = Array.from({ length: 8 }, (_, index) => ({
+    ...message,
+    entry_id: `live-${index}`,
+    first_seq: String(index + 1),
+    revision_seq: String(index + 1),
+  }));
+  await page.route('**/api/sessions/fixture-thread/transcript*', async (route) => {
+    const after = new URL(route.request().url()).searchParams.get('after');
+    await route.fulfill({
+      json: after
+        ? {
+            session_id: seed.session_id,
+            generation: seed.generation,
+            generated_at: seed.generated_at,
+            changes: messages.slice(Number(after)).map((entry) => ({
+              seq: entry.first_seq,
+              upserts: [entry],
+            })),
+            next_cursor: String(messages.length),
+            has_more: false,
+          }
+        : {
+            ...seed,
+            entries: messages,
+            before_cursor: null,
+            after_window_cursor: null,
+            has_older: false,
+            has_newer: false,
+            change_cursor: String(messages.length),
+          },
+    });
+  });
+  function appendMessage() {
+    const entry = {
+      ...message,
+      entry_id: `live-${messages.length}`,
+      first_seq: String(messages.length + 1),
+      revision_seq: String(messages.length + 1),
+    };
+    messages.push(entry);
+    return page.locator(`[data-entry-id="${entry.entry_id}"]`);
+  }
+
+  await page.goto('/dashboard?session=fixture-thread');
+  const scroll = page.getByLabel('Session transcript', { exact: true });
+  const following = page.getByRole('button', { name: 'Following latest', exact: true });
+  const bottomGap = () =>
+    scroll.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+  await expect(page.locator('[data-entry-id]')).toHaveCount(8);
+  await expect.poll(bottomGap).toBeLessThan(2);
+  const box = (await scroll.boundingBox())!;
+  await scroll.click({ position: { x: box.width / 2, y: box.height - 20 } });
+  await expect(following).toBeVisible();
+  const first = appendMessage();
+  await expect(first).toBeVisible();
+  await expect.poll(bottomGap).toBeLessThan(2);
+
+  await scroll.focus();
+  await Promise.all([
+    scroll.evaluate(
+      (element) =>
+        new Promise<void>((resolve) => {
+          element.addEventListener('scrollend', () => resolve(), { once: true });
+        }),
+    ),
+    page.keyboard.press('PageUp'),
+  ]);
+  await expect(page.getByRole('button', { name: 'Jump to latest ↓', exact: true })).toBeVisible();
+  await expect.poll(bottomGap).toBeGreaterThan(100);
+  const position = await scroll.evaluate((element) => element.scrollTop);
+  const second = appendMessage();
+  await expect(page.getByRole('button', { name: /updated entries/ })).toBeVisible();
+  expect(Math.abs((await scroll.evaluate((element) => element.scrollTop)) - position)).toBeLessThan(
+    3,
+  );
+  await expect(second).toHaveCount(0);
+
+  await page.keyboard.press('Control+End');
+  await expect(following).toBeVisible();
+  await expect(second).toBeVisible();
+  await expect(page.getByRole('button', { name: /updated entries/ })).toHaveCount(0);
+  await expect.poll(bottomGap).toBeLessThan(2);
+  const third = appendMessage();
+  await expect(third).toBeVisible();
+  await expect.poll(bottomGap).toBeLessThan(2);
+});
+
 test('live updates preserve the reading anchor; pause and explicit refresh are independent', async ({
   page,
   request,
