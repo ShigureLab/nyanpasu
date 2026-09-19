@@ -301,7 +301,8 @@ test('the transcript follows new messages at the bottom and resumes after scroll
   expect(Math.abs((await scroll.evaluate((element) => element.scrollTop)) - position)).toBeLessThan(
     3,
   );
-  await expect(second).toHaveCount(0);
+  await expect(second).toHaveCount(1);
+  await expect(second).not.toBeInViewport();
 
   await page.keyboard.press('Control+End');
   await expect(following).toBeVisible();
@@ -311,6 +312,131 @@ test('the transcript follows new messages at the bottom and resumes after scroll
   const third = appendMessage();
   await expect(third).toBeVisible();
   await expect.poll(bottomGap).toBeLessThan(2);
+
+  await third
+    .locator('div.markdown p')
+    .first()
+    .evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      document.getSelection()!.removeAllRanges();
+      document.getSelection()!.addRange(range);
+    });
+  const selection = await page.evaluate(() => document.getSelection()!.toString());
+  const selectedPosition = await scroll.evaluate((element) => element.scrollTop);
+  const duringSelection = appendMessage();
+  await expect(page.getByRole('button', { name: /updated entries/ })).toBeVisible();
+  await expect(duringSelection).toHaveCount(1);
+  expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(selection);
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBe(selectedPosition);
+
+  await page.evaluate(() => document.getSelection()!.removeAllRanges());
+  await expect(duringSelection).toBeInViewport();
+  await expect(page.getByRole('button', { name: /updated entries/ })).toHaveCount(0);
+  const afterSelection = appendMessage();
+  await expect(afterSelection).toBeInViewport();
+  await expect(page.locator('[data-entry-id]')).toHaveCount(messages.length);
+});
+
+test('tool output retains its tail or reading position across revisions and completion', async ({
+  page,
+  request,
+}) => {
+  const base = '/api/sessions/fixture-thread';
+  const seed: TranscriptWindow = await (await request.get(`${base}/transcript`)).json();
+  const tool = seed.entries.find((entry) => entry.entry_id === 'long-tool')!;
+  let revision = 1;
+  let state = 'running';
+  let text =
+    Array.from({ length: 6000 }, (_, index) => `line ${index}: captured tool output\n`).join('') +
+    'TAIL-1\n';
+  const current = () => ({
+    ...tool,
+    state,
+    revision_seq: String(revision),
+    blocks: [
+      {
+        ...tool.blocks[0]!,
+        content_ref: `output-${revision}`,
+        preview: text.slice(0, 2048),
+        preview_truncated: true,
+        recorded_bytes: text.length,
+      },
+    ],
+  });
+  await page.route(`**${base}/transcript*`, async (route) => {
+    const after = new URL(route.request().url()).searchParams.get('after');
+    await route.fulfill({
+      json: after
+        ? {
+            session_id: seed.session_id,
+            generation: seed.generation,
+            generated_at: seed.generated_at,
+            changes:
+              after === String(revision) ? [] : [{ seq: String(revision), upserts: [current()] }],
+            next_cursor: String(revision),
+            has_more: false,
+          }
+        : {
+            ...seed,
+            entries: [current()],
+            has_older: false,
+            has_newer: false,
+            before_cursor: null,
+            after_window_cursor: null,
+            change_cursor: String(revision),
+          },
+    });
+  });
+  await page.route(`**${base}/content/output-*`, async (route) => {
+    const url = new URL(route.request().url());
+    const offset = url.searchParams.has('tail')
+      ? Math.max(0, text.length - 65536)
+      : Number(url.searchParams.get('offset'));
+    const end = Math.min(offset + 65536, text.length);
+    await route.fulfill({
+      json: {
+        text: text.slice(offset, end),
+        offset,
+        content_ref: url.pathname.split('/').at(-1),
+        next_offset: end < text.length ? end : null,
+        recorded_bytes: text.length,
+      },
+    });
+  });
+  await page.goto('/dashboard?session=fixture-thread');
+  const entry = page.locator('[data-entry-id="long-tool"]');
+  const output = entry.locator('.content-block > pre');
+  const tail = entry.getByRole('button', { name: 'Tail', exact: true });
+  const gap = () =>
+    output.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+  await expect(output).toContainText('TAIL-1');
+  await expect.poll(gap).toBeLessThan(2);
+
+  await output.evaluate((element) => {
+    element.scrollTop = 180;
+  });
+  await expect(tail).toHaveAttribute('aria-pressed', 'false');
+  const reading = await output.innerText();
+  text += 'TAIL-2\n';
+  revision += 1;
+  await page.waitForResponse((response) => response.url().includes('/content/output-2?offset='));
+  await expect(output).toHaveText(reading);
+  expect(await output.evaluate((element) => element.scrollTop)).toBe(180);
+
+  await tail.click();
+  await expect(output).toContainText('TAIL-2');
+  await expect.poll(gap).toBeLessThan(2);
+  text += 'TAIL-3\n';
+  revision += 1;
+  await expect(output).toContainText('TAIL-3');
+  await expect.poll(gap).toBeLessThan(2);
+  state = 'completed';
+  revision += 1;
+  text += 'TOOL-DONE\n';
+  await expect(entry.locator('.status')).toContainText('completed');
+  await expect(output).toContainText('TOOL-DONE');
+  await expect.poll(gap).toBeLessThan(2);
 });
 
 test('live updates preserve the reading anchor; pause and explicit refresh are independent', async ({
@@ -321,18 +447,25 @@ test('live updates preserve the reading anchor; pause and explicit refresh are i
   const scroll = page.locator('.transcript-scroll');
   await expect(page.getByRole('heading', { name: 'Trace a running agent session' })).toBeVisible();
   await expect(page.locator('[data-entry-id]')).toHaveCount(50);
-  await scroll.evaluate((element) => {
-    element.scrollTop = 350;
-  });
+  await expect(page.locator('[data-entry-id="final"] div.markdown')).toContainText('MESSAGE-END');
   await scroll.hover();
-  await page.mouse.wheel(0, -120);
+  await Promise.all([
+    scroll.evaluate(
+      (element) =>
+        new Promise<void>((resolve) => {
+          element.addEventListener('scrollend', () => resolve(), { once: true });
+        }),
+    ),
+    page.mouse.wheel(0, -600),
+  ]);
   await expect(page.getByRole('button', { name: 'Jump to latest ↓', exact: true })).toBeVisible();
-  const before = await scroll.evaluate((element) => element.scrollTop);
+  const reading = page.locator('[data-entry-id="final"]');
+  const before = await reading.evaluate((element) => element.getBoundingClientRect().top);
   await request.post('/test/append');
   await expect(page.getByRole('button', { name: /updated entries/ })).toBeVisible();
-  expect(Math.abs((await scroll.evaluate((element) => element.scrollTop)) - before)).toBeLessThan(
-    5,
-  );
+  expect(
+    Math.abs((await reading.evaluate((element) => element.getBoundingClientRect().top)) - before),
+  ).toBeLessThan(5);
   await page.getByRole('button', { name: '◉ Live', exact: true }).click();
   let calls = 0;
   page.on('request', (request) => {
@@ -376,7 +509,17 @@ test('full-content search, entry deep link and timestamps remain readable', asyn
 
 test('earlier history is prepended and asynchronous message expansion preserves the reading anchor', async ({
   page,
+  request,
 }) => {
+  const earlier: TranscriptWindow = await (
+    await request.get('/api/sessions/fixture-thread/transcript?around=message-0')
+  ).json();
+  const ref = earlier.entries.find((entry) => entry.entry_id === 'message-0')!.blocks[0]!
+    .content_ref;
+  let fullReads = 0;
+  page.on('request', (request) => {
+    if (request.url().includes(`/content/${ref}?`)) fullReads += 1;
+  });
   await page.goto('/dashboard?session=fixture-thread');
   await expect(page.locator('[data-entry-id]')).toHaveCount(50);
   await page.route('**/transcript?before=*', async (route) => {
@@ -400,9 +543,8 @@ test('earlier history is prepended and asynchronous message expansion preserves 
     return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
   });
   await expect(page.locator('[data-entry-id]')).toHaveCount(79);
-  await expect(page.locator('[data-entry-id="message-0"] div.markdown')).toContainText(
-    'EARLIER-END',
-  );
+  await expect(page.locator('[data-entry-id="message-0"]')).not.toContainText('EARLIER-END');
+  expect(fullReads).toBe(0);
   const offset = await scroll.evaluate(
     (element, id) =>
       element.querySelector(`[data-entry-id="${id}"]`)!.getBoundingClientRect().top -
@@ -411,6 +553,11 @@ test('earlier history is prepended and asynchronous message expansion preserves 
   );
   expect(Math.abs(offset - anchor.offset)).toBeLessThan(3);
   await expect(page.locator('[data-entry-id="final"]')).toHaveCount(1);
+  await page.locator('[data-entry-id="message-0"] .entry-heading').scrollIntoViewIfNeeded();
+  await expect(page.locator('[data-entry-id="message-0"] div.markdown')).toContainText(
+    'EARLIER-END',
+  );
+  expect(fullReads).toBeGreaterThan(0);
 });
 
 test('later history appends to a deep-linked window without losing earlier entries', async ({

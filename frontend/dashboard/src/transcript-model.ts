@@ -35,18 +35,28 @@ export interface ScrollAnchor {
   entryId: string;
   offset: number;
 }
+export function hasTextSelection(container: HTMLElement): boolean {
+  const selection = document.getSelection();
+  return Boolean(selection?.toString() && selection.getRangeAt(0).intersectsNode(container));
+}
 export function readAnchor(container: HTMLElement): ScrollAnchor | null {
   const top = container.getBoundingClientRect().top;
-  const entry = [...container.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
-    (node) => node.getBoundingClientRect().bottom > top,
-  );
+  const entries = container.querySelectorAll<HTMLElement>('[data-entry-id]');
+  let left = 0;
+  let right = entries.length;
+  while (left < right) {
+    const middle = (left + right) >>> 1;
+    if (entries[middle].getBoundingClientRect().bottom <= top) left = middle + 1;
+    else right = middle;
+  }
+  const entry = entries[left];
   return entry
     ? { entryId: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top }
     : null;
 }
 export function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): void {
-  const entry = [...container.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
-    (node) => node.dataset.entryId === anchor.entryId,
+  const entry = container.querySelector<HTMLElement>(
+    `[data-entry-id="${CSS.escape(anchor.entryId)}"]`,
   );
   if (entry)
     container.scrollTop +=
@@ -97,13 +107,19 @@ export function applyChanges(
   incoming: readonly TranscriptEntry[],
   follow: boolean,
 ): TranscriptState {
-  const updates = countUpdates(state.entries, incoming);
+  const loaded = new Set(state.entries.map((entry) => entry.entry_id));
+  const last = BigInt(state.entries.at(-1)?.first_seq ?? '0');
+  // Changes replay entire turns, including entries before the loaded window.
+  const relevant = incoming.filter(
+    (entry) => loaded.has(entry.entry_id) || BigInt(entry.first_seq) > last,
+  );
+  const updates = countUpdates(state.entries, relevant);
   if (updates.length === 0) return state;
-  const visible = follow
-    ? incoming
-    : incoming.filter((entry) =>
-        state.entries.some((current) => current.entry_id === entry.entry_id),
-      );
+  // A historical window must stay contiguous. At the live end, retain every
+  // new entry even while scrolling is paused or text is selected.
+  const visible = state.bounds?.has_newer
+    ? relevant.filter((entry) => loaded.has(entry.entry_id))
+    : relevant;
   return {
     ...state,
     entries: mergeEntries(state.entries, visible),

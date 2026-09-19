@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createApi } from './api-client';
 import type { Coverage } from './api-types';
 
@@ -164,7 +164,7 @@ export function useNavigation() {
     window.addEventListener('popstate', change);
     return () => window.removeEventListener('popstate', change);
   }, []);
-  function navigate(values: Record<string, string | null>, replace = false) {
+  const navigate = useCallback((values: Record<string, string | null>, replace = false) => {
     const params = new URLSearchParams(location.search);
     for (const [key, value] of Object.entries(values)) {
       if (value === null) params.delete(key);
@@ -176,7 +176,7 @@ export function useNavigation() {
       `${location.pathname}?${params}`,
     );
     setSelection(params);
-  }
+  }, []);
   return { selection, navigate };
 }
 export type Navigate = ReturnType<typeof useNavigation>['navigate'];

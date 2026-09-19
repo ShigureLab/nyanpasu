@@ -66,9 +66,60 @@ it('polling preserves all loaded history while paused and keeps unread changes s
   const entries = Array.from({ length: 350 }, (_, id) =>
     entry(String(id), 'v1', undefined, String(id)),
   );
-  const current = { entries, unread: new Set<string>(), bounds: null };
-  const updated = applyChanges(current, [entry('349', 'v2'), entry('350', 'v1')], false);
+  const current = {
+    entries,
+    unread: new Set<string>(),
+    bounds: {
+      generation: 'thread',
+      before_cursor: null,
+      after_window_cursor: 'next',
+      has_older: false,
+      has_newer: true,
+    },
+  };
+  const updated = applyChanges(
+    current,
+    [entry('349', 'v2', undefined, '349'), entry('350', 'v1', undefined, '350')],
+    false,
+  );
   expect(updated.entries).toHaveLength(350);
   expect(updated.entries[0]?.entry_id).toBe('0');
   expect(updated.unread.size).toBe(2);
+});
+
+it('keeps new messages at the live end while scrolling is paused', () => {
+  const first = entry('1', 'v1');
+  const second = entry('2', 'v1', undefined, '2');
+  const current = { entries: [first], unread: new Set<string>(), bounds: null };
+  const updated = applyChanges(current, [second], false);
+  expect(updated.entries).toEqual([first, second]);
+  expect(updated.unread).toEqual(new Set(['2']));
+  expect(applyChanges(updated, [second], false)).toBe(updated);
+});
+
+it('turn replays update loaded entries without pulling earlier history into the window', () => {
+  const current = {
+    entries: [entry('50', 'v1', undefined, '50'), entry('51', 'v1', undefined, '51')],
+    unread: new Set<string>(),
+    bounds: {
+      generation: 'thread',
+      before_cursor: 'older',
+      after_window_cursor: null,
+      has_older: true,
+      has_newer: false,
+    },
+  };
+  const updated = applyChanges(
+    current,
+    [
+      entry('1', 'v1'),
+      entry('50', 'v1', undefined, '50'),
+      entry('51', 'v2', undefined, '51'),
+      entry('52', 'v1', undefined, '52'),
+    ],
+    false,
+  );
+  expect(updated.entries.map((item) => item.entry_id)).toEqual(['50', '51', '52']);
+  expect(updated.unread).toEqual(new Set(['51', '52']));
+  expect(updated.bounds).toBe(current.bounds);
 });

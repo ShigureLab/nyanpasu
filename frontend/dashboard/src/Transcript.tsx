@@ -19,6 +19,7 @@ import {
   applyWindow,
   readAnchor,
   restoreAnchor,
+  hasTextSelection,
   type ScrollAnchor,
 } from './transcript-model';
 
@@ -154,9 +155,9 @@ export function Transcript({
           if (value.generation !== generation)
             throw new Error('Transcript generation changed. Reload this session.');
           const upserts = value.changes.flatMap((change) => change.upserts);
-          if (container.current && !following.current)
-            anchor.current = readAnchor(container.current);
-          const shouldFollow = following.current && !document.getSelection()?.toString();
+          const list = container.current;
+          const shouldFollow = following.current && !(list && hasTextSelection(list));
+          if (list && !shouldFollow) anchor.current = readAnchor(list);
           setTranscript((current) => applyChanges(current, upserts, shouldFollow));
           cursor.current = value.next_cursor;
           setReceived(value.generated_at);
@@ -176,6 +177,22 @@ export function Transcript({
       clearTimeout(timer);
     };
   }, [session, live, refresh, generation]);
+
+  useEffect(() => {
+    const list = container.current;
+    if (!list) return;
+    const selectionChanged = () => {
+      if (hasTextSelection(list)) anchor.current = readAnchor(list);
+      else if (following.current) {
+        list.scrollTop = list.scrollHeight;
+        setTranscript((current) =>
+          current.unread.size ? { ...current, unread: new Set() } : current,
+        );
+      }
+    };
+    document.addEventListener('selectionchange', selectionChanged);
+    return () => document.removeEventListener('selectionchange', selectionChanged);
+  }, []);
 
   useEffect(() => {
     if (!window) return;
@@ -207,8 +224,7 @@ export function Transcript({
     const body = content.current;
     if (!list || !body) return;
     const restore = () => {
-      if (following.current && !document.getSelection()?.toString())
-        list.scrollTop = list.scrollHeight;
+      if (following.current && !hasTextSelection(list)) list.scrollTop = list.scrollHeight;
       else if (anchor.current) restoreAnchor(list, anchor.current);
     };
     restore();
@@ -239,8 +255,10 @@ export function Transcript({
     setFollow(true);
     following.current = true;
     setTranscript((current) => ({ ...current, unread: new Set() }));
-    navigate({ entry: null, task: null, block: null, content: null, offset: null });
-    void loadWindow();
+    if (selected || selection.has('task'))
+      navigate({ entry: null, task: null, block: null, content: null, offset: null });
+    if (!window || window.has_newer) void loadWindow();
+    else if (container.current) container.current.scrollTop = container.current.scrollHeight;
   }
   const visible = entries.filter((entry) => !kind || entry.kind === kind);
   const focus =
@@ -491,9 +509,8 @@ export function Transcript({
               !window.has_newer &&
               !selected &&
               !searchQuery &&
-              !document.getSelection()?.toString()
+              !hasTextSelection(list)
             ) {
-              // Reload the tail to include entries received while reading history.
               if (!following.current) latest();
               return;
             }
@@ -588,7 +605,7 @@ export function Transcript({
           </aside>
         )}
       </div>
-      {unread.size > 0 && !follow && (
+      {unread.size > 0 && (
         <button className="new-content" onClick={latest} aria-live="polite">
           {unread.size} updated entries · Jump to latest ↓
         </button>
