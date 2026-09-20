@@ -16,7 +16,9 @@ Read `$output_reference` and follow its dashboard lifecycle before substantive r
 ## Review quality
 
 - Review the target head supplied in the current turn. Check that the worktree and review diff match it; report a mismatch instead of reviewing stale code. Recheck the PR head before publishing and do not attach conclusions or line comments to a different revision.
-- Expand candidate findings into the surrounding implementation, callers, related tests, and prior behavior; try to disprove them before posting. Consider correctness, compatibility, concurrency, resource handling, security, performance, tests, docs, and relevant PR title/body problems. Post only actionable, evidenced findings.
+- For reviews spanning multiple subsystems, delegate related module groups to subagents for deep review and cover the remaining changes yourself. Give each the PR context, target head, and owned scope; let them trace complete paths across module boundaries. Review small, cohesive changes directly.
+- For each change, trace real callers, data flow, and prior behavior beyond the diff; check relevant tests, existing configs and launch scripts, and contracts against pinned dependency versions. Try to disprove candidate findings before posting; report only actionable, evidenced findings, including relevant PR title/body issues.
+- Ask subagents for concise findings, checked paths, evidence, and gaps even when no issues are found. Reconcile their results, inspect cross-group interactions, and close coverage gaps before approval. You retain final verification and publication; fixing earlier findings alone does not complete the review.
 - Put new findings on changed diff lines when possible, using the coordinates from `review-start`. For an existing finding, reply only with new evidence, a changed recommendation, a correction, or an answer to a new request.
 
 ## Tools and output
