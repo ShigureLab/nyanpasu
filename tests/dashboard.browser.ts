@@ -15,7 +15,9 @@ test('session list scrolls across pages and refreshes the loaded range without d
     title: `Session ${String(index).padStart(3, '0')}`,
   }));
   let fail = false;
+  let pending: Promise<void> | undefined;
   await page.route('**/api/sessions?*', async (route) => {
+    await pending;
     if (fail) return route.fulfill({ status: 503, json: { detail: 'Session list unavailable' } });
     const params = new URL(route.request().url()).searchParams;
     const offset = Number(params.get('offset'));
@@ -47,8 +49,25 @@ test('session list scrolls across pages and refreshes the loaded range without d
   await expect(page).toHaveURL(/session=fixture-thread/);
 
   sessions = [{ ...sessions[0]!, session_id: 'new-session', title: 'New session' }, ...sessions];
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  const sidebar = await page.locator('.session-index').elementHandle();
+  const beforeRefresh = await list.evaluate((element) => element.scrollTop);
+  let release!: () => void;
+  pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(list).toHaveAttribute('aria-busy', 'true');
+    await expect(rows).toHaveCount(100);
+    await expect(rows.first()).toContainText('Session 000');
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(beforeRefresh);
+  } finally {
+    release();
+  }
   await expect(rows.first()).toContainText('New session');
+  expect(
+    await sidebar!.evaluate((element) => element === document.querySelector('.session-index')),
+  ).toBe(true);
   await expect(rows).toHaveCount(100);
   expect(new Set(await rows.locator('strong').allTextContents()).size).toBe(100);
   await list.evaluate((element) => {

@@ -129,7 +129,10 @@ export function useResource<T>(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const shouldLoad =
-      live || path !== previous.current.path || refresh !== previous.current.refresh;
+      live ||
+      state.loading ||
+      path !== previous.current.path ||
+      refresh !== previous.current.refresh;
     previous.current = { path, refresh };
     async function load() {
       setState((old) =>
