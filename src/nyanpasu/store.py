@@ -5,16 +5,19 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from nyanpasu.models import (
     AgentContext,
     AgentTask,
     CoalescedTaskRecord,
     ContextLease,
+    ContextScope,
     DashboardPluginSummary,
     DashboardSnapshot,
     DashboardTaskItem,
     DashboardTotals,
+    SubtaskRequest,
     TaskAction,
     TaskRunResult,
     TaskRunSummary,
@@ -26,6 +29,7 @@ from nyanpasu.models import (
 TASK_RUNS = """
     SELECT r.task_id, r.dedupe_key, r.context_key, r.action, r.status, r.event_worktree,
            r.thread_id, r.turn_id, r.task_json, r.coalesced_into, r.error, r.created_at, r.updated_at,
+           r.spawned_by_task_id, r.context_generation,
            coalesce(parent.backend, r.backend) AS backend
     FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
 """
@@ -93,6 +97,30 @@ class StateStore:
                 columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
                 if "backend" not in columns:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN backend TEXT NOT NULL DEFAULT 'codex'")
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+            for name, definition in {
+                "spawned_by_task_id": "TEXT",
+                "context_generation": "INTEGER NOT NULL DEFAULT 1",
+                "wait_for": "TEXT",
+                "subtask_result": "TEXT",
+            }.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {definition}")
+            conn.execute("""CREATE TABLE IF NOT EXISTS context_scopes (
+                context_key TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+                lifecycle TEXT NOT NULL DEFAULT 'active',
+                parent_context_key TEXT, parent_generation INTEGER
+            )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS subtask_requests (
+                parent_context_key TEXT NOT NULL, parent_generation INTEGER NOT NULL,
+                request_key TEXT NOT NULL, request_json TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (parent_context_key, parent_generation, request_key)
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_spawned_by ON task_runs(spawned_by_task_id)")
+            conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
+                SELECT context_key, 1 FROM agent_contexts""")
+            conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
+                SELECT context_key, 1 FROM task_runs WHERE status IN ('queued', 'running', 'waiting')""")
 
     @staticmethod
     def _remove_conversation_copies(conn: sqlite3.Connection) -> None:
@@ -138,6 +166,16 @@ class StateStore:
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id=? OR dedupe_key=?", (task.task_id, task.dedupe_key)
+            ).fetchone():
+                return False, None
+            scope = self._ensure_scope(conn, task.context_key, reopen=task.action is TaskAction.RUN)
+            if scope.lifecycle == "closing" and task.action is TaskAction.RUN:
+                raise ValueError("context is closing")
+            if task.spawned_by_task_id is not None:
+                raise ValueError("child tasks must be created through create_subtask")
+            task = task.model_copy(update={"context_generation": scope.generation})
             backend = default_backend
             if task.action is TaskAction.CLEANUP:
                 context = conn.execute(
@@ -149,9 +187,10 @@ class StateStore:
                 conn.execute(
                     """
                     INSERT INTO task_runs (
-                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at, backend
+                        task_id, dedupe_key, context_key, action, status, task_json, created_at, updated_at, backend,
+                        context_generation
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task.task_id,
@@ -163,6 +202,7 @@ class StateStore:
                         now,
                         now,
                         backend,
+                        scope.generation,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -202,6 +242,262 @@ class StateStore:
 
     def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
+
+    @staticmethod
+    def _ensure_scope(conn: sqlite3.Connection, key: str, *, reopen: bool = False) -> ContextScope:
+        conn.execute("INSERT OR IGNORE INTO context_scopes (context_key,generation) VALUES (?,1)", (key,))
+        row = conn.execute("SELECT * FROM context_scopes WHERE context_key=?", (key,)).fetchone()
+        scope = ContextScope.model_validate(dict(row))
+        if reopen and scope.lifecycle == "closed":
+            conn.execute(
+                "UPDATE context_scopes SET generation=generation+1,lifecycle='active' WHERE context_key=?", (key,)
+            )
+            scope = scope.model_copy(update={"generation": scope.generation + 1, "lifecycle": "active"})
+        return scope
+
+    def context_scope(self, key: str) -> ContextScope:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM context_scopes WHERE context_key=?", (key,)).fetchone()
+        if row is None:
+            raise ValueError("unknown context")
+        return ContextScope.model_validate(dict(row))
+
+    @staticmethod
+    def _active_task(conn: sqlite3.Connection, task_id: str) -> sqlite3.Row:
+        row = conn.execute(
+            """SELECT r.* FROM task_runs r JOIN context_scopes c USING(context_key)
+            WHERE r.task_id=? AND r.context_generation=c.generation AND c.lifecycle='active'
+            AND r.status IN ('queued','running','waiting')""",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("task is inactive or its context is closing")
+        return row
+
+    def task_is_active(self, task_id: str) -> bool:
+        with self._connect() as conn:
+            try:
+                self._active_task(conn, task_id)
+            except ValueError:
+                return False
+        return True
+
+    def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+        """Create ownership and execution together; retries cannot leave an orphan."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent = self._active_task(conn, parent_id)
+            identity = (parent["context_key"], parent["context_generation"], request.request_key)
+            serialized = request.model_dump_json()
+            previous = conn.execute(
+                """SELECT task_id,request_json FROM subtask_requests
+                WHERE parent_context_key=? AND parent_generation=? AND request_key=?""",
+                identity,
+            ).fetchone()
+            if previous is not None:
+                if previous["request_json"] != serialized:
+                    raise ValueError("subtask request key was used with different input")
+                row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (previous["task_id"],)).fetchone()
+                return AgentTask.model_validate(json.loads(row["task_json"]))
+            if parent["status"] != "running":
+                raise ValueError("only a running task may create a subtask")
+            original = AgentTask.model_validate(json.loads(parent["task_json"]))
+            workspace = original.workspace
+            if request.revision is not None:
+                if workspace is None:
+                    raise ValueError("a revision requires a repository workspace")
+                workspace = workspace.model_copy(update={"revision": request.revision, "ref": None})
+            task_id = str(uuid4())
+            child = AgentTask(
+                task_id=task_id,
+                action=TaskAction.RUN,
+                context_key=f"{original.context_key}/subtask/{task_id}",
+                prompt=request.prompt,
+                developer_instructions=request.developer_instructions,
+                workspace=workspace,
+                spawned_by_task_id=parent_id,
+                metadata={
+                    "purpose": request.purpose,
+                    "request": {"title": request.purpose},
+                    "source_plugin_id": original.metadata.get("plugin_id", original.metadata.get("source_plugin_id")),
+                },
+            )
+            conn.execute(
+                """INSERT INTO context_scopes
+                (context_key,generation,parent_context_key,parent_generation) VALUES (?,1,?,?)""",
+                (child.context_key, *identity[:2]),
+            )
+            now = time.time()
+            conn.execute(
+                """INSERT INTO task_runs
+                (task_id,context_key,action,status,task_json,created_at,updated_at,backend,spawned_by_task_id)
+                VALUES (?,?,?,'queued',?,?,?,?,?)""",
+                (
+                    task_id,
+                    child.context_key,
+                    child.action.value,
+                    child.model_dump_json(),
+                    now,
+                    now,
+                    parent["backend"],
+                    parent_id,
+                ),
+            )
+            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?,?)", (*identity, serialized, task_id))
+            return child
+
+    def root_task_id(self, task_id: str) -> str:
+        with self._connect() as conn:
+            while True:
+                row = conn.execute("SELECT spawned_by_task_id FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+                if row is None:
+                    raise ValueError("unknown task")
+                if row["spawned_by_task_id"] is None:
+                    return task_id
+                task_id = row["spawned_by_task_id"]
+
+    @staticmethod
+    def _descendants(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+        return conn.execute(
+            """WITH RECURSIVE children AS (
+            SELECT * FROM task_runs WHERE spawned_by_task_id=?
+            UNION ALL SELECT r.* FROM task_runs r JOIN children c ON r.spawned_by_task_id=c.task_id
+        ) SELECT * FROM children ORDER BY created_at,task_id""",
+            (task_id,),
+        ).fetchall()
+
+    def subtasks(self, task_id: str) -> list[TaskRunSummary]:
+        with self._connect() as conn:
+            return [_task_summary_from_row(row) for row in self._descendants(conn, task_id)]
+
+    def unfinished_roots(self) -> list[AgentTask]:
+        return [
+            task
+            for task in self.unfinished_tasks()
+            if task.spawned_by_task_id is None and self.task_is_active(task.task_id)
+        ]
+
+    def wait_for_subtasks(self, task_id: str, children: list[str]) -> None:
+        if not children or len(children) != len(set(children)):
+            raise ValueError("specify distinct descendant task IDs")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._active_task(conn, task_id)
+            descendants = {row["task_id"] for row in self._descendants(conn, task_id)}
+            if not set(children) <= descendants:
+                raise ValueError("may only wait for descendant tasks")
+            conn.execute("UPDATE task_runs SET wait_for=? WHERE task_id=?", (json_dumps(children), task_id))
+
+    def waiting_for(self, task_id: str) -> list[str]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT wait_for FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        return json.loads(row["wait_for"]) if row and row["wait_for"] else []
+
+    def wait_is_ready(self, task_id: str) -> bool:
+        children = self.waiting_for(task_id)
+        return all(self.task_status(child) in {"completed", "failed", "cancelled"} for child in children)
+
+    def mark_task_waiting(self, task_id: str) -> None:
+        self._update_task(task_id, TaskStatus.WAITING)
+
+    def resume_subtasks(self, task_id: str) -> list[TaskRunSummary]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent = self._active_task(conn, task_id)
+            children = json.loads(parent["wait_for"]) if parent["wait_for"] else []
+            if not children:
+                return []
+            rows = [conn.execute("SELECT * FROM task_runs WHERE task_id=?", (child,)).fetchone() for child in children]
+            if any(row["status"] not in {"completed", "failed", "cancelled"} for row in rows):
+                raise ValueError("subtasks are not finished")
+            request = AgentTask.model_validate(json.loads(parent["task_json"]))
+            request = request.model_copy(update={"metadata": {**request.metadata, "resumed_subtasks": children}})
+            conn.execute(
+                """UPDATE task_runs SET wait_for=NULL,status='queued',task_json=?,updated_at=?
+                WHERE task_id=?""",
+                (request.model_dump_json(), time.time(), task_id),
+            )
+        return [_task_summary_from_row(row) for row in rows]
+
+    def record_subtask_result(self, task_id: str, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._active_task(conn, task_id)
+            serialized = json_dumps(result)
+            if row["subtask_result"] is not None and row["subtask_result"] != serialized:
+                raise ValueError("result is already frozen")
+            conn.execute("UPDATE task_runs SET subtask_result=? WHERE task_id=?", (serialized, task_id))
+
+    def subtask_result(self, task_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT subtask_result FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        return json.loads(row["subtask_result"]) if row and row["subtask_result"] else None
+
+    def begin_context_cleanup(self, key: str, generation: int | None = None) -> list[ContextScope]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            scope = self._ensure_scope(conn, key)
+            if scope.lifecycle == "closed" or (generation is not None and scope.generation != generation):
+                return []
+            rows = conn.execute(
+                """WITH RECURSIVE tree AS (
+                SELECT * FROM context_scopes WHERE context_key=? AND generation=?
+                UNION ALL SELECT c.* FROM context_scopes c JOIN tree p
+                    ON c.parent_context_key=p.context_key AND c.parent_generation=p.generation
+                    WHERE c.lifecycle <> 'closed'
+            ) SELECT * FROM tree""",
+                (key, scope.generation),
+            ).fetchall()
+            for row in rows:
+                conn.execute("UPDATE context_scopes SET lifecycle='closing' WHERE context_key=?", (row["context_key"],))
+            return [ContextScope.model_validate({**dict(row), "lifecycle": "closing"}) for row in rows]
+
+    def closing_contexts(self) -> list[ContextScope]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM context_scopes WHERE lifecycle='closing' ORDER BY context_key"
+            ).fetchall()
+        return [ContextScope.model_validate(dict(row)) for row in rows]
+
+    def close_context_scope(self, key: str, generation: int) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            scope = conn.execute(
+                "SELECT generation,lifecycle FROM context_scopes WHERE context_key=?", (key,)
+            ).fetchone()
+            if scope is None or scope["generation"] != generation or scope["lifecycle"] != "closing":
+                return
+            descendants = conn.execute(
+                """SELECT 1 FROM context_scopes WHERE parent_context_key=?
+                AND parent_generation=? AND lifecycle <> 'closed'""",
+                (key, generation),
+            ).fetchone()
+            if descendants:
+                raise ValueError("context still has live descendants")
+            conn.execute(
+                """UPDATE task_runs SET status='cancelled',updated_at=?
+                WHERE context_key=? AND context_generation=? AND status IN ('queued','running','waiting')
+                AND action <> 'cleanup'""",
+                (time.time(), key, generation),
+            )
+            conn.execute("DELETE FROM agent_contexts WHERE context_key=?", (key,))
+            conn.execute(
+                """UPDATE context_scopes SET lifecycle='closed'
+                WHERE context_key=? AND generation=? AND lifecycle='closing'""",
+                (key, generation),
+            )
+
+    def cancel_task_tree(self, task_id: str) -> list[str]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = [task_id, *(row["task_id"] for row in self._descendants(conn, task_id))]
+            for identity in ids:
+                conn.execute(
+                    """UPDATE task_runs SET status='cancelled',updated_at=?
+                    WHERE task_id=? AND status IN ('queued','running','waiting')""",
+                    (time.time(), identity),
+                )
+        return ids
 
     def update_pending_task_backend(self, task_id: str, backend: str) -> None:
         with self._connect() as conn:
@@ -262,7 +558,7 @@ class StateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT task_json FROM task_runs
-                   WHERE status IN ('queued', 'running') AND coalesced_into IS NULL
+                   WHERE status IN ('queued', 'running', 'waiting') AND coalesced_into IS NULL
                    ORDER BY created_at, task_id"""
             ).fetchall()
         return [AgentTask.model_validate(json.loads(row["task_json"])) for row in rows]
@@ -641,7 +937,14 @@ class StateStore:
             values.append(turn_id)
         values.append(task_id)
         with self._connect() as conn:
-            conn.execute(f"UPDATE task_runs SET {', '.join(updates)} WHERE task_id = ?", values)
+            conn.execute(
+                f"""UPDATE task_runs SET {", ".join(updates)} WHERE task_id = ? AND status <> 'cancelled'
+                    AND (action IN ('cleanup','ignored') OR EXISTS (
+                        SELECT 1 FROM context_scopes c WHERE c.context_key=task_runs.context_key
+                        AND c.generation=task_runs.context_generation AND c.lifecycle='active'
+                    ))""",
+                values,
+            )
 
 
 def replace_context(context: AgentContext, **changes: Any) -> AgentContext:

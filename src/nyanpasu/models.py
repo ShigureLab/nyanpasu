@@ -17,8 +17,10 @@ class TaskAction(StrEnum):
 class TaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class NyanpasuModel(BaseModel):
@@ -57,10 +59,30 @@ class AgentTask(NyanpasuModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     workspace_policy: Literal["context", "event_snapshot"] = "context"
     cleanup_policy: Literal["context", "none"] = "none"
+    spawned_by_task_id: str | None = None
+    context_generation: int = 1
 
     @property
     def key(self) -> str:
         return self.dedupe_key or self.task_id
+
+
+class SubtaskRequest(NyanpasuModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    request_key: str = Field(min_length=1, max_length=200)
+    prompt: str = Field(min_length=1)
+    developer_instructions: str = ""
+    revision: str | None = None
+    purpose: str = "subtask"
+
+
+class ContextScope(NyanpasuModel):
+    context_key: str
+    generation: int = 1
+    lifecycle: Literal["active", "closing", "closed"] = "active"
+    parent_context_key: str | None = None
+    parent_generation: int | None = None
 
 
 class AgentContext(NyanpasuModel):
@@ -121,6 +143,8 @@ class TaskRunSummary(NyanpasuModel):
     error: str | None = None
     created_at: float | None = None
     updated_at: float
+    spawned_by_task_id: str | None = None
+    context_generation: int = 1
 
     @field_validator("event_worktree", mode="before")
     @classmethod
