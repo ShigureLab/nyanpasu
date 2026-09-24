@@ -459,6 +459,14 @@ class StateStore:
             ).fetchall()
         return [ContextScope.model_validate(dict(row)) for row in rows]
 
+    def tasks_for_scope(self, key: str, generation: int) -> list[TaskRunSummary]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ({TASK_RUNS}) WHERE context_key=? AND context_generation=? ORDER BY created_at DESC",
+                (key, generation),
+            ).fetchall()
+        return [_task_summary_from_row(row) for row in rows]
+
     def close_context_scope(self, key: str, generation: int) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -525,6 +533,15 @@ class StateStore:
         context: AgentContext | None = None,
     ) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                """SELECT 1 FROM task_runs t JOIN context_scopes c
+                ON t.context_key=c.context_key AND t.context_generation=c.generation
+                WHERE t.task_id=? AND c.lifecycle <> 'closed'""",
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                return
             conn.execute(
                 "UPDATE task_runs SET backend=?,thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
                 (backend, thread_id, turn_id, time.time(), task_id),

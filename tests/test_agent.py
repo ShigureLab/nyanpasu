@@ -479,7 +479,7 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
     await second.shutdown()
 
     assert [thread for _, thread in resumed_backend.calls] == [None if switch_backend else "thread-1", session_id]
-    assert resumed_backend.instructions[0] == "Keep the original role."
+    assert resumed_backend.instructions[0].split("\nNyanpasu subtask control")[0] == "Keep the original role."
     if not switch_backend:
         assert "Continue from the saved conversation" in resumed_backend.prompts[0]
     assert "Continue from the saved conversation" not in resumed_backend.prompts[1]
@@ -686,7 +686,10 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
 
     await agent.run_now(task.model_copy(update={"task_id": "task-2", "dedupe_key": "task-2"}))
 
-    assert codex.instructions[0] == codex.instructions[1]
+    assert (
+        codex.instructions[0].split("\nNyanpasu subtask control")[0]
+        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+    )
     assert "Persistent role." in codex.instructions[0]
     assert "Configured instruction documents:" in codex.instructions[0]
     assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.instructions[0]
@@ -833,7 +836,10 @@ async def test_reviewer_events_during_review_resume_with_completed_task_head(tmp
     assert "Target head: head-c" in codex.prompts[1]
     assert "Previous task head (not proof of completed review): head-a" in codex.prompts[1]
     assert codex.calls[1][1] == "thread-1"
-    assert codex.instructions[0] == codex.instructions[1]
+    assert (
+        codex.instructions[0].split("\nNyanpasu subtask control")[0]
+        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+    )
     context = agent.store.get_context(first.context_key)
     assert context is not None and context.revision == "head-c"
     await agent.shutdown()

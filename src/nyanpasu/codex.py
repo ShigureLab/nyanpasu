@@ -182,31 +182,45 @@ class CodexAppServerBackend:
             active_thread_id = str(thread["thread"]["id"])
             if on_started:
                 await on_started(active_thread_id, None)
-            turn = await self._request(
-                "turn/start",
-                {
-                    "threadId": active_thread_id,
-                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
-                    "cwd": str(cwd),
-                    "approvalPolicy": self.config.codex.approval_policy,
-                    "approvalsReviewer": self.config.codex.approvals_reviewer,
-                    "sandboxPolicy": self._sandbox_policy(cwd),
-                    "model": self.config.codex.model,
-                    "effort": self.config.codex.reasoning_effort,
-                },
+            start = asyncio.create_task(
+                self._request(
+                    "turn/start",
+                    {
+                        "threadId": active_thread_id,
+                        "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                        "cwd": str(cwd),
+                        "approvalPolicy": self.config.codex.approval_policy,
+                        "approvalsReviewer": self.config.codex.approvals_reviewer,
+                        "sandboxPolicy": self._sandbox_policy(cwd),
+                        "model": self.config.codex.model,
+                        "effort": self.config.codex.reasoning_effort,
+                    },
+                )
             )
+            try:
+                turn = await asyncio.shield(start)
+            except asyncio.CancelledError:
+                turn = await start
+                await self._interrupt_turn((active_thread_id, str(turn["turn"]["id"])))
+                raise
             turn_id = str(turn["turn"]["id"])
+            key = (active_thread_id, turn_id)
             if on_started:
                 await on_started(active_thread_id, turn_id)
-            key = (active_thread_id, turn_id)
             completed = self._completed_turns.pop(key, None)
             if completed is None:
                 waiter = asyncio.get_running_loop().create_future()
                 self._turn_waiters[key] = waiter
                 try:
-                    completed = await asyncio.wait_for(waiter, timeout=self.config.codex.command_timeout_seconds)
+                    completed = await asyncio.wait_for(
+                        asyncio.shield(waiter), timeout=self.config.codex.command_timeout_seconds
+                    )
+                except (asyncio.CancelledError, TimeoutError):
+                    await self._interrupt_turn(key)
+                    key = None
+                    raise
                 finally:
-                    self._turn_waiters.pop(key, None)
+                    self._turn_waiters.pop((active_thread_id, turn_id), None)
             final_message = self._last_agent_message(completed.get("turn", {}).get("items", []))
             messages = self._agent_messages.pop(key, [])
             if not final_message:
@@ -220,9 +234,30 @@ class CodexAppServerBackend:
                 turn_id=turn_id,
                 final_message=final_message.strip(),
             )
+        except asyncio.CancelledError:
+            if key is not None:
+                await self._interrupt_turn(key)
+            raise
         finally:
             if key is not None:
+                self._turn_waiters.pop(key, None)
                 self._agent_messages.pop(key, None)
+
+    async def _interrupt_turn(self, key: tuple[str, str]) -> None:
+        # The RPC acknowledgement is not execution completion. Keep the workspace
+        # until the server has emitted turn/completed as well.
+        if self._completed_turns.pop(key, None) is not None:
+            return
+        waiter = self._turn_waiters.setdefault(key, asyncio.get_running_loop().create_future())
+        try:
+            if not waiter.done():
+                await self._request("turn/interrupt", {"threadId": key[0], "turnId": key[1]})
+            await asyncio.wait_for(asyncio.shield(waiter), timeout=30)
+        except Exception as exc:
+            raise RuntimeError("Cannot confirm Codex stopped; preserve its workspace") from exc
+        finally:
+            self._turn_waiters.pop(key, None)
+            self._agent_messages.pop(key, None)
 
     async def read_thread(self, thread_id: str) -> dict[str, Any]:
         result = await self._request("thread/read", {"threadId": thread_id, "includeTurns": False})

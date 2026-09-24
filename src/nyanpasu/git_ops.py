@@ -41,7 +41,12 @@ class WorktreeManager:
         with self._workspace_lock(workspace.key):
             self.fetch_revision(workspace)
             session_path = self.session_worktree_path(task)
-            self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
+            try:
+                self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
+            except Exception:
+                if existing is None:
+                    self._remove_worktree_unlocked(workspace, session_path)
+                raise
         return AgentContext(
             context_key=task.context_key,
             thread_id=existing.thread_id if existing else None,

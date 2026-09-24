@@ -225,3 +225,41 @@ class RecordingAppServerBackend(CodexAppServerBackend):
 
     async def _write(self, message: dict[str, Any]) -> None:
         self.responses.append(message)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel_during_start", [False, True])
+async def test_cancel_waits_for_native_turn_to_stop(tmp_path, cancel_during_start):
+    started, release_start, interrupted = (asyncio.Event() for _ in range(3))
+
+    class Server(RecordingAppServerBackend):
+        async def _request(self, method, params):
+            if method == "turn/start":
+                started.set()
+                await release_start.wait()
+            if method == "turn/interrupt":
+                assert params == {"threadId": "thread-1", "turnId": "turn-1"}
+                interrupted.set()
+                return {}
+            return await super()._request(method, params)
+
+    backend = Server(NyanpasuConfig(state_dir=tmp_path))
+    execution = asyncio.create_task(backend.run_turn(cwd=tmp_path, prompt="work", thread_id=None))
+    await started.wait()
+    if not cancel_during_start:
+        release_start.set()
+        while not backend._turn_waiters:
+            await asyncio.sleep(0)
+    execution.cancel()
+    release_start.set()
+    await asyncio.wait_for(interrupted.wait(), 1)
+    assert not execution.done()  # An interrupt RPC acknowledgement alone is insufficient.
+    backend._handle_message(
+        {
+            "method": "turn/completed",
+            "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "interrupted", "items": []}},
+        }
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    assert backend._turn_waiters == {}
