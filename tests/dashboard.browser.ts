@@ -637,3 +637,26 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await expect(page.locator('.diagnostic')).toHaveCount(1);
   await expect(page.locator('.diagnostic pre')).toHaveCount(0);
 });
+
+test('waiting parent links to child evidence and preserves task navigation', async ({ page }) => {
+  await page.goto('/dashboard?view=tasks&task=fixture-review');
+  await expect(page.getByRole('region', { name: 'Subtasks', exact: true })).toBeVisible();
+  await expect(page.getByText('Waiting for result', { exact: true })).toBeVisible();
+  await page.getByLabel('Task status').selectOption('waiting');
+  await expect(page.locator('.task-list')).toContainText('Review with subtasks');
+  const child = page
+    .getByRole('region', { name: 'Subtasks', exact: true })
+    .locator('.subtask-row')
+    .filter({ hasText: 'completed' });
+  await child.getByRole('button').click();
+  await expect(page.getByRole('region', { name: 'Subtask evidence' })).toContainText(
+    'Reference design verified',
+  );
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'reference.md', exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('reference.md');
+  await page.getByRole('button', { name: 'fixture-review', exact: true }).click();
+  await expect(page.getByText('Waiting for result', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Task status')).toHaveValue('waiting');
+});

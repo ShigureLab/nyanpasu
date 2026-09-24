@@ -895,7 +895,7 @@ class StateStore:
             rows = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at
+                    created_at, updated_at, spawned_by_task_id, context_generation
                 FROM ({TASK_RUNS}) ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -944,7 +944,11 @@ class StateStore:
         completed = status_counts.get(TaskStatus.COMPLETED.value, 0)
         failed = status_counts.get(TaskStatus.FAILED.value, 0)
         backlog = sorted(
-            [item for item in items if item.status in {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value}],
+            [
+                item
+                for item in items
+                if item.status in {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.WAITING.value}
+            ],
             key=lambda item: (item.status != TaskStatus.RUNNING.value, item.created_at),
         )[:backlog_limit]
         plugins = tuple(sorted(plugin_counts.values(), key=lambda item: item.last_updated_at or 0, reverse=True))
@@ -956,7 +960,9 @@ class StateStore:
                 running=running,
                 completed=completed,
                 failed=failed,
-                backlog=queued + running,
+                waiting=status_counts[TaskStatus.WAITING.value],
+                cancelled=status_counts[TaskStatus.CANCELLED.value],
+                backlog=queued + running + status_counts[TaskStatus.WAITING.value],
                 contexts=context_count,
                 active_leases=active_lease_count,
             ),
@@ -1056,7 +1062,7 @@ def _json_object(raw: Any) -> dict[str, Any]:
 
 
 def _dashboard_plugin_id(metadata: dict[str, Any]) -> str:
-    plugin_id = metadata.get("plugin_id")
+    plugin_id = metadata.get("plugin_id") or metadata.get("source_plugin_id")
     if isinstance(plugin_id, str) and plugin_id.strip():
         return plugin_id.strip()
     return "core"

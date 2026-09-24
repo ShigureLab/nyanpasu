@@ -1,0 +1,30 @@
+[
+  {
+    "id": "whitespace",
+    "requirements": "Cache keys must distinguish every byte of the user prompt, including leading and trailing spaces.",
+    "base": "def key(prompt):\n    return prompt\n",
+    "head": "def key(prompt):\n    return prompt.strip()\n",
+    "tests": "def test_inputs_differ():\n    assert key('hello ') != key('goodbye')\n"
+  },
+  {
+    "id": "latest-request",
+    "requirements": "When a user changes the search query, a late response for the previous query must not overwrite the latest results.",
+    "base": "let rows = [];\nasync function search(query) { rows = await fetchRows(query); }\n",
+    "head": "let rows = []; let current = '';\nasync function search(query) { current = query; const result = await fetchRows(query); rows = result; }\n",
+    "tests": "// fetchRows always resolves immediately.\nawait search('old'); await search('new'); expect(rows).toEqual(['new']);\n"
+  },
+  {
+    "id": "cached-size",
+    "requirements": "Queue supports push, pop and size. There is no cached-size persistence or API contract. Python len(list) has constant time for this workload.",
+    "base": "class Queue:\n    def __init__(self): self.items = []\n    def push(self, item): self.items.append(item)\n    def pop(self): return self.items.pop(0)\n",
+    "head": "class Queue:\n    def __init__(self): self.items = []; self.count = 0\n    def push(self, item): self.items.append(item); self.count += 1\n    def pop(self):\n        value = self.items.pop(0)\n        self.count -= 1\n        return value\n    def size(self): return self.count\n",
+    "tests": "def test_size():\n    q = Queue(); q.push('a'); q.push('b'); q.pop(); assert q.size() == 1\n"
+  },
+  {
+    "id": "adapter",
+    "requirements": "All callers use seconds. The external transport API uses milliseconds. The adapter is the only code allowed to depend on that wire convention.",
+    "base": "# A new timeout option is needed on the existing transport boundary.\n",
+    "head": "class Transport:\n    def __init__(self, wire): self.wire = wire\n    def send(self, timeout_seconds): return self.wire.send(timeout_ms=timeout_seconds * 1000)\n",
+    "tests": "def test_wire_units():\n    wire = Mock(); Transport(wire).send(0.25); wire.send.assert_called_once_with(timeout_ms=250)\n"
+  }
+]

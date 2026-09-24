@@ -1134,3 +1134,21 @@ dd code {
     flex-basis: 100%;
   }
 }
+
+.subtask-row,
+.subtask-artifact {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-block: 0.75rem;
+}
+.subtask-artifact code {
+  overflow-wrap: anywhere;
+}
+.status.waiting {
+  color: #b7791f;
+}
+.status.cancelled {
+  color: var(--muted);
+}

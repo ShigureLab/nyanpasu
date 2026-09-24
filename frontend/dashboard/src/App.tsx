@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  useApi,
   backendLabel,
   query,
   useNavigation,
@@ -12,6 +11,7 @@ import {
   type Diagnostic,
 } from './api';
 import { Copy, Status } from './Entry';
+import { Download } from './Download';
 import { Transcript } from './Transcript';
 import { Time } from './Time';
 import { useSessions } from './useSessions';
@@ -261,7 +261,6 @@ function Tasks({
   live: boolean;
   refresh: number;
 }) {
-  const { get } = useApi();
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [offset, setOffset] = useState(0);
@@ -276,19 +275,6 @@ function Tasks({
     live,
     refresh,
   );
-  async function openTask(task: Task) {
-    if (task.session_id) {
-      const target = await get<{ entry_id: string | null }>(
-        `/api/tasks/${encodeURIComponent(task.task_id)}`,
-      );
-      navigate({
-        view: 'sessions',
-        session: task.session_id,
-        task: task.task_id,
-        entry: target.entry_id,
-      });
-    } else navigate({ task: task.task_id });
-  }
   return (
     <section className="full-view">
       <span className="eyebrow">DISPATCH & EXECUTION</span>
@@ -313,7 +299,7 @@ function Tasks({
           }}
         >
           <option value="">All statuses</option>
-          {['queued', 'running', 'failed', 'completed'].map((value) => (
+          {['queued', 'running', 'waiting', 'failed', 'cancelled', 'completed'].map((value) => (
             <option key={value}>{value}</option>
           ))}
         </select>
@@ -324,7 +310,11 @@ function Tasks({
       {data.error && <p className="notice error">{data.error}</p>}
       <div className="task-list">
         {data.data?.items.map((task) => (
-          <button key={task.task_id} className="task-row" onClick={() => void openTask(task)}>
+          <button
+            key={task.task_id}
+            className="task-row"
+            onClick={() => navigate({ task: task.task_id })}
+          >
             <Status state={task.status} />
             <div>
               <strong>{task.title}</strong>
@@ -334,6 +324,7 @@ function Tasks({
             <span>
               {task.action}
               {task.coalesced_into ? ' · coalesced' : ''}
+              {task.spawned_by_task_id ? ' · subtask' : ''}
             </span>
             <span>{task.plugin_id}</span>
             <div className="task-times">
@@ -375,6 +366,51 @@ function Tasks({
                     {String(detail.data.coalesced_into)}
                   </button>
                 </p>
+              )}
+              <p>
+                Lifecycle: {detail.data.lifecycle} · Generation {detail.data.context_generation}
+              </p>
+              {detail.data.spawned_by_task_id && (
+                <p>
+                  Parent task{' '}
+                  <button onClick={() => navigate({ task: detail.data!.spawned_by_task_id })}>
+                    {detail.data.spawned_by_task_id}
+                  </button>
+                </p>
+              )}
+              {detail.data.children.length > 0 && (
+                <section aria-label="Subtasks">
+                  <h3>Subtasks</h3>
+                  {detail.data.children.map((child) => (
+                    <div className="subtask-row" key={child.task_id}>
+                      <Status state={child.status} />
+                      <button onClick={() => navigate({ task: child.task_id })}>
+                        {child.task_id}
+                      </button>
+                      {detail.data!.waiting_for.includes(child.task_id) && (
+                        <span>Waiting for result</span>
+                      )}
+                    </div>
+                  ))}
+                </section>
+              )}
+              {detail.data.subtask_result && (
+                <section aria-label="Subtask evidence">
+                  <h3>Result and evidence</h3>
+                  <p>{detail.data.subtask_result.summary}</p>
+                  {detail.data.subtask_result.artifacts.map((artifact, index) => (
+                    <div className="subtask-artifact" key={artifact.sha256 + artifact.name}>
+                      <Download
+                        path={`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${index}`}
+                        filename={artifact.name.split('/').at(-1) ?? 'evidence'}
+                      >
+                        {artifact.name}
+                      </Download>
+                      <span>{artifact.bytes} bytes</span>
+                      <code title="SHA-256">{artifact.sha256}</code>
+                    </div>
+                  ))}
+                </section>
               )}
               {detail.data.session_id && (
                 <button
@@ -498,8 +534,9 @@ function RuntimeView({
               <Status state={data.data.connection} />
             </article>
             <article>
-              <span>Concurrency limit</span>
+              <span>Root task concurrency</span>
               <h2>{data.data.concurrency}</h2>
+              <p>Subtasks share their root’s slot, including while it waits.</p>
             </article>
             <article>
               <span>Configured model</span>

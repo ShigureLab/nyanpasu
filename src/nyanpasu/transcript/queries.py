@@ -175,7 +175,9 @@ class TranscriptReader:
                     "cwd": row["event_worktree"],
                     "revision": workspace.get("revision"),
                     "created_at": iso_time(row["created_at"]),
-                    "ended_at": iso_time(row["updated_at"]) if row["status"] in {"completed", "failed"} else None,
+                    "ended_at": iso_time(row["updated_at"])
+                    if row["status"] in {"completed", "failed", "cancelled"}
+                    else None,
                 }
             )
         data["has_more_tasks"] = offset + limit < len(tasks)
