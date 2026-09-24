@@ -30,7 +30,7 @@ from nyanpasu.task_control import TaskControl
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
-    from nyanpasu.plugins import TaskPreparer
+    from nyanpasu.plugins import SubtaskPreparer, TaskPreparer
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 
@@ -65,6 +65,7 @@ class AgentService:
         self._admitted_roots: set[str] = set()
         self._submit_lock = asyncio.Lock()
         self._post_process_hooks: dict[str, list[PostProcessHook]] = {}
+        self._subtask_preparers: dict[str, SubtaskPreparer] = {}
         self._task_preparers: dict[str, TaskPreparer] = {}
         self._owner_id = f"{os.uname().nodename}:{os.getpid()}:{id(self)}"
 
@@ -216,6 +217,9 @@ class AgentService:
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
         self._task_preparers[plugin_id] = preparer
 
+    def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
+        self._subtask_preparers[plugin_id] = preparer
+
     async def _run_task_guarded(self, task: AgentTask) -> None:
         try:
             await self._run_task(task)
@@ -298,6 +302,9 @@ class AgentService:
         parent = await to_thread.run_sync(self.store.task_request, parent_id)
         if parent.workspace is None:
             raise ValueError("subtasks require a configured repository workspace")
+        plugin_id = parent.metadata.get("plugin_id", parent.metadata.get("source_plugin_id"))
+        if preparer := self._subtask_preparers.get(plugin_id):
+            request = await preparer(parent, request)
         child = await to_thread.run_sync(self.store.create_subtask, parent_id, request)
         if await to_thread.run_sync(self.store.task_is_active, child.task_id):
             self._schedule(child)
@@ -392,6 +399,7 @@ class AgentService:
                 {
                     "task": (await to_thread.run_sync(self.store.task_run, identity)).model_dump(mode="json"),
                     "result": await to_thread.run_sync(self.store.subtask_result, identity),
+                    "inputs": (await to_thread.run_sync(self.store.task_request, identity)).metadata.get("inputs"),
                 }
                 for identity in resumed
             ]

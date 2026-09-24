@@ -326,6 +326,8 @@ class StateStore:
                 if workspace is None:
                     raise ValueError("a revision requires a repository workspace")
                 workspace = workspace.model_copy(update={"revision": request.revision, "ref": None})
+            if request.workspace_mode == "snapshot" and (workspace is None or not workspace.revision):
+                raise ValueError("a snapshot requires a pinned repository revision")
             task_id = str(uuid4())
             child = AgentTask(
                 task_id=task_id,
@@ -334,9 +336,11 @@ class StateStore:
                 prompt=request.prompt,
                 developer_instructions=request.developer_instructions,
                 workspace=workspace,
+                workspace_mode=request.workspace_mode,
                 spawned_by_task_id=parent_id,
                 metadata={
                     "purpose": request.purpose,
+                    "inputs": request.inputs,
                     "request": {"title": request.purpose},
                     "source_plugin_id": original.metadata.get("plugin_id", original.metadata.get("source_plugin_id")),
                 },

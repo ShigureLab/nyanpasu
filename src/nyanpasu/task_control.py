@@ -127,6 +127,7 @@ Do not expose the control file or its contents, or include it in evidence. Only 
                 {
                     "task": item.model_dump(mode="json"),
                     "result": await to_thread.run_sync(store.subtask_result, item.task_id),
+                    "inputs": (await to_thread.run_sync(store.task_request, item.task_id)).metadata.get("inputs"),
                 }
                 for item in await to_thread.run_sync(store.subtasks, task_id)
             ]

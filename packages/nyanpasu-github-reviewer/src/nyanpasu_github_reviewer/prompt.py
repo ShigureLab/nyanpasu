@@ -33,6 +33,7 @@ def build_review_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) 
         collapse_authors=", ".join(config.auto_collapse_author_logins) or "none",
         request_changes="enabled" if config.request_changes_on_findings else "disabled",
         publication_mode=publication_mode(config),
+        review_planning=INSTRUCTIONS_DIR / "review-planning.md",
         output_reference=INSTRUCTIONS_DIR / "review-output.md",
         dashboard_config=TEMPLATES_DIR / "boards.toml",
     )

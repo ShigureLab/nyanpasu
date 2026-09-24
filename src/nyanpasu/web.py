@@ -12,7 +12,7 @@ from nyanpasu.agent import AgentService, PostProcessHook
 from nyanpasu.auth import require_server_token
 from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
-from nyanpasu.plugins import PluginManager, PluginRegistry, TaskPreparer
+from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskPreparer
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.api import dashboard_router
 from nyanpasu.transcript.queries import CursorError, TranscriptReader
@@ -38,6 +38,8 @@ class AgentBackend(Protocol):
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None: ...
 
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None: ...
+
+    def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
 
 
 class WebPluginRuntime:
@@ -67,6 +69,9 @@ class WebPluginRuntime:
 
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None:
         self.agent.add_task_preparer(plugin_id, preparer)
+
+    def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
+        self.agent.add_subtask_preparer(plugin_id, preparer)
 
 
 def create_app(

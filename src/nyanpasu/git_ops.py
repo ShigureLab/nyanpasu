@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import io
+import json
 import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -42,7 +47,10 @@ class WorktreeManager:
             self.fetch_revision(workspace)
             session_path = self.session_worktree_path(task)
             try:
-                self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
+                if task.workspace_mode == "snapshot":
+                    self._snapshot(workspace, session_path)
+                else:
+                    self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
             except Exception:
                 if existing is None:
                     self._remove_worktree_unlocked(workspace, session_path)
@@ -53,6 +61,59 @@ class WorktreeManager:
             session_worktree=session_path,
             workspace_key=workspace.key,
             revision=workspace.revision,
+        )
+
+    def _snapshot(self, workspace: WorkspaceRef, path: Path) -> None:
+        if not workspace.revision:
+            raise ValueError("snapshot requires a pinned revision")
+        revision = self._run(
+            ["git", "rev-parse", "--verify", f"{workspace.revision}^{{commit}}"], workspace.local_path
+        ).stdout.strip()
+        tree = self._run(["git", "rev-parse", f"{revision}^{{tree}}"], workspace.local_path).stdout.strip()
+        # Release export attributes must not omit tests or substitute source text.
+        # A temporary bare repository gives info/attributes highest precedence
+        # without mutating the shared repository or exposing its objects to the child.
+        objects = self._run(["git", "rev-parse", "--git-path", "objects"], workspace.local_path).stdout.strip()
+        with tempfile.TemporaryDirectory(prefix="nyanpasu-export-") as directory:
+            export = Path(directory)
+            self._run(["git", "init", "--bare", "--template="], export)
+            (export / "objects" / "info" / "alternates").write_text(
+                str((workspace.local_path / objects).resolve()) + "\n"
+            )
+            (export / "info").mkdir(exist_ok=True)
+            (export / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+            archive = subprocess.run(
+                ["git", "archive", "--format=tar", revision], cwd=export, capture_output=True, check=True
+            ).stdout
+        if path.exists():
+            self._remove_worktree_unlocked(workspace, path)
+        path.mkdir(parents=True)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as contents:
+            contents.extractall(path, filter="data")
+        manifest = {
+            "source_sha": revision,
+            "source_tree_sha": tree,
+            "export_sha256": hashlib.sha256(archive).hexdigest(),
+            "isolation": "base-tree-only; filesystem and network are not isolated",
+        }
+        (path / ".nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
+        self._run(["git", "init", "--template="], path)
+        self._run(["git", "add", "--all", "--force"], path)
+        self._run(
+            [
+                "git",
+                "-c",
+                "user.name=Nyanpasu",
+                "-c",
+                "user.email=nyanpasu@localhost",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "Reference input snapshot",
+            ],
+            path,
         )
 
     def prepare_event_snapshot(self, task: AgentTask) -> Path | None:
