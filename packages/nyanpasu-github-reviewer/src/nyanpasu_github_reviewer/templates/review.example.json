@@ -1,27 +1,52 @@
 {
-  "status": "preliminary",
+  "status": "comment",
   "source": { "head_sha": "0123456789abcdef0123456789abcdef01234567" },
-  "summary": "常规审查已完成，发现一项非阻塞问题；独立设计和测试有效性检查仍在进行。",
+  "summary": "常规与深度审查已完成；建议删除重复维护的启用状态，相关边界测试仍有保留价值。以下均为示例数据。",
   "stages": {
     "general": {
       "status": "completed",
-      "summary": "已检查配置调用链及兼容性，相关测试通过；文档示例路径需要修正。"
+      "summary": "已检查配置调用链及兼容性，相关测试通过；未确认阻塞问题。"
     },
     "deep": {
-      "status": "running",
-      "summary": "正在从 base 独立设计，并检查测试能否检测配置传播缺失。"
+      "status": "completed",
+      "summary": "已比较配置状态的替代实现，并检查测试合并是否保留各自的输入边界。"
+    }
+  },
+  "simplification": {
+    "production": {
+      "status": "completed",
+      "summary": "配置读取只需一个权威来源；建议移除重复状态。",
+      "entries": [
+        {
+          "scope": "service/config.py 的 enabled 缓存及更新分支",
+          "contract": "配置更新后下一次请求采用新值；调用方为 service/handler.py。",
+          "alternative": "从当前配置派生 enabled，移除独立布尔字段及同步分支。",
+          "decision": "remove",
+          "evidence": "删除实验通过热更新与重载行为测试；所有调用方读取当前配置。尚未做负载验证。"
+        }
+      ]
+    },
+    "tests": {
+      "status": "completed",
+      "summary": "环境变量和配置文件测试保护不同输入边界，保留两组。",
+      "entries": [
+        {
+          "scope": "tests/test_env_config.py 与 tests/test_file_config.py",
+          "contract": "两种外部配置来源均需遵守文档规定的布尔解析规则。",
+          "alternative": "仅保留共享解析函数的参数化测试。",
+          "decision": "retain",
+          "evidence": "只测试解析函数无法发现入口未调用解析器；跳过环境变量转换的定向变异由入口测试检出。"
+        }
+      ]
     }
   },
   "findings": {
     "F1": {
-      "title": "修正文档示例中的配置路径",
+      "title": "从当前配置派生启用状态，删除重复缓存及同步分支",
       "url": "https://github.com/example/project/pull/123#discussion_r456",
       "priority": "P2",
-      "status": "unresolved",
-      "rule": {
-        "title": "仓库规则：文档与示例",
-        "url": "https://github.com/example/project/blob/0123456789abcdef0123456789abcdef01234567/skills/code-review/SKILL.md"
-      }
+      "kind": "simplification",
+      "status": "unresolved"
     }
   },
   "disclosure": "Powered by Nyanpasu with Codex, please check the suggestions carefully."

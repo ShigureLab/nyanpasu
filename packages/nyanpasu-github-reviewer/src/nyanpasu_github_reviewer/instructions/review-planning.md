@@ -5,7 +5,7 @@ Read this before implementation review. First establish the dashboard as require
 Record a brief decision in `review-plan.json` and the native conversation: `run`, `skip`, or `reuse`, the reason, source head, and requirement sources. The agent makes this decision; the service owns lifecycle, version pinning, scheduling, and cleanup.
 
 - Run independent design for state/lifecycle changes, new abstractions, changed boundaries/protocols, complex algorithms, or unclear necessity of added machinery. Explicit requests for independent comparison require this stage.
-- Skip mechanical edits or a narrow correction to an already validated design, with a concrete reason.
+- Skip independent design for mechanical edits or a narrow correction to an already validated design, with a concrete reason. This does not skip the necessity audit of substantive production and test changes. Reuse earlier audit conclusions only for unchanged responsibilities with recorded scope, alternatives and retention evidence; earlier bug fixes or a completed task alone are insufficient. If that record is absent, include the outstanding full-PR scope even on an incremental review.
 - Reuse only a frozen reference with identical source tree, requirements, and design constraints. Check the input manifest; a matching head or past task completion alone proves nothing. Cite the prior task and artifact hashes. A changed target base requires rechecking integration behavior.
 - If original requirements are missing, list unknowns. Mark requirements inferred from the PR as inferred; they cannot justify claiming the author's extra behavior is unnecessary.
 
@@ -17,7 +17,7 @@ Use the Nyanpasu subtask control supplied for this turn. For independent design,
    "input": {
       "request_key": "reference:<head>:<requirements-id>:1",
       "purpose": "independent-design",
-      "prompt": "Independent design and failure model",
+      "prompt": "Minimum required design, simpler alternatives, and failure model",
       "inputs": {
          "reason": "Why this change benefits from a reference",
          "requirements": [
@@ -39,7 +39,9 @@ The service replaces the child prompt, pins head/target-base/merge-base and inpu
 
 Creating a child starts it asynchronously. Continue the general review in the parent immediately: inspect the head diff, trace callers and compatibility, examine existing findings and CI, and validate concrete correctness risks. Do not call `await` immediately after `create`, wait for a reference before reading the head, or poll child status while useful general review work remains. The child keeps its frozen inputs; never feed it implementation-derived hints before it freezes its reference.
 
-Read `test-review.md` for every substantive review. General review includes checking the tests needed to support its own findings; independent design comparison and extended test experiments belong to deep review. A separate `test-audit` child is useful for large suites or independent adversarial checks; small changes can be audited directly. Give a test child the target head, scope, evidence questions, and any already frozen failure model; otherwise it derives and labels its own. It receives a fresh head workspace by default. Do not delay general review to obtain a child's failure model.
+Read `test-review.md` for every substantive review. General review includes checking the tests needed to support its own findings; necessity comparison and extended test experiments belong to deep review, whether or not an independent-design child runs. A separate `test-audit` child is useful for large suites or independent adversarial checks; small changes can be audited directly. Give a test child the target head, scope, questions about both detection power and avoidable maintenance, and any already frozen failure model; otherwise it derives and labels its own. It receives a fresh head workspace by default. Do not delay general review to obtain a child's failure model.
+
+Assign the production and test necessity scopes explicitly in `review-plan.json`, including those the parent owns. Ask module reviewers to investigate redundant authority, wrappers, branches and speculative compatibility within their scope, and test reviewers to investigate consolidation, replacement and deletion. Every assigned scope returns decisions and evidence even when no simplification is justified. The parent reconciles this evidence using `design-comparison.md`; children never publish it themselves.
 
 As soon as general review is complete, save its checked scope, findings, commands/results, and remaining questions in `general-review.md`. Publish and verify that checkpoint using the general/deep dashboard stages in `review-output.md`, before waiting for unfinished children or starting a long design comparison or test experiment. In read-only mode retain the same checkpoint locally and report it in the native conversation. General findings remain available if deep review later fails. If no deep work is needed, record it as skipped with a reason and publish the final general conclusion directly.
 

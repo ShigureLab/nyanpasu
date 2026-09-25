@@ -2,6 +2,7 @@
 {% set stage_states = {"pending": "⏳ 待开始", "running": "🔎 进行中", "completed": "✅ 已完成", "skipped": "➖ 无需执行", "incomplete": "⏸️ 未完成"} -%}
 {% set finding_states = {"unresolved": "🚧 未解决", "partial": "🛠️ 部分解决", "resolved": "✅ 已解决", "superseded": "➖ 已被后续变更取代"} -%}
 {% set priorities = {"P0": ["critical", "red"], "P1": ["high", "orange"], "P2": ["medium", "yellow"], "P3": ["low", "blue"]} -%}
+{% set decisions = {"remove": "删除", "merge": "合并", "replace": "替换", "retain": "保留"} -%}
 ## Nyanpasu 审查看板
 
 **审查状态：** {{ review_states[data.status] }}
@@ -17,11 +18,32 @@
 | 深度审查 | {{ stage_states[data.stages.deep.status] }} | {{ data.stages.deep.summary }} |
 
 {% endif -%}
-{% if data.findings -%}
-| 编号 | 问题 | 优先级 | 状态 | 规则来源 |
+{% if data.simplification is defined -%}
+### 精简审查
+
+{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
+{% set audit = data.simplification[key] -%}
+**{{ label }}：** {{ stage_states[audit.status] }} · {{ audit.summary }}
+
+{% if audit.entries -%}
+<details>
+<summary>{{ label }}的必要性与替代方案</summary>
+
+| 范围 | 必须保留的契约 | 更简单的方案 | 结论 | 依据与限制 |
 | --- | --- | --- | --- | --- |
+{% for entry in audit.entries -%}
+| {{ entry.scope }} | {{ entry.contract }} | {{ entry.alternative }} | {{ decisions[entry.decision] }} | {{ entry.evidence }} |
+{% endfor %}
+</details>
+
+{% endif -%}
+{% endfor -%}
+{% endif -%}
+{% if data.findings -%}
+| 编号 | 问题 | 类型 | 优先级 | 状态 | 规则来源 |
+| --- | --- | --- | --- | --- | --- |
 {% for id, finding in data.findings | dictsort -%}
-| {{ id }} | {{ finding.title | md_link(finding.url) }} | ![{{ finding.priority }}](https://img.shields.io/badge/{{ finding.priority }}-{{ priorities[finding.priority][0] }}-{{ priorities[finding.priority][1] }}) | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
+| {{ id }} | {{ finding.title | md_link(finding.url) }} | {% if finding.kind is defined and finding.kind == "simplification" %}精简建议（非阻塞）{% else %}问题{% endif %} | ![{{ finding.priority }}](https://img.shields.io/badge/{{ finding.priority }}-{{ priorities[finding.priority][0] }}-{{ priorities[finding.priority][1] }}) | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
 {% endfor -%}
 {% elif data.status == "approved" -%}
 没有未解决的审查问题。

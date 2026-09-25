@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "source", "summary", "findings", "disclosure"],
+  "required": ["status", "source", "summary", "stages", "findings", "disclosure"],
   "properties": {
     "status": {
       "enum": ["reviewing", "preliminary", "approved", "changes_requested", "comment", "incomplete"]
@@ -30,6 +30,15 @@
         "deep": { "$ref": "#/$defs/stage" }
       }
     },
+    "simplification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["production", "tests"],
+      "properties": {
+        "production": { "$ref": "#/$defs/necessityAudit" },
+        "tests": { "$ref": "#/$defs/necessityAudit" }
+      }
+    },
     "findings": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/finding" }
@@ -41,6 +50,26 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "stages": {
+            "properties": { "deep": { "properties": { "status": { "const": "completed" } } } }
+          }
+        }
+      },
+      "then": {
+        "required": ["simplification"],
+        "properties": {
+          "simplification": {
+            "properties": {
+              "production": { "properties": { "status": { "enum": ["completed", "skipped"] } } },
+              "tests": { "properties": { "status": { "enum": ["completed", "skipped"] } } }
+            }
+          }
+        }
+      }
+    },
     {
       "if": { "properties": { "status": { "const": "preliminary" } } },
       "then": {
@@ -86,6 +115,42 @@
     }
   ],
   "$defs": {
+    "necessityAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "entries"],
+      "properties": {
+        "status": { "enum": ["pending", "running", "completed", "skipped", "incomplete"] },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Checked scope and outcome, outstanding gaps, or a concrete reason no scope applies."
+        },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/necessityDecision" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": { "properties": { "entries": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "skipped" } } },
+          "then": { "properties": { "entries": { "maxItems": 0 } } }
+        }
+      ]
+    },
+    "necessityDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "contract", "alternative", "decision", "evidence"],
+      "properties": {
+        "scope": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "alternative": { "type": "string", "minLength": 1 },
+        "decision": { "enum": ["remove", "merge", "replace", "retain"] },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
     "stage": {
       "type": "object",
       "additionalProperties": false,
@@ -99,10 +164,17 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["title", "url", "priority", "status"],
+      "allOf": [
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "simplification" } } },
+          "then": { "properties": { "priority": { "enum": ["P2", "P3"] } } }
+        }
+      ],
       "properties": {
         "title": { "type": "string", "minLength": 1 },
         "url": { "type": "string", "pattern": "^https?://" },
         "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "kind": { "enum": ["correctness", "simplification"] },
         "status": { "enum": ["unresolved", "partial", "resolved", "superseded"] },
         "rule": {
           "type": "object",

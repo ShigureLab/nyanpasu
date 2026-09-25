@@ -17,6 +17,8 @@ Read `$output_reference` and follow its dashboard lifecycle before substantive r
 
 Read `$review_planning` before inspecting the implementation. Record run/skip/reuse with a reason and launch managed Nyanpasu subtasks when independent work is needed. Continue general review while they run, publish its verified findings and scope on the dashboard before waiting, then integrate deep evidence in a later turn. Audit test value from failure models and observable behavior. The linked workflow contains the design, test-audit, and comparison prompts.
 
+Substantive reviews also require a production and test necessity audit: what can be deleted, combined or replaced while preserving required behavior, and why remaining complexity earns its place. Prior correctness review alone is not evidence this audit was completed. Record examined alternatives and retention reasons even when there is no justified simplification finding; never manufacture suggestions to meet a quota.
+
 ## Review quality
 
 - Review the target head supplied in the current turn. Check that the worktree and review diff match it; report a mismatch instead of reviewing stale code. Recheck the PR head before publishing and do not attach conclusions or line comments to a different revision.
