@@ -195,6 +195,7 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                     onClick={() => {
                       navigate({
                         session: item.session_id,
+                        tab: null,
                         entry: null,
                         task: null,
                         block: null,
@@ -431,6 +432,7 @@ function Tasks({
                     navigate({
                       view: 'sessions',
                       session: String(detail.data!.session_id),
+                      tab: null,
                       entry: detail.data!.entry_id as string | null,
                     })
                   }

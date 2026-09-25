@@ -195,7 +195,7 @@ Dashboard token. Without a webhook secret, that endpoint requires the server tok
 
 Each backend owns its native conversation history. Nyanpasu stores scheduling metadata and session references; the Dashboard reads native messages, reasoning, tool calls, edits, and results without maintaining another conversation database. Session details identify the backend and native session ID. Historical conversations remain readable after changing backends while their runtime and history files remain available.
 
-The session list shows root sessions by default; enable **Show subtask sessions** to include children. A parent session groups its subtasks by task, including nested children, status, waiting relationships, result summaries, and downloadable evidence. Open a child conversation and use **Back to parent session** to return to your reading position. Task groups are collapsible and retain their state during refresh.
+The session list shows root sessions by default; enable **Show subtask sessions** to include children. Each session has **Conversation**, **Session details**, and **Sub tasks** tabs. Switching tabs preserves reading position, search input, and expanded task groups; the selected tab can be bookmarked. Subtask cards use consistent colors for independent design, module review, and test audit, with text labels and separate status indicators. They include nested children, waiting relationships, result summaries, and downloadable evidence. Open a child conversation and use **Back to parent session** to return to your reading position.
 
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:

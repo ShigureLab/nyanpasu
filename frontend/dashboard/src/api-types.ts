@@ -104,6 +104,7 @@ export interface TaskTreeNode {
   task_id: string;
   session_id: string | null;
   title: string;
+  purpose: string | null;
   status: string;
   created_at: string;
   waiting: boolean;

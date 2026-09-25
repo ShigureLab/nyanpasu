@@ -239,6 +239,7 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
         assert root["task_id"] == "current" and root["status"] == "waiting"
         children = {child["title"]: child for child in root["children"]}
         assert children["design"]["summary"] == "Independent design verified"
+        assert children["design"]["purpose"] == "design"
         assert children["design"]["session_id"] == prefix + "design-session"
         assert children["design"]["artifacts"][0]["name"] == "evidence.txt"
         assert "path" not in children["design"]["artifacts"][0]

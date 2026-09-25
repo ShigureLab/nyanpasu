@@ -131,6 +131,7 @@ class TaskArtifact(ContractModel):
 
 
 class TaskTreeNode(TaskLink):
+    purpose: str | None
     status: str
     created_at: str
     waiting: bool

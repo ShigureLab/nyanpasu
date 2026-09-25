@@ -231,6 +231,7 @@ class TranscriptReader:
             result = json.loads(row["subtask_result"] or "{}")
             nodes[row["task_id"]] = {
                 **task_link(row),
+                "purpose": json.loads(row["task_json"]).get("metadata", {}).get("purpose"),
                 "status": row["status"],
                 "created_at": iso_time(row["created_at"]),
                 "waiting": row["task_id"] in waits.get(row["spawned_by_task_id"], []),

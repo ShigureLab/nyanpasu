@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { TranscriptChanges, TranscriptEntry, TranscriptWindow } from './api-types';
+import type {
+  SessionTaskTree,
+  TranscriptChanges,
+  TranscriptEntry,
+  TranscriptWindow,
+} from './api-types';
 import {
   useApi,
   backendLabel,
@@ -11,9 +16,9 @@ import {
   type SessionDetail,
 } from './api';
 import { ContentBlock, Copy, Entry, Status } from './Entry';
-import { Time } from './Time';
 import { Download } from './Download';
-import { SessionTasks } from './SessionTasks';
+import { openTask, SessionTasks } from './SessionTasks';
+import { SessionDetails } from './SessionDetails';
 import {
   applyChanges,
   type TranscriptState,
@@ -23,6 +28,12 @@ import {
   hasTextSelection,
   type ScrollAnchor,
 } from './transcript-model';
+
+const tabs = [
+  { id: 'conversation', label: 'Conversation' },
+  { id: 'details', label: 'Session details' },
+  { id: 'subtasks', label: 'Sub tasks' },
+] as const;
 
 const readingPositions = new Map<string, ScrollAnchor>();
 
@@ -40,6 +51,18 @@ export function Transcript({
   refresh: number;
 }) {
   const { get } = useApi();
+  const tab = tabs.find((item) => item.id === selection.get('tab'))?.id ?? 'conversation';
+  const conversationVisible = tab === 'conversation';
+  const [taskOffset, setTaskOffset] = useState(0);
+  const tree = useResource<SessionTaskTree>(
+    query(`/api/sessions/${session}/task-tree`, { offset: taskOffset, limit: 10 }),
+    live,
+    refresh,
+  );
+  const parent = tree.data?.parent;
+  function selectTab(id: string) {
+    navigate({ tab: id === 'conversation' ? null : id });
+  }
   const base = `/api/sessions/${session}`;
   const detail = useResource<SessionDetail>(base, live, refresh);
   const [{ entries, unread, bounds: window }, setTranscript] = useState<TranscriptState>({
@@ -93,7 +116,8 @@ export function Transcript({
         cursor.current = value.change_cursor;
       } else if (generation !== value.generation)
         throw new Error('Transcript generation changed. Reload this session.');
-      if (container.current && !following.current) anchor.current = readAnchor(container.current);
+      if (container.current?.checkVisibility() && !following.current)
+        anchor.current = readAnchor(container.current);
       setTranscript((current) =>
         applyWindow(
           current,
@@ -157,8 +181,13 @@ export function Transcript({
             throw new Error('Transcript generation changed. Reload this session.');
           const upserts = value.changes.flatMap((change) => change.upserts);
           const list = container.current;
-          const shouldFollow = following.current && !(list && hasTextSelection(list));
-          if (list && !shouldFollow) anchor.current = readAnchor(list);
+          const visibleList = list?.checkVisibility() ? list : null;
+          const shouldFollow = !!(
+            visibleList &&
+            following.current &&
+            !hasTextSelection(visibleList)
+          );
+          if (visibleList && !shouldFollow) anchor.current = readAnchor(visibleList);
           setTranscript((current) => applyChanges(current, upserts, shouldFollow));
           cursor.current = value.next_cursor;
           setReceived(value.generated_at);
@@ -183,6 +212,7 @@ export function Transcript({
     const list = container.current;
     if (!list) return;
     const selectionChanged = () => {
+      if (!list.checkVisibility()) return;
       if (hasTextSelection(list)) anchor.current = readAnchor(list);
       else if (following.current) {
         list.scrollTop = list.scrollHeight;
@@ -196,7 +226,7 @@ export function Transcript({
   }, []);
 
   useEffect(() => {
-    if (!window) return;
+    if (!window || !conversationVisible) return;
     if (!selected) {
       const position = returnAnchor.current;
       returnAnchor.current = null;
@@ -218,12 +248,12 @@ export function Transcript({
       anchor.current = { entryId: selected, offset: 12 };
       if (container.current) restoreAnchor(container.current, anchor.current);
     }
-  }, [selected, window !== null]);
+  }, [selected, window !== null, conversationVisible]);
 
   useLayoutEffect(() => {
     const list = container.current;
     const body = content.current;
-    if (!list || !body) return;
+    if (!list || !body || !conversationVisible) return;
     const restore = () => {
       if (following.current && !hasTextSelection(list)) list.scrollTop = list.scrollHeight;
       else if (anchor.current) restoreAnchor(list, anchor.current);
@@ -233,10 +263,17 @@ export function Transcript({
     observer.observe(body);
     observer.observe(list);
     return () => observer.disconnect();
-  }, [entries]);
+  }, [entries, conversationVisible]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (conversationVisible && following.current)
+      setTranscript((current) =>
+        current.unread.size ? { ...current, unread: new Set() } : current,
+      );
+  }, [conversationVisible]);
+
+  useEffect(() => {
+    if (!selected || !conversationVisible) return;
     const previous = document.activeElement as HTMLElement | null;
     const close = document.getElementById('close-inspector');
     close?.focus({ preventScroll: true });
@@ -249,7 +286,7 @@ export function Transcript({
       document.removeEventListener('keydown', key);
       previous?.focus({ preventScroll: true });
     };
-  }, [selected]);
+  }, [selected, conversationVisible]);
 
   function latest() {
     returnAnchor.current = null;
@@ -278,66 +315,70 @@ export function Transcript({
           <Status state={detail.data.execution_uncertain ? 'unconfirmed' : detail.data.state} />
         )}
       </header>
-      <SessionTasks session={session} navigate={navigate} live={live} refresh={refresh} />
-      <details className="session-details">
-        <summary>
-          Session details
-          {detail.data && <span className="subtle"> · {detail.data.context_key}</span>}
-        </summary>
-        <dl className="session-metadata">
-          <div>
-            <dt>Native session ID</dt>
-            <dd>
-              <code>{detail.data?.thread_id ?? session}</code>
-              <Copy text={detail.data?.thread_id ?? session} label="Copy session ID" />
-            </dd>
-          </div>
-          <div>
-            <dt>Backend</dt>
-            <dd>{detail.data ? backendLabel(detail.data.backend) : 'Loading…'}</dd>
-          </div>
-          <div>
-            <dt>Context key</dt>
-            <dd>
-              <button
-                className="quiet"
-                onClick={() => navigate({ context: detail.data?.context_key ?? null })}
-              >
-                <code>{detail.data?.context_key ?? 'Loading…'}</code>
-              </button>
-            </dd>
-          </div>
-          {detail.data?.runtime && (
-            <>
-              <div>
-                <dt>Model</dt>
-                <dd>
-                  {detail.data.runtime.model ?? 'Unavailable'}{' '}
-                  <span className="subtle">{detail.data.runtime.reasoning_effort}</span>
-                </dd>
-              </div>
-              <div>
-                <dt>Workspace</dt>
-                <dd>
-                  <code>{detail.data.runtime.cwd ?? 'Unavailable'}</code>
-                </dd>
-              </div>
-              <div>
-                <dt>Created</dt>
-                <dd>
-                  <Time value={detail.data.runtime.created_at} />
-                </dd>
-              </div>
-              <div>
-                <dt>Updated</dt>
-                <dd>
-                  <Time value={detail.data.runtime.updated_at} />
-                </dd>
-              </div>
-            </>
-          )}
-        </dl>
-      </details>
+      {parent && (
+        <div className="parent-session-link">
+          <button onClick={() => openTask(parent, navigate)}>
+            ← Back to parent {parent.session_id ? 'session' : 'task'}
+          </button>
+          <span className="subtle">{parent.title}</span>
+        </div>
+      )}
+      <div
+        className="session-tabs"
+        role="tablist"
+        aria-label="Session content"
+        onKeyDown={(event) => {
+          const index = tabs.findIndex((item) => item.id === tab);
+          const next =
+            event.key === 'ArrowRight'
+              ? (index + 1) % tabs.length
+              : event.key === 'ArrowLeft'
+                ? (index + tabs.length - 1) % tabs.length
+                : event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? tabs.length - 1
+                    : null;
+          if (next === null) return;
+          event.preventDefault();
+          selectTab(tabs[next]!.id);
+          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+        }}
+      >
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            role="tab"
+            id={`session-tab-${item.id}`}
+            aria-controls={`session-panel-${item.id}`}
+            aria-selected={tab === item.id}
+            tabIndex={tab === item.id ? 0 : -1}
+            onClick={() => selectTab(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="session-panel-details"
+        aria-labelledby="session-tab-details"
+        className="session-panel session-information"
+        hidden={tab !== 'details'}
+        tabIndex={0}
+      >
+        <SessionDetails detail={detail.data} session={session} navigate={navigate} />
+      </div>
+      <div
+        role="tabpanel"
+        id="session-panel-subtasks"
+        aria-labelledby="session-tab-subtasks"
+        className="session-panel session-information"
+        hidden={tab !== 'subtasks'}
+        tabIndex={0}
+      >
+        <SessionTasks tree={tree} offset={taskOffset} onPage={setTaskOffset} navigate={navigate} />
+      </div>
       {detail.error && (
         <p className="notice error" role="alert">
           {detail.error}
@@ -350,268 +391,279 @@ export function Transcript({
           recorded ending.
         </p>
       )}
-      <div className="transcript-toolbar">
-        <select
-          aria-label="Go to task or turn"
-          value={selection.get('task') ?? ''}
-          onChange={(event) => {
-            const task = event.target.value;
-            const entry = entries.find((item) => item.task_id === task);
-            if (entry) navigate({ task, entry: entry.entry_id });
-            else
-              void get<{ entry_id: string | null }>(`/api/tasks/${encodeURIComponent(task)}`)
-                .then((target) => navigate({ task, entry: target.entry_id }))
-                .catch((error) => setError(String(error)));
+      <div
+        role="tabpanel"
+        id="session-panel-conversation"
+        aria-labelledby="session-tab-conversation"
+        className="session-panel session-conversation"
+        hidden={!conversationVisible}
+      >
+        <div className="transcript-toolbar">
+          <select
+            aria-label="Go to task or turn"
+            value={selection.get('task') ?? ''}
+            onChange={(event) => {
+              const task = event.target.value;
+              const entry = entries.find((item) => item.task_id === task);
+              if (entry) navigate({ task, entry: entry.entry_id });
+              else
+                void get<{ entry_id: string | null }>(`/api/tasks/${encodeURIComponent(task)}`)
+                  .then((target) => navigate({ task, entry: target.entry_id }))
+                  .catch((error) => setError(String(error)));
+            }}
+          >
+            <option value="">Task / turn…</option>
+            {detail.data?.tasks.map((task) => (
+              <option key={task.task_id} value={task.task_id}>
+                {task.title}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter content"
+            value={kind}
+            onChange={(event) => setKind(event.target.value)}
+          >
+            <option value="">All content</option>
+            {[
+              'input',
+              'message',
+              'tool',
+              'file_change',
+              'reasoning',
+              'approval',
+              'runtime',
+              'unknown',
+            ].map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+          <button aria-pressed={follow} onClick={() => (follow ? setFollow(false) : latest())}>
+            {follow ? 'Following latest' : 'Jump to latest ↓'}
+          </button>
+          <button
+            onClick={() =>
+              void get<Page<SearchHit>>(query(`${base}/search`, { errors: true, limit: 1 }))
+                .then((result) => {
+                  const hit = result.items[0];
+                  if (hit) {
+                    setKind('');
+                    navigate({
+                      entry: hit.entry_id,
+                      block: hit.block_id,
+                      content: hit.content_ref,
+                      offset: String(hit.offset),
+                    });
+                  } else setError('No recorded errors in this session.');
+                })
+                .catch((error) => setError(String(error)))
+            }
+          >
+            Recent error
+          </button>
+          <Download path={`${base}/export?format=markdown`} filename={`${session}.md`}>
+            Markdown ↓
+          </Download>
+          <Download path={`${base}/export?format=jsonl`} filename={`${session}.jsonl`}>
+            JSONL ↓
+          </Download>
+        </div>
+        <form
+          className="transcript-search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setSearchOffset(0);
+            setSearchQuery(search);
+            setFollow(false);
           }}
         >
-          <option value="">Task / turn…</option>
-          {detail.data?.tasks.map((task) => (
-            <option key={task.task_id} value={task.task_id}>
-              {task.title}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Filter content"
-          value={kind}
-          onChange={(event) => setKind(event.target.value)}
-        >
-          <option value="">All content</option>
-          {[
-            'input',
-            'message',
-            'tool',
-            'file_change',
-            'reasoning',
-            'approval',
-            'runtime',
-            'unknown',
-          ].map((value) => (
-            <option key={value}>{value}</option>
-          ))}
-        </select>
-        <button aria-pressed={follow} onClick={() => (follow ? setFollow(false) : latest())}>
-          {follow ? 'Following latest' : 'Jump to latest ↓'}
-        </button>
-        <button
-          onClick={() =>
-            void get<Page<SearchHit>>(query(`${base}/search`, { errors: true, limit: 1 }))
-              .then((result) => {
-                const hit = result.items[0];
-                if (hit) {
-                  setKind('');
+          <input
+            aria-label="Search complete session"
+            placeholder="Search all saved input, messages and tool output…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <button type="submit">Search</button>
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery('');
+                setSearch('');
+              }}
+            >
+              Clear
+            </button>
+          )}
+          <span className="subtle">
+            {received ? `Read ${new Date(received).toLocaleTimeString()}` : 'Loading…'}
+          </span>
+        </form>
+        {searchQuery && (
+          <div className="search-results">
+            {searchResults.error && <p role="alert">{searchResults.error}</p>}
+            {searchResults.data?.items.map((hit) => (
+              <button
+                key={`${hit.entry_id}:${hit.block_id}`}
+                onClick={() =>
                   navigate({
                     entry: hit.entry_id,
                     block: hit.block_id,
                     content: hit.content_ref,
                     offset: String(hit.offset),
-                  });
-                } else setError('No recorded errors in this session.');
-              })
-              .catch((error) => setError(String(error)))
-          }
-        >
-          Recent error
-        </button>
-        <Download path={`${base}/export?format=markdown`} filename={`${session}.md`}>
-          Markdown ↓
-        </Download>
-        <Download path={`${base}/export?format=jsonl`} filename={`${session}.jsonl`}>
-          JSONL ↓
-        </Download>
-      </div>
-      <form
-        className="transcript-search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setSearchOffset(0);
-          setSearchQuery(search);
-          setFollow(false);
-        }}
-      >
-        <input
-          aria-label="Search complete session"
-          placeholder="Search all saved input, messages and tool output…"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
-        <button type="submit">Search</button>
-        {searchQuery && (
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery('');
-              setSearch('');
-            }}
-          >
-            Clear
-          </button>
-        )}
-        <span className="subtle">
-          {received ? `Read ${new Date(received).toLocaleTimeString()}` : 'Loading…'}
-        </span>
-      </form>
-      {searchQuery && (
-        <div className="search-results">
-          {searchResults.error && <p role="alert">{searchResults.error}</p>}
-          {searchResults.data?.items.map((hit) => (
-            <button
-              key={`${hit.entry_id}:${hit.block_id}`}
-              onClick={() =>
-                navigate({
-                  entry: hit.entry_id,
-                  block: hit.block_id,
-                  content: hit.content_ref,
-                  offset: String(hit.offset),
-                })
-              }
-            >
-              <strong>{hit.title}</strong>
-              <span>{hit.snippet}</span>
-            </button>
-          ))}
-          {searchResults.data?.items.length === 0 && <p>No matches in saved content.</p>}
-          {searchResults.data?.has_more && (
-            <button onClick={() => setSearchOffset(searchOffset + 50)}>Next results</button>
-          )}
-        </div>
-      )}
-      {error && (
-        <p className="notice error" role="alert">
-          {error}{' '}
-          <button onClick={() => void loadWindow({ around: selected }, true)}>
-            Reload session
-          </button>
-        </p>
-      )}
-      <div className={`reading-layout ${selected ? 'with-inspector' : ''}`}>
-        <div
-          className="transcript-scroll"
-          ref={container}
-          tabIndex={0}
-          aria-label="Session transcript"
-          onWheel={(event) => {
-            if (event.deltaY < 0) {
-              following.current = false;
-              setFollow(false);
-            }
-          }}
-          onScroll={(event) => {
-            const list = event.currentTarget;
-            anchor.current = readAnchor(list);
-            const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-            if (!atBottom) {
-              following.current = false;
-              setFollow(false);
-            }
-            if (loadingHistory.current || kind) return;
-            if (
-              atBottom &&
-              window &&
-              !window.has_newer &&
-              !selected &&
-              !searchQuery &&
-              !hasTextSelection(list)
-            ) {
-              if (!following.current) latest();
-              return;
-            }
-            if (following.current) return;
-            if (list.scrollTop < 80 && window?.has_older) loadMore('older');
-            else if (atBottom && window?.has_newer) loadMore('newer');
-          }}
-        >
-          <div className="transcript-content" ref={content}>
-            {window?.has_older && (
-              <button className="page-control" disabled={busy} onClick={() => loadMore('older')}>
-                {busy ? 'Loading…' : '↑ Load earlier entries'}
+                  })
+                }
+              >
+                <strong>{hit.title}</strong>
+                <span>{hit.snippet}</span>
               </button>
-            )}
-            {!window && busy && <p className="empty">Loading transcript…</p>}
-            {window && entries.length === 0 && (
-              <p className="empty">No conversation items are available for this session.</p>
-            )}
-            {visible.map((entry, index) => (
-              <div key={entry.entry_id}>
-                {(index === 0 || visible[index - 1]?.turn_id !== entry.turn_id) && (
-                  <div className="turn-divider">
-                    <span>
-                      {detail.data?.tasks.find((task) => task.task_id === entry.task_id)?.title ??
-                        entry.task_id ??
-                        'Agent turn'}
-                    </span>
-                    <code>{entry.turn_id ?? 'Turn ID not recorded'}</code>
-                  </div>
-                )}
-                <Entry
-                  entry={entry}
-                  navigate={navigate}
-                  selected={selected === entry.entry_id}
-                  expand={selected === entry.entry_id}
-                  focus={selected === entry.entry_id ? focus : undefined}
-                />
-              </div>
             ))}
-            {window?.has_newer && (
-              <button className="page-control" disabled={busy} onClick={() => loadMore('newer')}>
-                {busy ? 'Loading…' : 'Load later entries ↓'}
-              </button>
+            {searchResults.data?.items.length === 0 && <p>No matches in saved content.</p>}
+            {searchResults.data?.has_more && (
+              <button onClick={() => setSearchOffset(searchOffset + 50)}>Next results</button>
             )}
           </div>
-        </div>
-        {selected && (
-          <aside className="inspector" role="dialog" aria-label="Entry details">
-            <div className="inspector-heading">
-              <h2>Entry details</h2>
-              <button
-                id="close-inspector"
-                onClick={() => navigate({ entry: null, block: null, content: null, offset: null })}
-              >
-                Close ×
-              </button>
-            </div>
-            {inspected.error && <p className="notice error">{inspected.error}</p>}
-            {inspected.data && (
-              <>
-                <dl>
-                  {Object.entries({
-                    Entry: selected,
-                    Task: inspected.data.task_id,
-                    Thread: inspected.data.thread_id,
-                    Turn: inspected.data.turn_id,
-                    Backend: backendLabel(inspected.data.source.backend),
-                    Source: inspected.data.source.origin,
-                    Started: inspected.data.started_at,
-                    Completed: inspected.data.completed_at,
-                    Recorded: inspected.data.recorded_at,
-                    Revision: inspected.data.revision_seq,
-                  }).map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{key}</dt>
-                      <dd>
-                        <code>{value ?? 'Not recorded'}</code>
-                      </dd>
+        )}
+        {error && (
+          <p className="notice error" role="alert">
+            {error}{' '}
+            <button onClick={() => void loadWindow({ around: selected }, true)}>
+              Reload session
+            </button>
+          </p>
+        )}
+        <div className={`reading-layout ${selected ? 'with-inspector' : ''}`}>
+          <div
+            className="transcript-scroll"
+            ref={container}
+            tabIndex={0}
+            aria-label="Session transcript"
+            onWheel={(event) => {
+              if (event.deltaY < 0) {
+                following.current = false;
+                setFollow(false);
+              }
+            }}
+            onScroll={(event) => {
+              const list = event.currentTarget;
+              if (!list.checkVisibility()) return;
+              anchor.current = readAnchor(list);
+              const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+              if (!atBottom) {
+                following.current = false;
+                setFollow(false);
+              }
+              if (loadingHistory.current || kind) return;
+              if (
+                atBottom &&
+                window &&
+                !window.has_newer &&
+                !selected &&
+                !searchQuery &&
+                !hasTextSelection(list)
+              ) {
+                if (!following.current) latest();
+                return;
+              }
+              if (following.current) return;
+              if (list.scrollTop < 80 && window?.has_older) loadMore('older');
+              else if (atBottom && window?.has_newer) loadMore('newer');
+            }}
+          >
+            <div className="transcript-content" ref={content}>
+              {window?.has_older && (
+                <button className="page-control" disabled={busy} onClick={() => loadMore('older')}>
+                  {busy ? 'Loading…' : '↑ Load earlier entries'}
+                </button>
+              )}
+              {!window && busy && <p className="empty">Loading transcript…</p>}
+              {window && entries.length === 0 && (
+                <p className="empty">No conversation items are available for this session.</p>
+              )}
+              {visible.map((entry, index) => (
+                <div key={entry.entry_id}>
+                  {(index === 0 || visible[index - 1]?.turn_id !== entry.turn_id) && (
+                    <div className="turn-divider">
+                      <span>
+                        {detail.data?.tasks.find((task) => task.task_id === entry.task_id)?.title ??
+                          entry.task_id ??
+                          'Agent turn'}
+                      </span>
+                      <code>{entry.turn_id ?? 'Turn ID not recorded'}</code>
                     </div>
+                  )}
+                  <Entry
+                    entry={entry}
+                    navigate={navigate}
+                    selected={selected === entry.entry_id}
+                    expand={selected === entry.entry_id}
+                    focus={selected === entry.entry_id ? focus : undefined}
+                  />
+                </div>
+              ))}
+              {window?.has_newer && (
+                <button className="page-control" disabled={busy} onClick={() => loadMore('newer')}>
+                  {busy ? 'Loading…' : 'Load later entries ↓'}
+                </button>
+              )}
+            </div>
+          </div>
+          {selected && (
+            <aside className="inspector" role="dialog" aria-label="Entry details">
+              <div className="inspector-heading">
+                <h2>Entry details</h2>
+                <button
+                  id="close-inspector"
+                  onClick={() =>
+                    navigate({ entry: null, block: null, content: null, offset: null })
+                  }
+                >
+                  Close ×
+                </button>
+              </div>
+              {inspected.error && <p className="notice error">{inspected.error}</p>}
+              {inspected.data && (
+                <>
+                  <dl>
+                    {Object.entries({
+                      Entry: selected,
+                      Task: inspected.data.task_id,
+                      Thread: inspected.data.thread_id,
+                      Turn: inspected.data.turn_id,
+                      Backend: backendLabel(inspected.data.source.backend),
+                      Source: inspected.data.source.origin,
+                      Started: inspected.data.started_at,
+                      Completed: inspected.data.completed_at,
+                      Recorded: inspected.data.recorded_at,
+                      Revision: inspected.data.revision_seq,
+                    }).map(([key, value]) => (
+                      <div key={key}>
+                        <dt>{key}</dt>
+                        <dd>
+                          <code>{value ?? 'Not recorded'}</code>
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <Copy text={location.href} label="Copy link" />{' '}
+                  <Copy text={JSON.stringify(inspected.data, null, 2)} label="Copy entry JSON" />
+                  {inspected.data.blocks.map((block) => (
+                    <details key={block.block_id}>
+                      <summary>{block.block_id}</summary>
+                      <ContentBlock block={block} session={session} />
+                    </details>
                   ))}
-                </dl>
-                <Copy text={location.href} label="Copy link" />{' '}
-                <Copy text={JSON.stringify(inspected.data, null, 2)} label="Copy entry JSON" />
-                {inspected.data.blocks.map((block) => (
-                  <details key={block.block_id}>
-                    <summary>{block.block_id}</summary>
-                    <ContentBlock block={block} session={session} />
-                  </details>
-                ))}
-              </>
-            )}
-          </aside>
+                </>
+              )}
+            </aside>
+          )}
+        </div>
+        {unread.size > 0 && (
+          <button className="new-content" onClick={latest} aria-live="polite">
+            {unread.size} updated entries · Jump to latest ↓
+          </button>
         )}
       </div>
-      {unread.size > 0 && (
-        <button className="new-content" onClick={latest} aria-live="polite">
-          {unread.size} updated entries · Jump to latest ↓
-        </button>
-      )}
     </section>
   );
 }
