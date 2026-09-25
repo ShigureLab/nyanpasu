@@ -25,6 +25,8 @@ On 2026-09-24, Python 3.14.7: **265 pytest tests passed**, Ruff and `ty` passed;
 
 The 2026-09-25 asynchronous review update reran all **265 pytest tests**, Ruff, `ty`, Markdown formatting, frontend checks and the production build successfully. The 11 offline dashboard cases below also passed. No new model-adherence result is claimed.
 
+The subsequent session-tree update passed **267 pytest tests, 6 frontend tests, and 17 browser tests**, plus Ruff, `ty`, frontend checks and the production build. API cases cover Codex and Claude ownership, nested waits, retained evidence, older task-group pagination, filtering before pagination, and relationships available without reading native history. Browser cases cover subtask navigation, evidence downloads, retained filters and collapsed groups during refresh/failure, and restoration of the exact parent reading position. The navigation case exposed and verified a fix for a lost scroll offset when reopening a session.
+
 ## Commands and limits
 
 For the asynchronous review update, offline `gh-slate render` checks covered 11 dashboard states: initial, preliminary, integrated, deep failure preserving completed general review, skipped deep review, an early blocker, legacy data without stages, and four invalid combinations. The schema rejects preliminary results without completed general review and final approval/comment while deep work remains unfinished. The preview uses the bundled `review.example.json`; no GitHub write is needed. These checks validate the rendered publication contract, not whether a model follows the checkpoint instructions.

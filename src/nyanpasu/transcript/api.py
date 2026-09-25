@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from nyanpasu.transcript.content import redact
-from nyanpasu.transcript.models import TranscriptChanges, TranscriptEntry, TranscriptWindow
+from nyanpasu.transcript.models import SessionTaskTree, TranscriptChanges, TranscriptEntry, TranscriptWindow
 from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
 
@@ -43,12 +43,23 @@ def dashboard_router(
         }
 
     @router.get("/sessions")
-    async def sessions(q: Search = "", state: str = "", context: str = "", offset: Offset = 0, limit: PageSize = 50):
-        return await reader.sessions(q, state, context, offset, limit)
+    async def sessions(
+        q: Search = "",
+        state: str = "",
+        context: str = "",
+        offset: Offset = 0,
+        limit: PageSize = 50,
+        include_subtasks: bool = True,
+    ):
+        return await reader.sessions(q, state, context, offset, limit, include_subtasks=include_subtasks)
 
     @router.get("/sessions/{session_id}")
     async def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):
         return await reader.session(session_id, offset, limit)
+
+    @router.get("/sessions/{session_id}/task-tree", response_model=SessionTaskTree)
+    def task_tree(session_id: str, offset: Offset = 0, limit: PageSize = 10):
+        return reader.task_tree(session_id, offset, limit)
 
     @router.get("/sessions/{session_id}/transcript", response_model=TranscriptWindow | TranscriptChanges)
     async def transcript(

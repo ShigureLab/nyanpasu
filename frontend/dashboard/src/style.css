@@ -326,6 +326,104 @@ small {
 .session-row small {
   font-size: 10px;
 }
+.session-subtask-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-subtask-toggle input {
+  width: auto;
+  margin: 0;
+}
+.session-task-tree {
+  flex-shrink: 0;
+  margin-inline: 25px;
+  min-width: 0;
+}
+.parent-session-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block: 6px;
+  font-size: 12px;
+}
+.session-subtasks {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--subtle-surface);
+  margin-block: 8px;
+}
+.session-subtasks > summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.session-subtasks > summary > span {
+  margin-left: 8px;
+}
+.session-task-groups {
+  max-height: 32vh;
+  overflow: auto;
+  padding: 0 10px 8px;
+  scrollbar-gutter: stable;
+}
+.session-task-group {
+  border-top: 1px solid var(--line);
+  padding-block: 6px;
+}
+.session-task-group > summary {
+  cursor: pointer;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.session-task-group > summary small {
+  display: block;
+  color: var(--muted);
+  padding-left: 16px;
+}
+.session-task-children {
+  list-style: none;
+  padding-left: 12px;
+  margin: 4px 0;
+  border-left: 1px solid var(--line);
+}
+.session-task-children > li {
+  padding-block: 5px;
+  min-width: 0;
+}
+.session-task-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.session-task-heading .task-title {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.session-task-heading .quiet {
+  margin-left: auto;
+}
+.task-result-summary {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  margin: 4px 0;
+}
+.session-task-evidence {
+  font-size: 11px;
+}
+.session-task-evidence > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.session-task-evidence button {
+  margin: 4px 6px 0 0;
+}
 .session-workspace {
   flex: 1;
   min-width: 0;
@@ -923,6 +1021,9 @@ dd code {
   }
   .session-heading h1 {
     font-size: 16px;
+  }
+  .session-task-tree {
+    margin-inline: 12px;
   }
   .session-details > summary {
     padding-inline: 12px;

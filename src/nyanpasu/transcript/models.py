@@ -118,6 +118,35 @@ class TranscriptChanges(ContractModel):
     has_more: bool
 
 
+class TaskLink(ContractModel):
+    task_id: str
+    session_id: str | None
+    title: str
+
+
+class TaskArtifact(ContractModel):
+    name: str
+    sha256: str
+    bytes: int
+
+
+class TaskTreeNode(TaskLink):
+    status: str
+    created_at: str
+    waiting: bool
+    summary: str | None
+    error: str | None
+    artifacts: list[TaskArtifact]
+    children: list[TaskTreeNode]
+
+
+class SessionTaskTree(ContractModel):
+    parent: TaskLink | None
+    groups: list[TaskTreeNode]
+    has_more: bool
+
+
 class TranscriptContract(ContractModel):
     window: TranscriptWindow
     changes: TranscriptChanges
+    task_tree: SessionTaskTree

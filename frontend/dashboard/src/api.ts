@@ -21,6 +21,7 @@ export interface Session {
   created_at: string;
   updated_at: string;
   task_count: number;
+  spawned_by_task_id: string | null;
   execution_uncertain: boolean;
   coverage: Coverage;
   origin: string;

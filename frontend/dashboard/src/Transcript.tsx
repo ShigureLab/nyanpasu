@@ -13,6 +13,7 @@ import {
 import { ContentBlock, Copy, Entry, Status } from './Entry';
 import { Time } from './Time';
 import { Download } from './Download';
+import { SessionTasks } from './SessionTasks';
 import {
   applyChanges,
   type TranscriptState,
@@ -115,8 +116,8 @@ export function Transcript({
 
   useEffect(() => {
     active.current = true;
-    const target = selected ?? readingPositions.get(session)?.entryId ?? null;
-    void loadWindow({ around: target }, true);
+    const position = selected ? undefined : readingPositions.get(session);
+    void loadWindow({ around: selected ?? position?.entryId ?? null }, true, position);
     return () => {
       active.current = false;
       historyRequest.current += 1;
@@ -277,6 +278,7 @@ export function Transcript({
           <Status state={detail.data.execution_uncertain ? 'unconfirmed' : detail.data.state} />
         )}
       </header>
+      <SessionTasks session={session} navigate={navigate} live={live} refresh={refresh} />
       <details className="session-details">
         <summary>
           Session details

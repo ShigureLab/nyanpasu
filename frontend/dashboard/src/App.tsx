@@ -50,9 +50,11 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
   const overview = useResource<Overview>('/api/overview', live, refresh);
   const [sessionQuery, setSessionQuery] = useState('');
   const [sessionState, setSessionState] = useState('');
+  const [showSubtasks, setShowSubtasks] = useState(false);
   const sessionList = useRef<HTMLDivElement>(null);
   const sessionEnd = useRef<HTMLDivElement>(null);
   const sessionPath = query('/api/sessions', {
+    include_subtasks: showSubtasks,
     q: sessionQuery,
     state: sessionState,
     context: selection.get('context'),
@@ -159,10 +161,20 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                 }}
               >
                 <option value="">All statuses</option>
-                {['running', 'completed', 'failed'].map((state) => (
-                  <option key={state}>{state}</option>
-                ))}
+                {['queued', 'running', 'waiting', 'completed', 'failed', 'cancelled'].map(
+                  (state) => (
+                    <option key={state}>{state}</option>
+                  ),
+                )}
               </select>
+              <label className="session-subtask-toggle">
+                <input
+                  type="checkbox"
+                  checked={showSubtasks}
+                  onChange={(event) => setShowSubtasks(event.target.checked)}
+                />
+                Show subtask sessions
+              </label>
               {selection.has('context') && (
                 <button onClick={() => navigate({ context: null })}>Clear context filter</button>
               )}
@@ -200,6 +212,7 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                     <code>{item.context_key}</code>
                     <small>
                       {item.task_count} tasks · {backendLabel(item.backend)}
+                      {item.spawned_by_task_id && ' · subtask'}
                     </small>
                   </button>
                 ))}

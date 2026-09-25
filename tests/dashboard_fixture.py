@@ -54,8 +54,20 @@ def fixture_app():
     )
     state.record_task(review)
     state.mark_task_running(review.task_id, None)
-    design = state.create_subtask(review.task_id, SubtaskRequest(request_key="design", prompt="Reference design"))
-    audit = state.create_subtask(review.task_id, SubtaskRequest(request_key="audit", prompt="Audit tests"))
+    state.bind_task_execution(review.task_id, "fixture-review-thread", "fixture-turn")
+    design = state.create_subtask(
+        review.task_id, SubtaskRequest(request_key="design", prompt="Reference design", purpose="Reference design")
+    )
+    audit = state.create_subtask(
+        review.task_id, SubtaskRequest(request_key="audit", prompt="Audit tests", purpose="Test audit")
+    )
+    state.mark_task_running(audit.task_id, None)
+    state.bind_task_execution(audit.task_id, "fixture-audit-thread", "fixture-turn")
+    experiment = state.create_subtask(
+        audit.task_id, SubtaskRequest(request_key="experiment", prompt="Check cleanup", purpose="Cleanup experiment")
+    )
+    state.wait_for_subtasks(audit.task_id, [experiment.task_id])
+    state.mark_task_waiting(audit.task_id)
     evidence = b"Frozen independent design evidence\n"
     digest = hashlib.sha256(evidence).hexdigest()
     artifact = config.state_dir / "artifacts" / "subtasks" / design.task_id / digest
@@ -71,7 +83,11 @@ def fixture_app():
     )
     state.mark_task_done(
         TaskRunResult(
-            task_id=design.task_id, status=TaskStatus.COMPLETED, thread_id=None, turn_id=None, final_message=""
+            task_id=design.task_id,
+            status=TaskStatus.COMPLETED,
+            thread_id="fixture-design-thread",
+            turn_id="fixture-turn",
+            final_message="",
         )
     )
     state.wait_for_subtasks(review.task_id, [audit.task_id])

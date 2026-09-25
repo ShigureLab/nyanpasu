@@ -8,6 +8,7 @@
 export interface TranscriptContract {
   window: TranscriptWindow;
   changes: TranscriptChanges;
+  task_tree: SessionTaskTree;
   [k: string]: unknown;
 }
 export interface TranscriptWindow {
@@ -85,5 +86,36 @@ export interface TranscriptChanges {
 export interface EntryChange {
   seq: string;
   upserts: TranscriptEntry[];
+  [k: string]: unknown;
+}
+export interface SessionTaskTree {
+  parent: TaskLink | null;
+  groups: TaskTreeNode[];
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface TaskLink {
+  task_id: string;
+  session_id: string | null;
+  title: string;
+  [k: string]: unknown;
+}
+export interface TaskTreeNode {
+  task_id: string;
+  session_id: string | null;
+  title: string;
+  status: string;
+  created_at: string;
+  waiting: boolean;
+  summary: string | null;
+  error: string | null;
+  artifacts: TaskArtifact[];
+  children: TaskTreeNode[];
+  [k: string]: unknown;
+}
+export interface TaskArtifact {
+  name: string;
+  sha256: string;
+  bytes: number;
   [k: string]: unknown;
 }
