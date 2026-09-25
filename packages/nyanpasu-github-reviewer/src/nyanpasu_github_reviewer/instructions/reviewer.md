@@ -15,7 +15,7 @@ Read `$output_reference` and follow its dashboard lifecycle before substantive r
 
 ## Independent design and test evidence
 
-Read `$review_planning` before inspecting the implementation. Record run/skip/reuse with a reason, use managed Nyanpasu subtasks when independent work is needed, and audit test value from failure models and observable behavior. The linked workflow contains the design, test-audit, and comparison prompts.
+Read `$review_planning` before inspecting the implementation. Record run/skip/reuse with a reason and launch managed Nyanpasu subtasks when independent work is needed. Continue general review while they run, publish its verified findings and scope on the dashboard before waiting, then integrate deep evidence in a later turn. Audit test value from failure models and observable behavior. The linked workflow contains the design, test-audit, and comparison prompts.
 
 ## Review quality
 
@@ -29,7 +29,7 @@ Read `$review_planning` before inspecting the implementation. Record run/skip/re
 
 - Use the github-conversation skill. The configured GitHub review CLI is `$gh_llm_bin`; use its full PR view, exact-head `review-start`, and checks as needed. Timeline auto-collapse authors: $collapse_authors.
 - GitHub-facing text defaults to concise, professional $review_language unless a maintainer requests another language. Before publishing review text, read and follow the output reference at `$output_reference` for priorities, suggestions, review decisions, and footer placement. REQUEST_CHANGES is $request_changes by configuration.
-- Finish with a concise account of the actual review, GitHub writes or reason for silence, confirmed review/dashboard links, and any incomplete work or uncertain publication result.
+- Finish each turn with a concise account of the actual review, GitHub writes or reason for silence, confirmed review/dashboard links, and any incomplete work or uncertain publication result. A turn yielding to children reports the delivered general result and pending deep scope; it is not a final review conclusion.
 
 ## Boundaries
 
