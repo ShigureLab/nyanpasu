@@ -23,11 +23,15 @@ The scheduling failure is a deterministic injected deadlock with event-gated tas
 
 On 2026-09-24, Python 3.14.7: **265 pytest tests passed**, Ruff and `ty` passed; frontend checks, type generation and build passed; **6 frontend tests and 15 browser tests passed**. The directed experiments produced the outcomes above. Native model quality was not evaluated.
 
+The 2026-09-25 asynchronous review update reran all **265 pytest tests**, Ruff, `ty`, Markdown formatting, frontend checks and the production build successfully. The 11 offline dashboard cases below also passed. No new model-adherence result is claimed.
+
 ## Commands and limits
+
+For the asynchronous review update, offline `gh-slate render` checks covered 11 dashboard states: initial, preliminary, integrated, deep failure preserving completed general review, skipped deep review, an early blocker, legacy data without stages, and four invalid combinations. The schema rejects preliminary results without completed general review and final approval/comment while deep work remains unfinished. The preview uses the bundled `review.example.json`; no GitHub write is needed. These checks validate the rendered publication contract, not whether a model follows the checkpoint instructions.
 
 - `uv run pytest -q` for backend and plugin behavior.
 - `uv run ruff check .`, `uv run ruff format --check .`, and the repository's `ty check --error-on-warning` command.
 - `pnpm run types`, `pnpm run check`, `pnpm run test`, `pnpm run build` and `pnpm exec playwright test`.
 - Browser fixtures display persisted states without recovering them into actual model runs. This host requires loopback proxy bypass and local Chromium dependencies; those host adaptations are outside the source change.
 
-Not validated by these checks: live Codex/Claude model adherence to the prompts, cross-host execution/failover, model quality/cost on historical PRs, or an OS/network blind sandbox. The capability and base-tree snapshot are not protection from a malicious process with the same OS account. `evals/reviewer/` contains provisional cases and a maintainer grading protocol; no blind evaluation results are claimed. No production service restart or rollout is part of this stack.
+Not validated by these checks: live Codex/Claude model adherence to the prompts, cross-host execution/failover, model quality/cost on historical PRs, or an OS/network blind sandbox. The capability and base-tree snapshot are not protection from a malicious process with the same OS account. `evals/reviewer/` contains provisional cases and a maintainer grading protocol; no blind evaluation results are claimed. The 2026-09-24 deployment separately verified health, migration, authenticated Dashboard pages and reviewer polling; service readiness is not model-quality evidence.
