@@ -113,21 +113,27 @@ async def wait_status(agent: AgentService, task_id: str, status: str):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("turn_finished", [False, True])
-async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_path, turn_finished):
+@pytest.mark.parametrize("interrupt_fails", [False, True])
+async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_path, turn_finished, interrupt_fails):
     config = _config(tmp_path, concurrency=1)
     parent_started, child_started = asyncio.Event(), asyncio.Event()
 
     class Interrupted(FakeCodex):
         async def run_turn(self, **kwargs):
             result = await super().run_turn(**kwargs)
-            if kwargs["prompt"] == "parent":
-                parent_started.set()
-                await parent_release.wait()
+            try:
+                if kwargs["prompt"] == "parent":
+                    parent_started.set()
+                    await parent_release.wait()
+                    return result
+                (kwargs["cwd"] / "unfinished").write_text("keep")
+                child_started.set()
+                await asyncio.Event().wait()
                 return result
-            (kwargs["cwd"] / "unfinished").write_text("keep")
-            child_started.set()
-            await asyncio.Event().wait()
-            return result
+            except asyncio.CancelledError:
+                if interrupt_fails:
+                    raise RuntimeError("Cannot confirm backend stopped") from None
+                raise
 
     parent_release = asyncio.Event()
     first = AgentService(
@@ -295,7 +301,8 @@ async def test_failed_cleanup_is_retried_after_restart_without_resuming_children
 
 
 @pytest.mark.anyio
-async def test_cleanup_joins_workspace_creation_before_removing_files(tmp_path):
+@pytest.mark.parametrize("workspace_policy", ["context", "event_snapshot"])
+async def test_cleanup_joins_workspace_creation_before_removing_files(tmp_path, workspace_policy):
     from threading import Event
 
     from nyanpasu.models import TaskAction
@@ -304,14 +311,22 @@ async def test_cleanup_joins_workspace_creation_before_removing_files(tmp_path):
     started, release, finished = Event(), Event(), Event()
 
     class Worktrees(FakeWorktrees):
-        def prepare_context(self, task, existing):
-            context = super().prepare_context(task, existing)
+        def finish_creation(self, path):
             started.set()
             assert release.wait(3)
-            assert context.session_worktree is not None
-            (context.session_worktree / "late-write").write_text("created")
+            (path / "late-write").write_text("created")
             finished.set()
+
+        def prepare_context(self, task, existing):
+            context = super().prepare_context(task, existing)
+            if workspace_policy == "context":
+                self.finish_creation(context.session_worktree)
             return context
+
+        def prepare_event_snapshot(self, task):
+            path = super().prepare_event_snapshot(task)
+            self.finish_creation(path)
+            return path
 
         def remove_worktree(self, workspace, path):
             assert finished.is_set()
@@ -320,12 +335,18 @@ async def test_cleanup_joins_workspace_creation_before_removing_files(tmp_path):
     worktrees, backend = Worktrees(tmp_path / "worktrees"), FakeCodex()
     agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, backend))
     try:
-        await agent.submit(_task("parent"))
+        await agent.submit(_task("parent").model_copy(update={"workspace_policy": workspace_policy}))
         assert await asyncio.to_thread(started.wait, 2)
         await agent.submit(_task("cleanup").model_copy(update={"action": TaskAction.CLEANUP}))
+        async with asyncio.timeout(3):
+            while not agent._runners["parent"].cancelling():
+                await asyncio.sleep(0.005)
+        assert agent.store.get_context_lease("demo:1") is not None
+        assert not finished.is_set()
         release.set()
         await wait_status(agent, "cleanup", "completed")
-        assert len(worktrees.removed) == 1
+        assert len(worktrees.removed) == (2 if workspace_policy == "event_snapshot" else 1)
+        assert set(worktrees.event_paths).issubset(worktrees.removed)
         assert backend.calls == []
         assert agent.store.task_status("parent") == "cancelled"
     finally:

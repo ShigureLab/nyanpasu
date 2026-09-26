@@ -251,6 +251,17 @@ class StateStore:
     def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
 
+    def bind_task_event_worktree(self, task_id: str, path: Path) -> None:
+        # Creation may finish during cancellation; record ownership without reviving the task.
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE task_runs SET event_worktree=?,updated_at=? WHERE task_id=? AND EXISTS (
+                    SELECT 1 FROM context_scopes c WHERE c.context_key=task_runs.context_key
+                    AND c.generation=task_runs.context_generation AND c.lifecycle <> 'closed'
+                )""",
+                (str(path), time.time(), task_id),
+            )
+
     @staticmethod
     def _ensure_scope(conn: sqlite3.Connection, key: str, *, reopen: bool = False) -> ContextScope:
         conn.execute("INSERT OR IGNORE INTO context_scopes (context_key,generation) VALUES (?,1)", (key,))

@@ -263,3 +263,69 @@ async def test_cancel_waits_for_native_turn_to_stop(tmp_path, cancel_during_star
     with pytest.raises(asyncio.CancelledError):
         await execution
     assert backend._turn_waiters == {}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stop", ["shutdown", "cleanup"])
+@pytest.mark.parametrize("failure", ["rpc", "completion_timeout"])
+async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path, monkeypatch, stop, failure):
+    from nyanpasu.agent import AgentService
+    from nyanpasu.backends import Backend, Backends
+    from nyanpasu.models import TaskAction
+    from nyanpasu.transcript.codex import CodexHistorySource
+    from tests.test_agent import FakeCodex, FakeWorktrees, _config, _task, fake_backends
+    from tests.test_subtask_runtime import wait_status
+
+    wait_for = asyncio.wait_for
+
+    async def short_interrupt_deadline(awaitable, timeout):
+        return await wait_for(awaitable, 0.01 if timeout == 30 else timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", short_interrupt_deadline)
+
+    class Server(RecordingAppServerBackend):
+        async def _request(self, method, params):
+            if method == "turn/interrupt":
+                if failure == "rpc":
+                    raise ConnectionError("interrupt connection lost")
+                return {}  # Acknowledged, but no turn/completed notification follows.
+            return await super()._request(method, params)
+
+    config = _config(tmp_path)
+    backend = Server(config)
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    first = AgentService(
+        config, worktrees=worktrees, backends=Backends(config, {"codex": Backend(backend, CodexHistorySource(backend))})
+    )
+    try:
+        await first.submit(_task("parent"))
+        async with asyncio.timeout(3):
+            while not backend._turn_waiters:
+                await asyncio.sleep(0.005)
+        if stop == "shutdown":
+            await first.shutdown()
+            assert first.store.task_status("parent") == "queued"
+        else:
+            await first.submit(_task("cleanup").model_copy(update={"action": TaskAction.CLEANUP}))
+            await wait_status(first, "cleanup", "failed")
+            assert first.store.task_status("parent") == "cancelled"
+            assert first.store.context_scope("demo:1").lifecycle == "closing"
+        assert worktrees.removed == []
+        assert first.store.task_run("parent").thread_id == "thread-1"
+    finally:
+        await first.shutdown()
+
+    recovered = FakeCodex()
+    second = AgentService(config, worktrees=worktrees, backends=fake_backends(config, recovered))
+    try:
+        await second.startup()
+        await asyncio.wait_for(asyncio.gather(*second._tasks), 3)
+        if stop == "shutdown":
+            assert second.store.task_status("parent") == "completed"
+            assert [thread for _, thread in recovered.calls] == ["thread-1"]
+        else:
+            assert second.store.context_scope("demo:1").lifecycle == "closed"
+            assert recovered.calls == []
+            assert len(worktrees.removed) == 1
+    finally:
+        await second.shutdown()

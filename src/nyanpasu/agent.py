@@ -270,15 +270,17 @@ class AgentService:
                 )
                 if result.status is not TaskStatus.WAITING:
                     return result
-        except asyncio.CancelledError:
-            if await to_thread.run_sync(self.store.task_is_active, task.task_id):
-                await to_thread.run_sync(
-                    self.store.mark_task_interrupted, task.task_id, "Service stopped; awaiting recovery"
-                )
-            raise
-        except Exception as exc:
-            await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
-            await self.cancel_subtasks(task.task_id)
+        except (asyncio.CancelledError, Exception) as exc:
+            runner = asyncio.current_task()
+            if isinstance(exc, asyncio.CancelledError) or (runner is not None and runner.cancelling()):
+                # Failed stop confirmation must block cleanup without forfeiting recovery.
+                if await to_thread.run_sync(self.store.task_is_active, task.task_id):
+                    await to_thread.run_sync(
+                        self.store.mark_task_interrupted, task.task_id, "Service stopped; awaiting recovery"
+                    )
+            else:
+                await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
+                await self.cancel_subtasks(task.task_id)
             raise
         return None
 
@@ -359,20 +361,16 @@ class AgentService:
             if existing is None or existing.session_worktree is None or not existing.session_worktree.is_dir():
                 raise RuntimeError("Cannot resume task: its session workspace is unavailable")
             context = replace_context(existing, thread_id=record.thread_id if resuming else None)
+            event_worktree = record.event_worktree
+            if event_worktree is not None and not event_worktree.is_dir():
+                raise RuntimeError("Cannot resume task: its event workspace is unavailable")
         else:
-            context = await self._prepare_workspace(task, existing)
+            context, event_worktree = await self._prepare_workspace(task, existing)
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
         context = replace_context(context, backend=backend_name)
         if context.session_worktree is None:
             context = replace_context(context, session_worktree=Path.cwd())
-        event_worktree = record.event_worktree if recovering else None
-        if task.workspace_policy == "event_snapshot":
-            if not recovering:
-                event_worktree = await to_thread.run_sync(self.worktrees.prepare_event_snapshot, task)
-            elif event_worktree is not None and not event_worktree.is_dir():
-                raise RuntimeError("Cannot resume task: its event workspace is unavailable")
-            await to_thread.run_sync(self.store.mark_task_running, task.task_id, event_worktree)
         logger.info(
             "task started task_id={} context={} thread_id={} workspace={} workspace_policy={}",
             task.task_id,
@@ -480,14 +478,21 @@ class AgentService:
             logger.info("task event snapshot removed task_id={} path={}", task.task_id, event_worktree)
         return run_result
 
-    async def _prepare_workspace(self, task: AgentTask, existing: AgentContext | None) -> AgentContext:
+    async def _prepare_workspace(
+        self, task: AgentTask, existing: AgentContext | None
+    ) -> tuple[AgentContext, Path | None]:
         async def prepare():
             context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
             if existing is None:
                 # Resource ownership must survive a backend failing before on_started.
                 context = replace_context(context, backend=self.config.runtime.backend)
                 await to_thread.run_sync(self.store.upsert_context, context)
-            return context
+            event_worktree = None
+            if task.workspace_policy == "event_snapshot":
+                event_worktree = await to_thread.run_sync(self.worktrees.prepare_event_snapshot, task)
+                if event_worktree is not None:
+                    await to_thread.run_sync(self.store.bind_task_event_worktree, task.task_id, event_worktree)
+            return context, event_worktree
 
         preparation = asyncio.create_task(prepare())
         try:
