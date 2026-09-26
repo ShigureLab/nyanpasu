@@ -103,7 +103,9 @@ class WorktreeManager:
             self._remove_worktree_unlocked(workspace, path)
         path.mkdir(parents=True)
         with tarfile.open(fileobj=io.BytesIO(archive)) as contents:
-            contents.extractall(path, filter="data")
+            # Git emits files, directories and symlinks. Validate member paths while
+            # preserving link text, including valid targets outside the snapshot.
+            contents.extractall(path, filter="tar")
         manifest = {
             "source_sha": revision,
             "source_tree_sha": tree,

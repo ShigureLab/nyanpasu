@@ -229,8 +229,8 @@ def test_snapshot_fetches_base_blobs_missing_from_partial_clone(tmp_path):
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{base}^{{tree}}")
 
 
-@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed"])
-def test_snapshot_preserves_empty_trees_and_gitlinks(tmp_path, contents):
+@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed", "symlinks"])
+def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -242,11 +242,17 @@ def test_snapshot_preserves_empty_trees_and_gitlinks(tmp_path, contents):
     git("config", "user.email", "test@example.invalid")
     git("commit", "--allow-empty", "-m", "empty base")
     initial = git("rev-parse", "HEAD")
-    if contents != "empty":
+    if contents in {"submodule", "mixed"}:
         git("update-index", "--add", "--cacheinfo", "160000", initial, "deps/library with spaces")
     if contents == "mixed":
         (repo / "README.md").write_text("project with a submodule")
         git("add", "README.md")
+    if contents == "symlinks":
+        (tmp_path / "outside").write_text("untouched target")
+        (repo / "absolute").symlink_to(tmp_path / "outside")
+        (repo / "relative").symlink_to("../../outside")
+        (repo / "link-text").symlink_to("dir/../target")
+        git("add", ".")
     git("commit", "--allow-empty", "-m", "snapshot source")
     source = git("rev-parse", "HEAD")
     task = AgentTask(
@@ -260,6 +266,8 @@ def test_snapshot_preserves_empty_trees_and_gitlinks(tmp_path, contents):
     snapshot = WorktreeManager(_config(tmp_path)).prepare_context(task, None).session_worktree
     assert snapshot is not None
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{source}^{{tree}}")
+    if contents == "symlinks":
+        assert (tmp_path / "outside").read_text() == "untouched target"
 
 
 @pytest.mark.anyio
