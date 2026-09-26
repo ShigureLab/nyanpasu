@@ -88,6 +88,12 @@
       "if": { "properties": { "status": { "enum": ["approved", "comment"] } } },
       "then": {
         "properties": {
+          "simplification": {
+            "properties": {
+              "production": { "properties": { "status": { "enum": ["completed", "skipped"] } } },
+              "tests": { "properties": { "status": { "enum": ["completed", "skipped"] } } }
+            }
+          },
           "stages": {
             "properties": {
               "general": { "properties": { "status": { "const": "completed" } } },
