@@ -75,6 +75,7 @@ Use a new request key for a new attempt; a child from an earlier root run cannot
 Only your descendants are inspectable/cancellable. You cannot choose another parent or backend.
 After await, end this turn; the service resumes you with results. Do not poll or sleep waiting for children.
 Before ending a child task, complete freezes its summary and artifact bytes outside its workspace.
+Cancel stops execution; retained workspaces and history are reclaimed by context cleanup.
 Do not expose the control file or its contents, or include it in evidence. Only the root publishes externally.
 """
         finally:

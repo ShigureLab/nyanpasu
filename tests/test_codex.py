@@ -284,12 +284,20 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
     monkeypatch.setattr(asyncio, "wait_for", short_interrupt_deadline)
 
     class Server(RecordingAppServerBackend):
+        closed = False
+
         async def _request(self, method, params):
             if method == "turn/interrupt":
                 if failure == "rpc":
                     raise ConnectionError("interrupt connection lost")
                 return {}  # Acknowledged, but no turn/completed notification follows.
             return await super()._request(method, params)
+
+        async def close(self):
+            if not self.closed:
+                assert first.store.get_context_lease(target.context_key) is not None
+                self.closed = True
+            await super().close()
 
     config = _config(tmp_path)
     backend = Server(config)
@@ -325,6 +333,10 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
             assert first.store.context_scope("demo:1").lifecycle == "closing"
             await first.submit(_task("cleanup-retry").model_copy(update={"action": TaskAction.CLEANUP}))
             await wait_status(first, "cleanup-retry", "failed")
+            assert first.store.get_context_lease(target.context_key) is not None
+            assert not first.store.try_acquire_context_lease(
+                target.context_key, owner_id="another-service", task_id="resume", ttl_seconds=60
+            )
         assert worktrees.removed == []
         assert first.store.task_run(target.task_id).thread_id == "thread-1"
     finally:

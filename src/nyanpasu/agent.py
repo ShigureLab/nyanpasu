@@ -61,6 +61,7 @@ class AgentService:
         self._context_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._runners: dict[str, asyncio.Task[None]] = {}
+        self._lease_heartbeats: set[asyncio.Task[None]] = set()
         self._admitted_roots: set[str] = set()
         self._submit_lock = asyncio.Lock()
         self._post_process_hooks: dict[str, list[PostProcessHook]] = {}
@@ -510,20 +511,28 @@ class AgentService:
         async with self._lock_for_context(task.context_key):
             await self._acquire_context_lease(task)
             heartbeat = asyncio.create_task(self._heartbeat_context_lease(task, asyncio.current_task()))
+            self._lease_heartbeats.add(heartbeat)
+            heartbeat.add_done_callback(self._lease_heartbeats.discard)
+            stop_unconfirmed = False
             try:
                 yield
+            except Exception:
+                runner = asyncio.current_task()
+                stop_unconfirmed = runner is not None and runner.cancelling() > 0
+                raise
             finally:
-                heartbeat.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await heartbeat
-                await to_thread.run_sync(
-                    functools.partial(
-                        self.store.release_context_lease,
-                        task.context_key,
-                        owner_id=self._owner_id,
-                        task_id=task.task_id,
+                if not stop_unconfirmed:
+                    heartbeat.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat
+                    await to_thread.run_sync(
+                        functools.partial(
+                            self.store.release_context_lease,
+                            task.context_key,
+                            owner_id=self._owner_id,
+                            task_id=task.task_id,
+                        )
                     )
-                )
 
     async def _cleanup_context(self, task: AgentTask) -> TaskRunResult:
         logger.info("task cleanup started task_id={} context={}", task.task_id, task.context_key)
@@ -655,7 +664,6 @@ class AgentService:
             ):
                 if runner is not None and not runner.cancelling():
                     runner.cancel()
-                return
             ok = await to_thread.run_sync(
                 functools.partial(
                     self.store.heartbeat_context_lease,
@@ -685,9 +693,13 @@ class AgentService:
         for task in list(self._tasks):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        await self.control.close()
+        await self.backends.close()
+        # Keep unconfirmed execution fenced until its owning backend is closed.
+        for heartbeat in tuple(self._lease_heartbeats):
+            heartbeat.cancel()
+        await asyncio.gather(*self._lease_heartbeats, return_exceptions=True)
         released = await to_thread.run_sync(self.store.release_context_leases_for_owner, self._owner_id)
         if released:
             logger.info("agent shutdown released context leases owner={} count={}", self._owner_id, released)
-        await self.control.close()
-        await self.backends.close()
         logger.info("agent shutdown finished")

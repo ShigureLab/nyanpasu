@@ -63,7 +63,8 @@ async def test_children_run_while_parent_runs_and_waits_without_admitting_anothe
 
 
 @pytest.mark.anyio
-async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path):
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path, cancel_first):
     from nyanpasu.models import TaskAction
 
     config = _config(tmp_path, concurrency=1)
@@ -94,6 +95,13 @@ async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path):
         await asyncio.wait_for(parent_started.wait(), 2)
         child = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
         await asyncio.wait_for(child_started.wait(), 2)
+        if cancel_first:
+            await agent.control.dispatch("parent", "cancel", {"task_ids": [child.task_id]})
+            assert agent.store.task_status(child.task_id) == "cancelled"
+            context = agent.store.get_context(child.context_key)
+            assert context is not None and context.session_worktree is not None
+            assert context.session_worktree.exists()
+            assert worktrees.removed == []
         cleanup = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
         await agent.submit(cleanup)
         await wait_status(agent, "cleanup", "completed")
