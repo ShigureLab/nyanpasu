@@ -275,7 +275,7 @@ class AgentService:
                     if task.action is TaskAction.IGNORED
                     else await self._run_context_task(task, record)
                 )
-                if result.status is not TaskStatus.WAITING:
+                if result is None or result.status is not TaskStatus.WAITING:
                     return result
         except (asyncio.CancelledError, Exception) as exc:
             runner = asyncio.current_task()
@@ -336,7 +336,7 @@ class AgentService:
         for identity in ids:
             await to_thread.run_sync(self.store.cancel_task_tree, identity)
 
-    async def _run_context_task(self, task: AgentTask, record: TaskRunSummary) -> TaskRunResult:
+    async def _run_context_task(self, task: AgentTask, record: TaskRunSummary) -> TaskRunResult | None:
         started_at = time.monotonic()
         existing = await to_thread.run_sync(self.store.get_context, task.context_key)
         recovering = record.thread_id is not None
@@ -464,7 +464,8 @@ class AgentService:
             event_worktree=event_worktree,
             session_worktree=context.session_worktree,
         )
-        await to_thread.run_sync(self.store.mark_task_done, run_result)
+        if not await to_thread.run_sync(self.store.mark_task_done, run_result):
+            return None
         if waiting:
             return run_result
         logger.info(

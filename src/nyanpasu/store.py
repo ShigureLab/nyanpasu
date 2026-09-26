@@ -571,8 +571,8 @@ class StateStore:
             if context is not None:
                 self._upsert_context(conn, replace_context(context, thread_id=thread_id))
 
-    def mark_task_done(self, result: TaskRunResult) -> None:
-        self._update_task(
+    def mark_task_done(self, result: TaskRunResult) -> bool:
+        return self._update_task(
             result.task_id,
             result.status,
             backend=result.backend,
@@ -961,7 +961,7 @@ class StateStore:
         turn_id: str | None = None,
         error: str | None = None,
         final_message: str | None = None,
-    ) -> None:
+    ) -> bool:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
         if status is TaskStatus.COMPLETED and final_message is not None:
@@ -995,6 +995,7 @@ class StateStore:
             if status is TaskStatus.FAILED and updated.rowcount:
                 # A restart must never see a failed owner with active descendants.
                 self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
+            return bool(updated.rowcount)
 
 
 def replace_context(context: AgentContext, **changes: Any) -> AgentContext:

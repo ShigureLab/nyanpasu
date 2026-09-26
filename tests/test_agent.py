@@ -393,6 +393,40 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("conflict", ["closing", "cancelled"])
+async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_path, monkeypatch, conflict):
+    config = _config(tmp_path)
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, FakeCodex()))
+    other = StateStore(config.db_path)
+    publish = AsyncMock()
+    agent.add_post_process_hook("review", publish)
+    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    commit = agent.store.mark_task_done
+
+    def finish(result):
+        if conflict == "closing":
+            record = other.task_run(task.task_id)
+            other.begin_context_cleanup(task.context_key, record.context_generation)
+        else:
+            other.cancel_task_tree(task.task_id)
+        committed = commit(result)
+        assert not committed
+        return committed
+
+    monkeypatch.setattr(agent.store, "mark_task_done", finish)
+    try:
+        await agent.submit(task)
+        await asyncio.wait_for(agent._runners[task.task_id], 2)
+        publish.assert_not_called()
+        assert other.task_status(task.task_id) != "completed"
+        assert worktrees.removed == []
+        assert all(path.is_dir() for path in worktrees.event_paths)
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_completion(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config = config.model_copy(
