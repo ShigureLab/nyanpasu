@@ -33,7 +33,7 @@ from nyanpasu_github_reviewer.prompt import (
     review_trigger,
 )
 from nyanpasu_github_reviewer.reference import prepare_reference
-from nyanpasu_github_reviewer.scope import admitted_files, build_inventory, scope_report, validate_plan
+from nyanpasu_github_reviewer.scope import ScopePlan, admitted_files, build_inventory, scope_report, validate_plan
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -69,6 +69,9 @@ class GitHubReviewerPlugin:
         runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_subtask_preparer(self.id, self.prepare_subtask)
         runtime.add_task_control_handler(self.id, self.scope_control)
+        # Plugin setup precedes task recovery and polling; reject old unscoped work
+        # before any stored child can resume or be returned as an active retry.
+        await asyncio.to_thread(self._validate_recovered_subtasks)
         runtime.add_router(
             self._router(),
             prefix="/plugins/github-reviewer",
@@ -157,9 +160,8 @@ class GitHubReviewerPlugin:
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
         return await asyncio.to_thread(self._prepare_scoped_subtask, parent, request)
 
-    def _prepare_scoped_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
-        assert self.runtime is not None
-        store = StateStore(self.runtime.config.db_path)
+    @staticmethod
+    def _scope_for_parent(store: StateStore, parent: AgentTask) -> tuple[dict, ScopePlan, set[str]]:
         root = store.task_request(store.root_task_id(parent.task_id))
         if "review_scope" not in root.metadata:
             raise ValueError(
@@ -174,6 +176,38 @@ class GitHubReviewerPlugin:
             if assignment is None:
                 raise ValueError("this child predates scope assignment; the root must dispatch new scoped work")
             allowed &= set(assignment["files"])
+        return inventory, plan, allowed
+
+    def _validate_recovered_subtasks(self) -> None:
+        assert self.runtime is not None
+        store = StateStore(self.runtime.config.db_path)
+        for child in store.unfinished_tasks():
+            if child.spawned_by_task_id is None or child.metadata.get("source_plugin_id") != self.id:
+                continue
+            if not store.task_is_active(child.task_id):
+                continue  # An invalid ancestor already cancelled this branch.
+            try:
+                parent = store.task_request(child.spawned_by_task_id)
+                inventory, plan, allowed = self._scope_for_parent(store, parent)
+                assignment = child.metadata.get("inputs", {}).get("review_scope")
+                if (
+                    assignment is None
+                    or assignment["inventory_id"] != plan.inventory_id
+                    or not assignment["files"]
+                    or not set(assignment["files"]) <= allowed
+                ):
+                    raise ValueError("stored child has no valid accepted scope assignment")
+                source = "merge_base_sha" if child.metadata.get("purpose") == "independent-design" else "head_sha"
+                if child.workspace is None or child.workspace.revision != inventory[source]:
+                    raise ValueError("stored child revision does not match its scope inventory")
+            except ValueError as exc:
+                error = f"Deep review cannot resume: {exc}. Submit review-scope and dispatch with a new request_key."
+                store.mark_task_failed(child.task_id, error)
+                logger.warning("review child recovery rejected task_id={} reason={}", child.task_id, error)
+
+    def _prepare_scoped_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        assert self.runtime is not None
+        inventory, plan, allowed = self._scope_for_parent(StateStore(self.runtime.config.db_path), parent)
         inputs = dict(request.inputs)
         files = inputs.pop("review_files", None)
         if not isinstance(files, list) or not files or not all(isinstance(path, str) for path in files):

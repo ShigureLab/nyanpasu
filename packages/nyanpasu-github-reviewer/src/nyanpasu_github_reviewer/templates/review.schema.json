@@ -154,8 +154,9 @@
       }
     },
     {
-      "if": {"required": ["scope"], "properties": {"status": {"const": "approved"}}},
+      "if": {"properties": {"status": {"const": "approved"}}},
       "then": {
+        "required": ["scope"],
         "properties": {
           "scope": {
             "properties": {

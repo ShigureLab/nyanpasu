@@ -5,10 +5,13 @@ import subprocess
 from unittest.mock import Mock
 
 import pytest
+from fastapi import FastAPI
 
 from nyanpasu.agent import AgentService
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu.web import WebPluginRuntime
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
 from nyanpasu_github_reviewer.scope import build_inventory, validate_plan
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, fake_backends
@@ -174,3 +177,95 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert grandchild.spawned_by_task_id == child["task_id"]
     finally:
         await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scope_state", ["legacy", "unassigned", "stale", "accepted"])
+async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, scope_state):
+    task, _, _, _ = scoped_task(tmp_path)
+    config = _config(tmp_path).model_copy(update={"enabled_plugins": ("github_reviewer",)})
+    inventory = build_inventory(config, task)
+    if scope_state != "legacy":
+        task = task.model_copy(
+            update={
+                "metadata": {
+                    **task.metadata,
+                    "review_inventory": inventory,
+                    "review_scope": {
+                        "inventory_id": inventory["inventory_id"],
+                        "groups": [group([item["path"] for item in inventory["files"]])],
+                    },
+                }
+            }
+        )
+    request = SubtaskRequest(request_key="old-child", prompt="child")
+    if scope_state in {"accepted", "stale"}:
+        request = request.model_copy(
+            update={
+                "inputs": {
+                    "review_scope": {
+                        "inventory_id": inventory["inventory_id"] if scope_state == "accepted" else "old-inventory",
+                        "files": ["helper.py"],
+                    }
+                }
+            }
+        )
+    started = {name: asyncio.Event() for name in ["review", "child", "grandchild"]}
+
+    class Interrupted(FakeCodex):
+        async def run_turn(self, **kwargs):
+            await super().run_turn(**kwargs)
+            started[kwargs["prompt"]].set()
+            await asyncio.Event().wait()
+
+    first = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Interrupted())
+    )
+    try:
+        await first.submit(task)
+        await asyncio.wait_for(started["review"].wait(), 3)
+        child = await first.create_subtask(task.task_id, request)
+        await asyncio.wait_for(started["child"].wait(), 3)
+        grandchild = await first.create_subtask(child.task_id, request.model_copy(update={"prompt": "grandchild"}))
+        await asyncio.wait_for(started["grandchild"].wait(), 3)
+        await first.wait_for_subtasks(child.task_id, [grandchild.task_id])
+        await first.wait_for_subtasks(task.task_id, [child.task_id])
+    finally:
+        await first.shutdown()
+
+    parent_context = first.store.get_context(task.context_key)
+    assert parent_context is not None
+    retried = []
+
+    class Recovered(FakeCodex):
+        async def run_turn(self, **kwargs):
+            if kwargs["cwd"] == parent_context.session_worktree:
+                retry = await second.create_subtask(task.task_id, request)
+                retried.append(retry.task_id)
+                assert retry.task_id == child.task_id
+                assert second.store.task_status(retry.task_id) == (
+                    "completed" if scope_state == "accepted" else "failed"
+                )
+            return await super().run_turn(**kwargs)
+
+    backend = Recovered()
+    second = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
+    plugin = GitHubReviewerPlugin()
+    try:
+        await plugin.setup(
+            WebPluginRuntime(config=config, app=FastAPI(), agent=second),
+            GitHubReviewerConfig(poll_enabled=False),
+        )
+        await second.startup()
+        await wait_status(second, task.task_id, "completed")
+        assert retried == [child.task_id]
+        assert len(backend.calls) == (3 if scope_state == "accepted" else 1)
+        assert second.store.task_status(grandchild.task_id) == (
+            "completed" if scope_state == "accepted" else "cancelled"
+        )
+        assert second.store.unfinished_tasks() == []
+    finally:
+        await plugin.shutdown()
+        await second.shutdown()
