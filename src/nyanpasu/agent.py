@@ -659,9 +659,9 @@ class AgentService:
         interval = self.config.runtime.context_lease_heartbeat_seconds
         while True:
             await asyncio.sleep(interval)
-            if task.action is not TaskAction.CLEANUP and not await to_thread.run_sync(
-                self.store.task_is_active, task.task_id
-            ):
+            if task.action is not TaskAction.CLEANUP and await to_thread.run_sync(
+                self.store.task_status, task.task_id
+            ) in {"cancelled", "failed"}:
                 if runner is not None and not runner.cancelling():
                     runner.cancel()
             ok = await to_thread.run_sync(

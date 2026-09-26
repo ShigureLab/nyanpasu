@@ -393,6 +393,48 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
 
 
 @pytest.mark.anyio
+async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_completion(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config = config.model_copy(
+        update={"runtime": config.runtime.model_copy(update={"context_lease_heartbeat_seconds": 0.01})}
+    )
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, FakeCodex()))
+    publishing, release = asyncio.Event(), asyncio.Event()
+    published = []
+
+    async def publish(task, result):
+        assert agent.store.task_status(task.task_id) == "completed"
+        publishing.set()
+        await release.wait()
+        published.append(result.final_message)
+
+    agent.add_post_process_hook("review", publish)
+    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    run = asyncio.create_task(agent.run_now(task))
+    try:
+        await asyncio.wait_for(publishing.wait(), 2)
+        lease = agent.store.get_context_lease(task.context_key)
+        assert lease is not None
+        async with asyncio.timeout(2):
+            while True:
+                current = agent.store.get_context_lease(task.context_key)
+                assert current is not None
+                if current.expires_at != lease.expires_at:
+                    break
+                await asyncio.sleep(0.01)
+        assert not run.done()
+        release.set()
+        await run
+        assert published == ["done"]
+        assert worktrees.removed == worktrees.event_paths
+        assert agent.store.get_context_lease(task.context_key) is None
+    finally:
+        release.set()
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path: Path) -> None:
     config = _config(tmp_path, concurrency=1)
     store = StateStore(config.db_path)
