@@ -134,11 +134,11 @@
       "then": {
         "properties": {
           "findings": {
-            "description": "Requesting changes requires an unresolved or partially resolved P0/P1 finding.",
+            "description": "Requesting changes requires an unresolved or partially resolved P1 finding.",
             "not": {
               "additionalProperties": {
                 "anyOf": [
-                  { "properties": { "priority": { "enum": ["P2", "P3"] } } },
+                  { "properties": { "priority": { "enum": ["P0", "P2", "P3"] } } },
                   { "properties": { "status": { "enum": ["resolved", "superseded"] } } }
                 ]
               }
@@ -264,7 +264,10 @@
       "properties": {
         "title": { "type": "string", "minLength": 1 },
         "url": { "type": "string", "pattern": "^https?://" },
-        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "priority": {
+          "enum": ["P0", "P1", "P2", "P3"],
+          "description": "Use P1/P2/P3 for new findings. P0 is a legacy alias accepted for old dashboard data and rendered as High."
+        },
         "kind": { "enum": ["correctness", "simplification"] },
         "status": { "enum": ["unresolved", "partial", "resolved", "superseded"] },
         "rule": {
