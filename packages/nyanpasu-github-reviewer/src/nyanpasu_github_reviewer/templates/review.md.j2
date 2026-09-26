@@ -1,7 +1,7 @@
 {% set review_states = {"reviewing": "🔎 审查中", "preliminary": "📝 初步结果已发布 · 深度审查中", "approved": "✅ 已通过", "changes_requested": "🚧 需要修改", "comment": "💬 已完成 · 有补充意见", "incomplete": "⏸️ 部分审查未完成"} -%}
 {% set stage_states = {"pending": "⏳ 待开始", "running": "🔎 进行中", "completed": "✅ 已完成", "skipped": "➖ 无需执行", "incomplete": "⏸️ 未完成"} -%}
 {% set finding_states = {"unresolved": "🚧 未解决", "partial": "🛠️ 部分解决", "resolved": "✅ 已解决", "superseded": "➖ 已被后续变更取代"} -%}
-{% set priorities = {"P0": ["critical", "red"], "P1": ["high", "orange"], "P2": ["medium", "yellow"], "P3": ["low", "blue"]} -%}
+{% set priorities = {"P0": ["high", "High"], "P1": ["high", "High"], "P2": ["medium", "Medium"], "P3": ["low", "Low"]} -%}
 {% set decisions = {"remove": "删除", "merge": "合并", "replace": "替换", "retain": "保留"} -%}
 ## Nyanpasu 审查看板
 
@@ -65,7 +65,7 @@
 | 编号 | 问题 | 类型 | 优先级 | 状态 | 规则来源 |
 | --- | --- | --- | --- | --- | --- |
 {% for id, finding in data.findings | dictsort_natural -%}
-| {{ id }} | {{ finding.title | md_link(finding.url) }} | {% if finding.kind is defined and finding.kind == "simplification" %}精简建议（非阻塞）{% else %}问题{% endif %} | ![{{ finding.priority }}](https://img.shields.io/badge/{{ finding.priority }}-{{ priorities[finding.priority][0] }}-{{ priorities[finding.priority][1] }}) | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
+| {{ id }} | {{ finding.title | md_link(finding.url) }} | {% if finding.kind is defined and finding.kind == "simplification" %}精简建议（非阻塞）{% else %}问题{% endif %} | <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.png" alt="{{ priorities[finding.priority][1] }} severity" width="62" height="18" align="texttop"></picture> | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
 {% endfor -%}
 {% elif data.status == "approved" -%}
 没有未解决的审查问题。

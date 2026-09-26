@@ -14,7 +14,7 @@ On that warranted update, old deep completion without necessity evidence must be
 
 ### Repository admission before deep review
 
-Follow scope-review.md and copy the service-returned `scope` report into the dashboard. Show accepted, relocation and clarification counts plus reasons, sources and alternatives. Scope decisions describe repository admission, not implementation correctness or finished review. `relocate` and `clarify` pause deep work on those files; they must remain visible and prevent whole-PR APPROVE. A final COMMENT may report the scope concern with the accepted-scope review, retaining the deferred paths explicitly. Evidence-only checks needed for acceptance may continue with a bounded purpose. Preserve the existing P0/P1 policy for REQUEST_CHANGES; do not invent high-severity bugs to report a scope objection.
+Follow scope-review.md and copy the service-returned `scope` report into the dashboard. Show accepted, relocation and clarification counts plus reasons, sources and alternatives. Scope decisions describe repository admission, not implementation correctness or finished review. `relocate` and `clarify` pause deep work on those files; they must remain visible and prevent whole-PR APPROVE. A final COMMENT may report the scope concern with the accepted-scope review, retaining the deferred paths explicitly. Evidence-only checks needed for acceptance may continue with a bounded purpose. Preserve the existing high-severity policy for REQUEST_CHANGES; do not invent high-severity bugs to report a scope objection.
 
 ### General result before deep completion
 
@@ -32,16 +32,17 @@ After integration, update the same dashboard to the actual outcome: `approved`, 
 
 ## Review comments
 
-Each new actionable finding belongs in an inline review comment when it can attach to a changed diff line. Start its body with exactly one priority shield and an explicit priority field, for example:
+Each new actionable finding belongs in an inline review comment when it can attach to a changed diff line. Start its body with exactly one severity badge and an explicit priority field, for example:
 
-`![P1](https://img.shields.io/badge/P1-high-orange) **优先级：P1**`
+`![High severity](https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png) **优先级：P1**`
 
-| Priority | Shield                                                 | Meaning                                                            |
-| -------- | ------------------------------------------------------ | ------------------------------------------------------------------ |
-| P0       | `![P0](https://img.shields.io/badge/P0-blocking-red)`  | Blocking correctness, security, data-loss, or build failure        |
-| P1       | `![P1](https://img.shields.io/badge/P1-high-orange)`   | Serious regression, compatibility break, or other high-risk defect |
-| P2       | `![P2](https://img.shields.io/badge/P2-medium-yellow)` | Actionable edge case, test gap, or maintainability problem         |
-| P3       | `![P3](https://img.shields.io/badge/P3-low-blue)`      | Optional clarification, PR hygiene, or follow-up suggestion        |
+| Priority | Severity badge | Meaning                                                            |
+| -------- | -------------- | ------------------------------------------------------------------ |
+| P1       | High           | Blocking correctness, security, data-loss, build failure, or other high-risk defect |
+| P2       | Medium         | Actionable edge case, test gap, or maintainability problem         |
+| P3       | Low            | Optional clarification, PR hygiene, or follow-up suggestion        |
+
+Use only P1/P2/P3 for new findings. P0 is a legacy alias accepted only in previously published dashboard data and renders as High; do not emit it in new reviews.
 
 Explain the defect, concrete evidence or impact, and the expected next action concisely. For a clear local replacement, include a GitHub `suggestion` block that exactly replaces the attached line range; attach the entire continuous range for a multi-line suggestion. Otherwise, provide a useful code sketch when appropriate rather than inventing an unsafe replacement.
 
@@ -51,9 +52,9 @@ Use the original published thread for an existing finding. A new inline comment 
 
 Keep the final review body short: the conclusion, where the detailed findings are, and any genuinely non-inline concern. Mark a finding that cannot attach to a changed line with `非行级：<reason>` and its priority; separate distinct findings into bullets. For title/body problems, suggest a concrete improvement. Do not duplicate inline findings or mechanically list their count.
 
-Use REQUEST_CHANGES only when enabled and supported by blocking P0/P1 evidence. Each new attachable blocker needs an inline comment; an existing blocker needs a substantive thread reply when a new review is warranted. Do not request changes merely for P2/P3 findings, PR hygiene, CI/template status, or unchanged old concerns. Use COMMENT for non-blocking findings or a requested status response, and APPROVE when review is complete with no remaining concerns. Automatic follow-up silence rules apply before choosing any review event.
+Use REQUEST_CHANGES only when enabled and supported by unresolved or partially resolved P1 evidence. Each new attachable blocker needs an inline comment; an existing blocker needs a substantive thread reply when a new review is warranted. Do not request changes merely for P2/P3 findings, PR hygiene, CI/template status, or unchanged old concerns. Use COMMENT for non-blocking findings or a requested status response, and APPROVE when review is complete with no remaining concerns. Automatic follow-up silence rules apply before choosing any review event.
 
-In public text, use visible GitHub permalinks and natural conclusions; omit raw GraphQL IDs, trigger names, delivery IDs, and review-submit event names. Do not add priority shields to neutral status text or invent findings to fill a format.
+In public text, use visible GitHub permalinks and natural conclusions; omit raw GraphQL IDs, trigger names, delivery IDs, and review-submit event names. Do not add severity badges to neutral status text or invent findings to fill a format.
 
 Every final review body must end with the exact disclosure footer supplied in the current turn input, after all other review content, without translating or editing it. The footer is generated from Nyanpasu's model configuration; do not copy an older review's model declaration.
 
