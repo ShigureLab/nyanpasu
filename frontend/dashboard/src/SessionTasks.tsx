@@ -55,7 +55,7 @@ function TaskChildren({ nodes, navigate }: { nodes: TaskTreeNode[]; navigate: Na
             {node.purpose && node.title !== node.purpose && (
               <small className="task-kind-label">{kind.label}</small>
             )}
-            {node.waiting && <p className="task-waiting">Parent waiting</p>}
+            {node.waiting && <p className="task-waiting">Awaited by ancestor</p>}
             {node.summary && <p className="task-result-summary">{node.summary}</p>}
             {node.error && <p className="error-text">{node.error.split('\n')[0]}</p>}
             <div className="task-card-actions">
