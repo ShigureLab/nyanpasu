@@ -26,12 +26,14 @@ from nyanpasu_github_reviewer.models import (
 )
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 from nyanpasu_github_reviewer.prompt import (
+    INSTRUCTIONS_DIR,
     build_review_instructions,
     build_review_prompt,
     cleanup_prompt,
     review_trigger,
 )
 from nyanpasu_github_reviewer.reference import prepare_reference
+from nyanpasu_github_reviewer.scope import ScopePlan, admitted_files, build_inventory, scope_report, validate_plan
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -66,6 +68,10 @@ class GitHubReviewerPlugin:
         self.store = GitHubReviewerStore(runtime.config.db_path)
         runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_subtask_preparer(self.id, self.prepare_subtask)
+        runtime.add_task_control_handler(self.id, self.scope_control)
+        # Plugin setup precedes task recovery and polling; reject old unscoped work
+        # before any stored child can resume or be returned as an active retry.
+        await asyncio.to_thread(self._validate_recovered_subtasks)
         runtime.add_router(
             self._router(),
             prefix="/plugins/github-reviewer",
@@ -152,8 +158,110 @@ class GitHubReviewerPlugin:
         )
 
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        return await asyncio.to_thread(self._prepare_scoped_subtask, parent, request)
+
+    @staticmethod
+    def _scope_for_parent(store: StateStore, parent: AgentTask) -> tuple[dict, ScopePlan, set[str]]:
+        root = store.task_request(store.root_task_id(parent.task_id))
+        if "review_scope" not in root.metadata:
+            raise ValueError(
+                "submit a complete review-scope decision before creating deep-review subtasks; "
+                "read " + str(INSTRUCTIONS_DIR / "scope-review.md")
+            )
+        inventory = root.metadata["review_inventory"]
+        plan = validate_plan(inventory, root.metadata["review_scope"])
+        allowed = admitted_files(plan)
+        if parent.spawned_by_task_id is not None:
+            assignment = parent.metadata.get("inputs", {}).get("review_scope")
+            if assignment is None:
+                raise ValueError("this child predates scope assignment; the root must dispatch new scoped work")
+            allowed &= set(assignment["files"])
+        return inventory, plan, allowed
+
+    def _validate_recovered_subtasks(self) -> None:
         assert self.runtime is not None
-        return await asyncio.to_thread(prepare_reference, self.runtime.config, parent, request)
+        store = StateStore(self.runtime.config.db_path)
+        for child in store.unfinished_tasks():
+            if child.spawned_by_task_id is None or child.metadata.get("source_plugin_id") != self.id:
+                continue
+            if not store.task_is_active(child.task_id):
+                continue  # An invalid ancestor already cancelled this branch.
+            try:
+                parent = store.task_request(child.spawned_by_task_id)
+                inventory, plan, allowed = self._scope_for_parent(store, parent)
+                assignment = child.metadata.get("inputs", {}).get("review_scope")
+                if (
+                    assignment is None
+                    or assignment["inventory_id"] != plan.inventory_id
+                    or not assignment["files"]
+                    or not set(assignment["files"]) <= allowed
+                ):
+                    raise ValueError("stored child has no valid accepted scope assignment")
+                source = "merge_base_sha" if child.metadata.get("purpose") == "independent-design" else "head_sha"
+                if child.workspace is None or child.workspace.revision != inventory[source]:
+                    raise ValueError("stored child revision does not match its scope inventory")
+            except ValueError as exc:
+                error = f"Deep review cannot resume: {exc}. Submit review-scope and dispatch with a new request_key."
+                store.mark_task_failed(child.task_id, error)
+                logger.warning("review child recovery rejected task_id={} reason={}", child.task_id, error)
+
+    def _prepare_scoped_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        assert self.runtime is not None
+        inventory, plan, allowed = self._scope_for_parent(StateStore(self.runtime.config.db_path), parent)
+        inputs = dict(request.inputs)
+        files = inputs.pop("review_files", None)
+        if not isinstance(files, list) or not files or not all(isinstance(path, str) for path in files):
+            raise ValueError("inputs.review_files must list the accepted changed files owned by this child")
+        if len(files) != len(set(files)) or not set(files) <= allowed:
+            raise ValueError("child scope must be unique accepted files within its parent's responsibility")
+        if request.purpose != "independent-design" and request.revision not in {None, inventory["head_sha"]}:
+            raise ValueError("deep review must use the inventory head")
+        prepared = prepare_reference(self.runtime.config, parent, request.model_copy(update={"inputs": inputs}))
+        if request.purpose != "independent-design":
+            prepared = prepared.model_copy(
+                update={
+                    "revision": inventory["head_sha"],
+                    "developer_instructions": prepared.developer_instructions
+                    + "\nOwned changed files (JSON data): "
+                    + json.dumps(files)
+                    + f"\nPath encoding: {inventory.get('path_encoding', 'utf-8')}. "
+                    "For percent encoding, decode with urllib.parse.unquote_to_bytes before filesystem access; "
+                    "keep the original tokens in scope reports."
+                    + "\nRead other files for context when needed; report on your owned scope. "
+                    "Do not expand into deferred evidence, demos or other unassigned review work.",
+                }
+            )
+        # The independent designer's prompt contains requirements only, not author paths.
+        return prepared.model_copy(
+            update={
+                "inputs": {
+                    **prepared.inputs,
+                    "review_scope": {"inventory_id": plan.inventory_id, "files": files},
+                }
+            }
+        )
+
+    async def scope_control(self, task: AgentTask, action: str, payload: dict[str, Any]) -> dict:
+        if action != "review-scope" or task.spawned_by_task_id is not None:
+            raise ValueError("review-scope is only available to the root reviewer")
+        return await asyncio.to_thread(self._scope_control, task, payload)
+
+    def _scope_control(self, task: AgentTask, payload: dict[str, Any]) -> dict:
+        assert self.runtime is not None
+        store = StateStore(self.runtime.config.db_path)
+        # A recovered pre-upgrade root obtains its inventory before continuing.
+        inventory = task.metadata.get("review_inventory") or build_inventory(self.runtime.config, task)
+        task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
+        if payload:
+            plan = validate_plan(inventory, payload)
+            previous = task.metadata.get("review_scope")
+            if previous is not None and store.subtasks(task.task_id) and plan.model_dump() != previous:
+                raise ValueError("scope is frozen after child dispatch; reconsider it in a new review run")
+            task = task.model_copy(update={"metadata": {**task.metadata, "review_scope": plan.model_dump()}})
+        store.update_task_input(task)
+        plan_data = task.metadata.get("review_scope")
+        report = scope_report(inventory, validate_plan(inventory, plan_data)) if plan_data is not None else None
+        return {"scope": report} if payload else {"inventory": inventory, "scope": report}
 
     async def prepare_task(
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
@@ -172,7 +280,7 @@ class GitHubReviewerPlugin:
             for item in (task, *coalesced)
             for trigger in item.metadata["triggers"]
         )
-        metadata = {
+        metadata: dict[str, Any] = {
             **task.metadata,
             "pull_request": pr.model_dump(mode="json"),
             "triggers": [item.model_dump(mode="json") for item in triggers],
@@ -185,9 +293,15 @@ class GitHubReviewerPlugin:
                     "metadata": metadata,
                 }
             )
+        workspace = self._workspace_for_pr(pr)
+        metadata["review_inventory"] = build_inventory(
+            self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
+        )
+        if metadata.get("review_scope", {}).get("inventory_id") != metadata["review_inventory"]["inventory_id"]:
+            metadata.pop("review_scope", None)
         return task.model_copy(
             update={
-                "workspace": self._workspace_for_pr(pr),
+                "workspace": workspace,
                 "developer_instructions": build_review_instructions(self.config, pr),
                 "instruction_docs": instruction_documents_for_repo(
                     repo=pr.repo,

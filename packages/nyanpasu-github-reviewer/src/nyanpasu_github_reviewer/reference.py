@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nyanpasu.git_ops import WorktreeManager
+from nyanpasu_github_reviewer.scope import build_inventory
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
@@ -49,33 +48,15 @@ def prepare_reference(config: NyanpasuConfig, parent: AgentTask, request: Subtas
     workspace = parent.workspace
     if workspace is None:
         raise ValueError("independent design requires a repository")
-    pr = parent.metadata["pull_request"]
-    manager = WorktreeManager(config)
-    manager.ensure_base_workspace(workspace)
-    manager.fetch_revision(workspace)
-
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=workspace.local_path, check=True, text=True, capture_output=True
-        ).stdout.strip()
-
-    head = git("rev-parse", "--verify", f"{pr['head_sha']}^{{commit}}")
-    remote = workspace.remote or "origin"
-    # FETCH_HEAD is shared by concurrent reviews of this repository. Resolve the
-    # advertised branch to an immutable identity and fetch that exact object.
-    target_base = git("ls-remote", "--exit-code", remote, f"refs/heads/{pr['base_ref']}").split()[0]
-    git("fetch", "--no-tags", "--no-write-fetch-head", remote, target_base)
-    bases = git("merge-base", "--all", head, target_base).splitlines()
-    if len(bases) != 1:
-        raise ValueError("independent design requires one unambiguous merge-base")
-    source = bases[0]
+    inventory = parent.metadata.get("review_inventory") or build_inventory(config, parent)
+    source = inventory["merge_base_sha"]
     policy = (INSTRUCTIONS / "independent-design.md").read_text()
     requirements = json.dumps(inputs.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     manifest = {
-        "head_sha": head,
-        "target_base_sha": target_base,
+        "head_sha": inventory["head_sha"],
+        "target_base_sha": inventory["target_base_sha"],
         "merge_base_sha": source,
-        "source_tree_sha": git("rev-parse", f"{source}^{{tree}}"),
+        "source_tree_sha": inventory["source_tree_sha"],
         "requirements_sha256": hashlib.sha256(requirements.encode()).hexdigest(),
         "policy_sha256": hashlib.sha256(policy.encode()).hexdigest(),
         "isolation": "base-tree-only; filesystem and network are not isolated",

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 SubtaskPreparer = Callable[[AgentTask, SubtaskRequest], Awaitable[SubtaskRequest]]
 TaskPreparer = Callable[[AgentTask, tuple[AgentTask, ...], AgentContext | None], Awaitable[AgentTask]]
+TaskControlHandler = Callable[[AgentTask, str, dict[str, Any]], Awaitable[Any]]
 
 
 @runtime_checkable
@@ -45,6 +46,8 @@ class PluginRuntime(Protocol):
     def add_task_preparer(self, plugin_id: str, preparer: TaskPreparer) -> None: ...
 
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
+
+    def add_task_control_handler(self, plugin_id: str, handler: TaskControlHandler) -> None: ...
 
 
 class PluginRegistry:

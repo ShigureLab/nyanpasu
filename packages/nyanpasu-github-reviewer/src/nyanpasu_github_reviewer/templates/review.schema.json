@@ -39,6 +39,32 @@
         "tests": { "$ref": "#/$defs/necessityAudit" }
       }
     },
+    "scope": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "propertyNames": { "pattern": "^[0-9a-f]{40}$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["inventory_id", "counts", "groups"],
+        "properties": {
+          "inventory_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "path_encoding": { "enum": ["utf-8", "percent"] },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["accept", "relocate", "clarify"],
+            "properties": {
+              "accept": { "type": "integer", "minimum": 0 },
+              "relocate": { "type": "integer", "minimum": 0 },
+              "clarify": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "groups": { "type": "array", "items": { "$ref": "#/$defs/scopeGroup" } }
+        }
+      }
+    },
     "findings": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/finding" }
@@ -132,9 +158,54 @@
           }
         }
       }
+    },
+    {
+      "if": { "properties": { "status": { "const": "approved" } } },
+      "then": {
+        "required": ["scope"],
+        "properties": {
+          "scope": {
+            "additionalProperties": {
+              "properties": {
+                "counts": {
+                  "properties": { "relocate": { "const": 0 }, "clarify": { "const": 0 } }
+                },
+                "groups": { "items": { "properties": { "decision": { "const": "accept" } } } }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {
+    "scopeGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "items": { "type": "string" },
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "category": {
+          "enum": ["production", "tests", "examples", "evidence", "generated", "vendor", "other"],
+          "title": "Category",
+          "type": "string"
+        },
+        "decision": {
+          "enum": ["accept", "relocate", "clarify"],
+          "title": "Decision",
+          "type": "string"
+        },
+        "reason": { "pattern": "\\S", "title": "Reason", "type": "string" },
+        "source": { "pattern": "\\S", "title": "Source", "type": "string" },
+        "alternative": { "pattern": "\\S", "title": "Alternative", "type": "string" }
+      },
+      "required": ["files", "category", "decision", "reason", "source", "alternative"],
+      "title": "ScopeGroup",
+      "type": "object"
+    },
     "necessityAudit": {
       "type": "object",
       "additionalProperties": false,

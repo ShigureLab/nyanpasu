@@ -11,6 +11,28 @@
 
 {{ data.summary }}
 
+{% if data.scope is defined -%}
+{% set scope = data.scope[data.source.head_sha] -%}
+### 提交范围
+
+接收 {{ scope.counts.accept }} 个文件 · 建议移出 {{ scope.counts.relocate }} 个文件 · 待确认 {{ scope.counts.clarify }} 个文件。移出与待确认部分暂停深审，不代表审查通过。
+
+{% if scope.path_encoding is defined and scope.path_encoding == "percent" -%}
+文件路径使用百分号编码，以保留非 UTF-8 文件名。
+
+{% endif -%}
+{% set scope_decisions = {"accept": "接收", "relocate": "建议移出", "clarify": "待确认"} -%}
+<details>
+<summary>范围决策与依据</summary>
+
+| 文件 | 结论 | 仓库维护必要性 | 依据 | 替代去向或方案 |
+| --- | --- | --- | --- | --- |
+{% for group in scope.groups -%}
+| {% for path in group.files %}{{ path }}<br>{% endfor %} | {{ scope_decisions[group.decision] }} | {{ group.reason }} | {{ group.source }} | {{ group.alternative }} |
+{% endfor %}
+</details>
+
+{% endif -%}
 {% if data.stages is defined -%}
 | 审查阶段 | 进度 | 范围与结果 |
 | --- | --- | --- |

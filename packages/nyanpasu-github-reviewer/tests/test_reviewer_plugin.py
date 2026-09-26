@@ -67,6 +67,7 @@ def _live_pr(**updates):
 def _stub_github(monkeypatch, **updates):
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
     monkeypatch.setattr(module, "gh_json", lambda *args, **kwargs: _live_pr(**updates))
+    monkeypatch.setattr(module, "build_inventory", lambda config, task: {"inventory_id": task.workspace.revision})
 
 
 def test_event_conversion_defers_session_and_target_decisions(tmp_path: Path) -> None:
