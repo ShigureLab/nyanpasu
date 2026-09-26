@@ -695,7 +695,7 @@ test('parent sessions show nested progress and evidence while preserving filters
   await expect(summary).toContainText('1 completed');
   await expect(summary).toContainText('1 waiting');
   await expect(summary).toContainText('1 queued');
-  await expect(tree.getByText('Parent waiting', { exact: true })).toHaveCount(2);
+  await expect(tree.getByText('Awaited by ancestor', { exact: true })).toHaveCount(2);
   await expect(tree.getByText('Reference design verified', { exact: true })).toBeVisible();
   await expect(tree.getByRole('button', { name: 'Module review', exact: true })).toBeVisible();
 
