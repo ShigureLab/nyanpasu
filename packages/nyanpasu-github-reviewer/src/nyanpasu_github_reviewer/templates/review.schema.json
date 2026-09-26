@@ -85,7 +85,7 @@
       }
     },
     {
-      "if": { "properties": { "status": { "enum": ["approved", "comment"] } } },
+      "if": { "properties": { "status": { "enum": ["approved", "comment", "changes_requested"] } } },
       "then": {
         "properties": {
           "simplification": {
