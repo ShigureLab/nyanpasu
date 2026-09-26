@@ -230,7 +230,7 @@ def test_snapshot_fetches_base_blobs_missing_from_partial_clone(tmp_path):
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{base}^{{tree}}")
 
 
-@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed", "symlinks", "byte-paths"])
+@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed", "symlinks", "byte-paths", "clean-filters"])
 def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -258,6 +258,14 @@ def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
         (repo / os.fsdecode(b"file-\xff")).write_bytes(b"file with a byte-oriented path")
         git("add", ".")
         git("update-index", "--add", "--cacheinfo", "160000", initial, os.fsdecode(b"deps/library-\xfe"))
+    if contents == "clean-filters":
+        (repo / "legacy.txt").write_bytes(b"committed before attributes\r\n")
+        git("add", "legacy.txt")
+        git("commit", "-m", "original CRLF blob")
+        (repo / ".gitattributes").write_text("legacy.txt text\n")
+        (repo / "run.sh").write_bytes(b"#!/bin/sh\necho keep\n")
+        (repo / "run.sh").chmod(0o755)
+        git("add", ".gitattributes", "run.sh")
     git("commit", "--allow-empty", "-m", "snapshot source")
     source = git("rev-parse", "HEAD")
     task = AgentTask(
@@ -273,6 +281,10 @@ def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{source}^{{tree}}")
     if contents == "symlinks":
         assert (tmp_path / "outside").read_text() == "untouched target"
+    if contents == "clean-filters":
+        assert (snapshot / "legacy.txt").read_bytes() == b"committed before attributes\r\n"
+        assert (snapshot / "run.sh").read_bytes() == b"#!/bin/sh\necho keep\n"
+        assert (snapshot / "run.sh").stat().st_mode & 0o111
 
 
 @pytest.mark.anyio

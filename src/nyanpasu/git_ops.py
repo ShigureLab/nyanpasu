@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -115,26 +114,18 @@ class WorktreeManager:
         }
         self._run(["git", "init", "--template="], path)
         (path / ".git" / "nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
-        self._run(["git", "add", "--all", "--force"], path)
-        # Archive represents gitlinks as empty directories, so restore their index entries.
-        entries = subprocess.run(
-            ["git", "ls-tree", "-rz", revision], cwd=workspace.local_path, capture_output=True, check=True
+        # Import only this tree's objects, never source commits or author history.
+        # Loading the index directly preserves blobs, modes and gitlinks without
+        # applying .gitattributes clean filters to the archived working files.
+        pack = subprocess.run(
+            ["git", "pack-objects", "--stdout"],
+            cwd=workspace.local_path,
+            input=objects_in_tree.encode("ascii"),
+            capture_output=True,
+            check=True,
         ).stdout
-        for entry in entries.split(b"\0"):
-            if entry.startswith(b"160000 "):
-                metadata, name = entry.split(b"\t", 1)
-                self._run(
-                    [
-                        "git",
-                        "update-index",
-                        "--add",
-                        "--cacheinfo",
-                        "160000",
-                        metadata.split()[2].decode("ascii"),
-                        os.fsdecode(name),
-                    ],
-                    path,
-                )
+        subprocess.run(["git", "unpack-objects"], cwd=path, input=pack, capture_output=True, check=True)
+        self._run(["git", "read-tree", tree], path)
         self._run(
             [
                 "git",
