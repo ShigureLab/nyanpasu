@@ -886,7 +886,9 @@ async def test_reviewer_merged_events_produce_one_coherent_turn(tmp_path: Path, 
     assert "head-a" not in codex.prompts[0]
     assert "{{NYANPASU" not in codex.prompts[0]
     assert "coalesced_tasks" not in codex.prompts[0]
-    assert len(codex.prompts[0]) < 1200
+    assert codex.prompts[0].count("Review ExampleOrg/ExampleRepo PR #42:") == 1
+    assert codex.prompts[0].count('"kind": "pull_request_opened"') == 1
+    assert codex.prompts[0].count('"kind": "pull_request_synchronize"') == 1
     context = agent.store.get_context(tasks[0].context_key)
     assert context is not None and context.revision == "head-b"
     await agent.shutdown()
