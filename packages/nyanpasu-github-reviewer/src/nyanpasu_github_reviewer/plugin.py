@@ -224,6 +224,9 @@ class GitHubReviewerPlugin:
                     "developer_instructions": prepared.developer_instructions
                     + "\nOwned changed files (JSON data): "
                     + json.dumps(files)
+                    + f"\nPath encoding: {inventory.get('path_encoding', 'utf-8')}. "
+                    "For percent encoding, decode with urllib.parse.unquote_to_bytes before filesystem access; "
+                    "keep the original tokens in scope reports."
                     + "\nRead other files for context when needed; report on your owned scope. "
                     "Do not expand into deferred evidence, demos or other unassigned review work.",
                 }

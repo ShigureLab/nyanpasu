@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from unittest.mock import Mock
+from urllib.parse import unquote_to_bytes
 
 import pytest
 from fastapi import FastAPI
@@ -96,6 +98,42 @@ def group(files, decision="accept"):
     }
 
 
+def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_path):
+    task, git, _, _ = scoped_task(tmp_path)
+    repo = task.workspace.local_path
+    raw_paths = {b"file-\xff", b"file-%FF"}
+    for path in raw_paths:
+        (repo / os.fsdecode(path)).write_text("content\n")
+    git("add", "-A")
+    git("commit", "-m", "byte paths")
+    head = git("rev-parse", "HEAD")
+    task = task.model_copy(
+        update={
+            "workspace": task.workspace.model_copy(update={"revision": head}),
+            "metadata": {**task.metadata, "pull_request": {"head_sha": head, "base_ref": "main"}},
+        }
+    )
+    config = _config(tmp_path)
+    inventory = build_inventory(config, task)
+    assert inventory["path_encoding"] == "percent"
+    paths = [item["path"] for item in inventory["files"]]
+    assert {unquote_to_bytes(path) for path in paths} == raw_paths | {
+        b"author-only.txt",
+        b"helper.py",
+        b"demos/result.json",
+    }
+    plan = validate_plan(inventory, {"inventory_id": inventory["inventory_id"], "groups": [group(paths)]})
+    task = task.model_copy(
+        update={"metadata": {**task.metadata, "review_inventory": inventory, "review_scope": plan.model_dump()}}
+    )
+    store = StateStore(config.db_path)
+    store.record_task(task)
+    recovered = store.task_request(task.task_id)
+    assert recovered.metadata == task.metadata
+    for path in recovered.metadata["review_scope"]["groups"][0]["files"]:
+        assert (repo / os.fsdecode(unquote_to_bytes(path))).is_file()
+
+
 @pytest.mark.anyio
 async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
     task, _, _, _ = scoped_task(tmp_path)
@@ -131,7 +169,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             "groups": [group(["author-only.txt", "helper.py"]), group(["demos/result.json"], "relocate")],
         }
         report = await agent.control.dispatch(task.task_id, "review-scope", plan)
-        assert report["scope"]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
+        assert report["scope"][inventory["head_sha"]]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
         agent.store = StateStore(config.db_path)
         assert (await agent.control.dispatch(task.task_id, "review-scope", {}))["scope"] == report["scope"]
         for purpose in ["independent-design", "test-audit", "module-review", "custom-expert"]:

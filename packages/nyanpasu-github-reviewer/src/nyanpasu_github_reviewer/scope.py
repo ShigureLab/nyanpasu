@@ -5,6 +5,7 @@ import json
 import subprocess
 from collections import Counter
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import quote_from_bytes
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,15 +57,24 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
     base = bases[0]
     # Treat a rename as removal + addition: both paths remain accountable, including
     # binary files and paths containing tabs/newlines. No GitHub API file-count cap.
+    numstat = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", base, head, "--"],
+        cwd=workspace.local_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    records = [record.split(b"\t", 2) for record in numstat.split(b"\0") if record]
+    try:
+        paths = [record[2].decode("utf-8") for record in records]
+        path_encoding = "utf-8"
+    except UnicodeDecodeError:
+        # Encode every path to avoid collisions with literal percent sequences.
+        paths = [quote_from_bytes(record[2], safe="/") for record in records]
+        path_encoding = "percent"
     files = []
     directories: dict[str, dict[str, int]] = {}
-    for record in git(
-        "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", base, head, "--"
-    ).split("\0"):
-        if not record:
-            continue
-        added, deleted, path = record.split("\t", 2)
-        binary = added == "-"
+    for (added, deleted, _), path in zip(records, paths, strict=True):
+        binary = added == b"-"
         additions, deletions = (0, 0) if binary else (int(added), int(deleted))
         files.append({"path": path, "additions": additions, "deletions": deletions, "binary": binary})
         directory = path.split("/")[0] if "/" in path else "(root)"
@@ -77,6 +87,7 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
         "target_base_sha": target,
         "merge_base_sha": base,
         "source_tree_sha": git("rev-parse", f"{base}^{{tree}}").strip(),
+        "path_encoding": path_encoding,
         "files": files,
         "directories": directories,
     }
@@ -108,8 +119,10 @@ def scope_report(inventory: dict, plan: ScopePlan) -> dict:
     for group in plan.groups:
         counts[group.decision] += len(group.files)
     return {
-        "inventory_id": plan.inventory_id,
-        "head_sha": inventory["head_sha"],
-        "counts": dict(counts),
-        "groups": [group.model_dump() for group in plan.groups],
+        inventory["head_sha"]: {
+            "inventory_id": plan.inventory_id,
+            "path_encoding": inventory.get("path_encoding", "utf-8"),
+            "counts": dict(counts),
+            "groups": [group.model_dump() for group in plan.groups],
+        }
     }
