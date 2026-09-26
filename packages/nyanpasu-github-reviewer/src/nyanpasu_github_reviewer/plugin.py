@@ -14,7 +14,7 @@ from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_f
 from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
-from nyanpasu.models import AgentContext, AgentTask, TaskAction, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import (
@@ -31,6 +31,7 @@ from nyanpasu_github_reviewer.prompt import (
     cleanup_prompt,
     review_trigger,
 )
+from nyanpasu_github_reviewer.reference import prepare_reference
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ class GitHubReviewerPlugin:
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
         runtime.add_task_preparer(self.id, self.prepare_task)
+        runtime.add_subtask_preparer(self.id, self.prepare_subtask)
         runtime.add_router(
             self._router(),
             prefix="/plugins/github-reviewer",
@@ -148,6 +150,10 @@ class GitHubReviewerPlugin:
             },
             cleanup_policy="context" if task_action is TaskAction.CLEANUP else "none",
         )
+
+    async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        assert self.runtime is not None
+        return await asyncio.to_thread(prepare_reference, self.runtime.config, parent, request)
 
     async def prepare_task(
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None

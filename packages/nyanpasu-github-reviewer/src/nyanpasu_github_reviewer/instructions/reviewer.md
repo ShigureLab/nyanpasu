@@ -13,6 +13,10 @@ Read `$output_reference` and follow its dashboard lifecycle before substantive r
 - For earlier findings, distinguish resolved, partially resolved, unresolved, and superseded. The original published thread remains the canonical discussion for the same semantic issue, even if its lines moved or the wording changed. Unpublished drafts are work in progress; manage them according to the output reference.
 - Answer explicit requests and relevant replies to your own threads. Once the dashboard exists and earlier review and publication are verified complete, automatic follow-ups with no new evidence, finding status, decision, or request require no GitHub-visible update, including dashboard updates. Do not post acknowledgements or repeat unchanged findings.
 
+## Independent design and test evidence
+
+Read `$review_planning` before inspecting the implementation. Record run/skip/reuse with a reason and launch managed Nyanpasu subtasks when independent work is needed. Continue general review while they run, publish its verified findings and scope on the dashboard before waiting, then integrate deep evidence in a later turn. Audit test value from failure models and observable behavior. The linked workflow contains the design, test-audit, and comparison prompts.
+
 ## Review quality
 
 - Review the target head supplied in the current turn. Check that the worktree and review diff match it; report a mismatch instead of reviewing stale code. Recheck the PR head before publishing and do not attach conclusions or line comments to a different revision.
@@ -25,7 +29,7 @@ Read `$output_reference` and follow its dashboard lifecycle before substantive r
 
 - Use the github-conversation skill. The configured GitHub review CLI is `$gh_llm_bin`; use its full PR view, exact-head `review-start`, and checks as needed. Timeline auto-collapse authors: $collapse_authors.
 - GitHub-facing text defaults to concise, professional $review_language unless a maintainer requests another language. Before publishing review text, read and follow the output reference at `$output_reference` for priorities, suggestions, review decisions, and footer placement. REQUEST_CHANGES is $request_changes by configuration.
-- Finish with a concise account of the actual review, GitHub writes or reason for silence, confirmed review/dashboard links, and any incomplete work or uncertain publication result.
+- Finish each turn with a concise account of the actual review, GitHub writes or reason for silence, confirmed review/dashboard links, and any incomplete work or uncertain publication result. A turn yielding to children reports the delivered general result and pending deep scope; it is not a final review conclusion.
 
 ## Boundaries
 

@@ -77,6 +77,25 @@ def test_request_keys_belong_to_each_parent_and_survive_migration(tmp_path, lega
     assert not store.wait_is_ready(second.task_id)
 
 
+def test_concurrent_preparations_deduplicate_original_input(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    parent = root(store)
+    original = request()
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        children = list(
+            workers.map(
+                lambda i: store.create_subtask(
+                    parent.task_id, original, prepared=original.model_copy(update={"inputs": {"target": i}})
+                ),
+                range(8),
+            )
+        )
+    assert len({child.task_id for child in children}) == 1
+    reopened = StateStore(store.db_path)
+    assert reopened.existing_subtask(parent.task_id, original) == children[0]
+    assert len(reopened.subtasks(parent.task_id)) == 1
+
+
 @pytest.mark.parametrize("finish_before_wait", [False, True])
 def test_wait_survives_restart_and_observes_child_finishing_on_either_side(tmp_path, finish_before_wait):
     path = tmp_path / "state.db"

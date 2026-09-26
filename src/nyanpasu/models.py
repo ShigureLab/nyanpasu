@@ -58,6 +58,7 @@ class AgentTask(NyanpasuModel):
     dedupe_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     workspace_policy: Literal["context", "event_snapshot"] = "context"
+    workspace_mode: Literal["clone", "snapshot"] = "clone"
     cleanup_policy: Literal["context", "none"] = "none"
     spawned_by_task_id: str | None = None
     context_generation: int = 1
@@ -75,6 +76,8 @@ class SubtaskRequest(NyanpasuModel):
     developer_instructions: str = ""
     revision: str | None = None
     purpose: str = "subtask"
+    workspace_mode: Literal["clone", "snapshot"] = "clone"
+    inputs: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContextScope(NyanpasuModel):

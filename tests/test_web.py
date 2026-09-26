@@ -33,6 +33,9 @@ class FakeAgent:
     async def shutdown(self) -> None:
         return None
 
+    def add_subtask_preparer(self, plugin_id, preparer) -> None:
+        pass
+
     def add_task_preparer(self, plugin_id, preparer) -> None:
         self.preparer = preparer
 

@@ -40,6 +40,9 @@ class FakeAgent:
     async def shutdown(self) -> None:
         return None
 
+    def add_subtask_preparer(self, plugin_id, preparer) -> None:
+        pass
+
     def add_task_preparer(self, plugin_id, preparer) -> None:
         self.preparer = preparer
 
@@ -456,6 +459,9 @@ class FakeRuntime:
 
     def add_router(self, router, *, prefix: str = "", tags=None, require_auth: bool = True) -> None:
         _ = router, prefix, tags
+
+    def add_subtask_preparer(self, plugin_id, preparer) -> None:
+        pass
 
     def add_task_preparer(self, plugin_id, preparer) -> None:
         self.preparer = preparer

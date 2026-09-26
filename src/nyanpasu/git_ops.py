@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -42,7 +46,10 @@ class WorktreeManager:
             self.fetch_revision(workspace)
             session_path = self.session_worktree_path(task)
             try:
-                self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
+                if task.workspace_mode == "snapshot":
+                    self._snapshot(workspace, session_path)
+                else:
+                    self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
             except Exception:
                 if existing is None:
                     self._remove_worktree_unlocked(workspace, session_path)
@@ -53,6 +60,94 @@ class WorktreeManager:
             session_worktree=session_path,
             workspace_key=workspace.key,
             revision=workspace.revision,
+        )
+
+    def _snapshot(self, workspace: WorkspaceRef, path: Path) -> None:
+        if not workspace.revision:
+            raise ValueError("snapshot requires a pinned revision")
+        revision = self._run(
+            ["git", "rev-parse", "--verify", f"{workspace.revision}^{{commit}}"], workspace.local_path
+        ).stdout.strip()
+        tree = self._run(["git", "rev-parse", f"{revision}^{{tree}}"], workspace.local_path).stdout.strip()
+        # Alternates do not carry a partial clone's promisor configuration.
+        # Read this tree's objects through the source repo so Git can fetch missing blobs.
+        objects_in_tree = self._run(
+            ["git", "rev-list", "--objects", "--no-object-names", tree], workspace.local_path
+        ).stdout
+        subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            cwd=workspace.local_path,
+            input=objects_in_tree,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        # Release export attributes must not omit tests or substitute source text.
+        # A temporary bare repository gives info/attributes highest precedence
+        # without mutating the shared repository or exposing its objects to the child.
+        objects = self._run(["git", "rev-parse", "--git-path", "objects"], workspace.local_path).stdout.strip()
+        with tempfile.TemporaryDirectory(prefix="nyanpasu-export-") as directory:
+            export = Path(directory)
+            self._run(["git", "init", "--bare", "--template="], export)
+            (export / "objects" / "info" / "alternates").write_text(
+                str((workspace.local_path / objects).resolve()) + "\n"
+            )
+            (export / "info").mkdir(exist_ok=True)
+            (export / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+            archive = export / "source.tar"
+            self._run(["git", "archive", "--format=tar", f"--output={archive}", tree], export)
+            with archive.open("rb") as stream:
+                export_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+            if path.exists():
+                self._remove_worktree_unlocked(workspace, path)
+            path.mkdir(parents=True)
+            with tarfile.open(archive) as contents:
+                # Git emits files, directories and symlinks. Validate member paths while
+                # preserving link text, including valid targets outside the snapshot.
+                contents.extractall(path, filter="tar")
+        manifest = {
+            "source_sha": revision,
+            "source_tree_sha": tree,
+            "export_sha256": export_sha256,
+            "isolation": "base-tree-only; filesystem and network are not isolated",
+        }
+        self._run(["git", "init", "--template="], path)
+        (path / ".git" / "nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
+        # Keep raw committed files and experimental diffs independent of clean filters.
+        (path / ".git" / "info").mkdir()
+        (path / ".git" / "info" / "attributes").write_text("* -text -filter -working-tree-encoding -ident\n")
+        # Import only this tree's objects, never source commits or author history.
+        # Loading the index directly preserves blobs, modes and gitlinks without
+        # applying .gitattributes clean filters to the archived working files.
+        with tempfile.TemporaryFile() as pack:
+            subprocess.run(
+                ["git", "pack-objects", "--stdout"],
+                cwd=workspace.local_path,
+                input=objects_in_tree.encode("ascii"),
+                stdout=pack,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            pack.seek(0)
+            subprocess.run(["git", "unpack-objects"], cwd=path, stdin=pack, capture_output=True, check=True)
+        self._run(["git", "read-tree", tree], path)
+        self._run(
+            [
+                "git",
+                "-c",
+                "user.name=Nyanpasu",
+                "-c",
+                "user.email=nyanpasu@localhost",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--allow-empty",
+                "--no-gpg-sign",
+                "-m",
+                "Reference input snapshot",
+            ],
+            path,
         )
 
     def prepare_event_snapshot(self, task: AgentTask) -> Path | None:

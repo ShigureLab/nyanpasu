@@ -5,7 +5,7 @@
   "required": ["status", "source", "summary", "findings", "disclosure"],
   "properties": {
     "status": {
-      "enum": ["reviewing", "approved", "changes_requested", "comment", "incomplete"]
+      "enum": ["reviewing", "preliminary", "approved", "changes_requested", "comment", "incomplete"]
     },
     "source": {
       "type": "object",
@@ -16,6 +16,20 @@
       }
     },
     "summary": { "type": "string", "minLength": 1 },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["general", "deep"],
+      "properties": {
+        "general": {
+          "allOf": [
+            { "$ref": "#/$defs/stage" },
+            { "properties": { "status": { "enum": ["running", "completed", "incomplete"] } } }
+          ]
+        },
+        "deep": { "$ref": "#/$defs/stage" }
+      }
+    },
     "findings": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/finding" }
@@ -27,6 +41,33 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "preliminary" } } },
+      "then": {
+        "required": ["stages"],
+        "properties": {
+          "stages": {
+            "properties": {
+              "general": { "properties": { "status": { "const": "completed" } } },
+              "deep": { "properties": { "status": { "enum": ["pending", "running"] } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["approved", "comment"] } } },
+      "then": {
+        "properties": {
+          "stages": {
+            "properties": {
+              "general": { "properties": { "status": { "const": "completed" } } },
+              "deep": { "properties": { "status": { "enum": ["completed", "skipped"] } } }
+            }
+          }
+        }
+      }
+    },
     {
       "if": { "properties": { "status": { "const": "changes_requested" } } },
       "then": { "properties": { "findings": { "minProperties": 1 } } }
@@ -45,6 +86,15 @@
     }
   ],
   "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "enum": ["pending", "running", "completed", "skipped", "incomplete"] },
+        "summary": { "type": "string", "minLength": 1 }
+      }
+    },
     "finding": {
       "type": "object",
       "additionalProperties": false,

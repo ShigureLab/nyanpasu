@@ -1,4 +1,5 @@
-{% set review_states = {"reviewing": "🔎 审查中", "approved": "✅ 已通过", "changes_requested": "🚧 需要修改", "comment": "💬 已完成 · 有补充意见", "incomplete": "⏸️ 审查未完成"} -%}
+{% set review_states = {"reviewing": "🔎 审查中", "preliminary": "📝 初步结果已发布 · 深度审查中", "approved": "✅ 已通过", "changes_requested": "🚧 需要修改", "comment": "💬 已完成 · 有补充意见", "incomplete": "⏸️ 部分审查未完成"} -%}
+{% set stage_states = {"pending": "⏳ 待开始", "running": "🔎 进行中", "completed": "✅ 已完成", "skipped": "➖ 无需执行", "incomplete": "⏸️ 未完成"} -%}
 {% set finding_states = {"unresolved": "🚧 未解决", "partial": "🛠️ 部分解决", "resolved": "✅ 已解决", "superseded": "➖ 已被后续变更取代"} -%}
 {% set priorities = {"P0": ["critical", "red"], "P1": ["high", "orange"], "P2": ["medium", "yellow"], "P3": ["low", "blue"]} -%}
 ## Nyanpasu 审查看板
@@ -9,6 +10,13 @@
 
 {{ data.summary }}
 
+{% if data.stages is defined -%}
+| 审查阶段 | 进度 | 范围与结果 |
+| --- | --- | --- |
+| 常规审查 | {{ stage_states[data.stages.general.status] }} | {{ data.stages.general.summary }} |
+| 深度审查 | {{ stage_states[data.stages.deep.status] }} | {{ data.stages.deep.summary }} |
+
+{% endif -%}
 {% if data.findings -%}
 | 编号 | 问题 | 优先级 | 状态 | 规则来源 |
 | --- | --- | --- | --- | --- |
@@ -17,7 +25,7 @@
 {% endfor -%}
 {% elif data.status == "approved" -%}
 没有未解决的审查问题。
-{% elif data.status in ["reviewing", "incomplete"] -%}
+{% elif data.status in ["reviewing", "preliminary", "incomplete"] -%}
 尚无已确认的问题记录；这不代表审查通过。
 {% else -%}
 本次没有需要列入看板的问题。

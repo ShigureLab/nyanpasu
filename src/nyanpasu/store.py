@@ -301,31 +301,46 @@ class StateStore:
                 return False
         return True
 
-    def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+    def existing_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask | None:
+        with self._connect() as conn:
+            self._active_task(conn, parent_id)
+            return self._existing_subtask(conn, parent_id, request)
+
+    @staticmethod
+    def _existing_subtask(conn: sqlite3.Connection, parent_id: str, request: SubtaskRequest) -> AgentTask | None:
+        previous = conn.execute(
+            """SELECT r.task_json,s.request_json FROM subtask_requests s
+            JOIN task_runs r ON r.task_id=s.task_id WHERE s.parent_task_id=? AND s.request_key=?""",
+            (parent_id, request.request_key),
+        ).fetchone()
+        if previous is None:
+            return None
+        if SubtaskRequest.model_validate_json(previous["request_json"]) != request:
+            raise ValueError("subtask request key was used with different input")
+        return AgentTask.model_validate(json.loads(previous["task_json"]))
+
+    def create_subtask(
+        self, parent_id: str, request: SubtaskRequest, *, prepared: SubtaskRequest | None = None
+    ) -> AgentTask:
         """Create ownership and execution together; retries cannot leave an orphan."""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             parent = self._active_task(conn, parent_id)
-            identity = (parent_id, request.request_key)
-            serialized = request.model_dump_json()
-            previous = conn.execute(
-                """SELECT task_id,request_json FROM subtask_requests
-                WHERE parent_task_id=? AND request_key=?""",
-                identity,
-            ).fetchone()
-            if previous is not None:
-                if previous["request_json"] != serialized:
-                    raise ValueError("subtask request key was used with different input")
-                row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (previous["task_id"],)).fetchone()
-                return AgentTask.model_validate(json.loads(row["task_json"]))
+            if previous := self._existing_subtask(conn, parent_id, request):
+                return previous
             if parent["status"] != "running":
                 raise ValueError("only a running task may create a subtask")
             original = AgentTask.model_validate(json.loads(parent["task_json"]))
+            identity = (parent_id, request.request_key)
+            serialized = request.model_dump_json()
+            request = prepared or request
             workspace = original.workspace
             if request.revision is not None:
                 if workspace is None:
                     raise ValueError("a revision requires a repository workspace")
                 workspace = workspace.model_copy(update={"revision": request.revision, "ref": None})
+            if request.workspace_mode == "snapshot" and (workspace is None or not workspace.revision):
+                raise ValueError("a snapshot requires a pinned repository revision")
             task_id = str(uuid4())
             child = AgentTask(
                 task_id=task_id,
@@ -334,9 +349,11 @@ class StateStore:
                 prompt=request.prompt,
                 developer_instructions=request.developer_instructions,
                 workspace=workspace,
+                workspace_mode=request.workspace_mode,
                 spawned_by_task_id=parent_id,
                 metadata={
                     "purpose": request.purpose,
+                    "inputs": request.inputs,
                     "request": {"title": request.purpose},
                     "source_plugin_id": original.metadata.get("plugin_id", original.metadata.get("source_plugin_id")),
                 },
