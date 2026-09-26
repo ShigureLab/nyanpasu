@@ -518,13 +518,16 @@ class StateStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             ids = [task_id, *(row["task_id"] for row in self._descendants(conn, task_id))]
-            for identity in ids:
-                conn.execute(
-                    """UPDATE task_runs SET status='cancelled',updated_at=?
-                    WHERE task_id=? AND status IN ('queued','running','waiting')""",
-                    (time.time(), identity),
-                )
+            self._cancel_tasks(conn, ids)
         return ids
+
+    @staticmethod
+    def _cancel_tasks(conn: sqlite3.Connection, ids: list[str]) -> None:
+        conn.executemany(
+            """UPDATE task_runs SET status='cancelled',updated_at=?
+            WHERE task_id=? AND status IN ('queued','running','waiting')""",
+            [(time.time(), identity) for identity in ids],
+        )
 
     def update_pending_task_backend(self, task_id: str, backend: str) -> None:
         with self._connect() as conn:
@@ -981,7 +984,7 @@ class StateStore:
             values.append(turn_id)
         values.append(task_id)
         with self._connect() as conn:
-            conn.execute(
+            updated = conn.execute(
                 f"""UPDATE task_runs SET {", ".join(updates)} WHERE task_id = ? AND status <> 'cancelled'
                     AND (action IN ('cleanup','ignored') OR EXISTS (
                         SELECT 1 FROM context_scopes c WHERE c.context_key=task_runs.context_key
@@ -989,6 +992,9 @@ class StateStore:
                     ))""",
                 values,
             )
+            if status is TaskStatus.FAILED and updated.rowcount:
+                # A restart must never see a failed owner with active descendants.
+                self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
 
 
 def replace_context(context: AgentContext, **changes: Any) -> AgentContext:

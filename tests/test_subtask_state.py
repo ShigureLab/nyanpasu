@@ -162,6 +162,43 @@ def test_reloaded_subtasks_remain_separate_from_coalesced_events(tmp_path):
     assert reloaded.coalesced_tasks_for(parent.task_id) == []
 
 
+@pytest.mark.parametrize("failed_owner", ["root", "child"])
+def test_failure_and_descendant_cancellation_commit_or_rollback_together(tmp_path, failed_owner):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    parent = root(store)
+    child = store.create_subtask(parent.task_id, request())
+    store.mark_task_running(child.task_id, None)
+    pending = store.create_subtask(child.task_id, request("pending"))
+    completed = store.create_subtask(child.task_id, request("completed"))
+    finish(store, completed)
+    sibling = store.create_subtask(parent.task_id, request("sibling"))
+    owner = parent if failed_owner == "root" else child
+    # Failure halfway through persistence must not leave a terminal owner behind.
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TRIGGER reject_cancel BEFORE UPDATE OF status ON task_runs
+            WHEN NEW.status = 'cancelled'
+            BEGIN SELECT RAISE(ABORT, 'interrupted cancellation'); END;
+        """)
+    with pytest.raises(sqlite3.IntegrityError, match="interrupted cancellation"):
+        store.mark_task_failed(owner.task_id, "backend failed")
+    reloaded = StateStore(path)
+    assert reloaded.task_status(owner.task_id) == "running"
+    assert reloaded.task_status(pending.task_id) == "queued"
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TRIGGER reject_cancel")
+    reloaded.mark_task_failed(owner.task_id, "backend failed")
+    reloaded = StateStore(path)
+    assert reloaded.task_status(owner.task_id) == "failed"
+    assert reloaded.task_status(pending.task_id) == "cancelled"
+    assert reloaded.task_status(completed.task_id) == "completed"
+    assert reloaded.task_status(sibling.task_id) == ("cancelled" if failed_owner == "root" else "queued")
+    assert {task.task_id for task in reloaded.unfinished_tasks()} == (
+        set() if failed_owner == "root" else {parent.task_id, sibling.task_id}
+    )
+
+
 def test_child_workspace_and_wait_roundtrip_preserve_pinned_revision(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = AgentTask(

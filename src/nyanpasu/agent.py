@@ -280,7 +280,7 @@ class AgentService:
                     )
             else:
                 await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
-                await self.cancel_subtasks(task.task_id)
+                await self._stop_descendants(task.task_id)
             raise
         return None
 
