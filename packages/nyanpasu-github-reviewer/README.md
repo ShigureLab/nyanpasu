@@ -107,6 +107,8 @@ The dashboard has Chinese headings and shows the analyzed head SHA, review statu
 
 The **精简审查** section shows separate production and test assessments with expandable decisions and evidence. The profile schema requires both records when deep is completed: completed audits contain decisions, while skipped audits explain the absence of applicable scope. Pending or incomplete audits cannot satisfy deep completion. Nonblocking simplification findings use `kind: simplification`; existing findings without a kind still render normally. These checks enforce the report structure, not the truth or semantic coverage of the review. Existing dashboards retain their embedded definition until the next warranted update; that update adopts stages and rechecks missing necessity evidence rather than inventing past completion. A policy upgrade alone does not trigger public re-review.
 
+**TODO:** After all persisted dashboard findings using legacy P0 have been migrated to P1, remove P0 from the schema and template mapping.
+
 Preview the bundled example from the repository root without writing to GitHub:
 
 ```bash
