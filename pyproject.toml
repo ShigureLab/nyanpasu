@@ -47,7 +47,6 @@ dev = [
   "ruff>=0.16.9",
   "pytest>=9.1.1",
   "pytest-rerunfailures>=16.7",
-  "jsonschema>=4.26.0",
 ]
 
 [tool.uv.workspace]
