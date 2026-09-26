@@ -89,7 +89,7 @@ The poller combines repository events, PR state polling, and PR timeline polling
 
 ## Review Dashboard
 
-The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install both in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install), and verify `gh-slate --version`.
+The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install the skill and **gh-slate 0.1.1 or newer** in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install). For a uv tool installation, run `uv tool upgrade gh-slate`; verify `gh-slate --version` meets this minimum before deploying the reviewer template.
 
 ```toml
 [codex.env]
