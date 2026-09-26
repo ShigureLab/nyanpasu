@@ -93,7 +93,8 @@ def disclosure_footer(runtime: ProcessConfig) -> str:
     )
     return (
         '<div align="right">\n'
-        f"   <sup>Powered by Nyanpasu with {description}, please check the suggestions carefully.</sup>\n"
+        '   <sup>Powered by <a href="https://github.com/ShigureLab/nyanpasu">Nyanpasu</a> '
+        f"with {description}, please check the suggestions carefully.</sup>\n"
         "</div>"
     )
 

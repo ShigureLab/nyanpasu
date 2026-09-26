@@ -72,7 +72,8 @@
     "disclosure": {
       "type": "string",
       "minLength": 1,
-      "description": "Plain text inside the current turn's disclosure footer; no HTML or Markdown."
+      "pattern": "^Powered by Nyanpasu with ",
+      "description": "Plain text inside the current turn's disclosure footer; no HTML or Markdown. The template links the Nyanpasu name."
     }
   },
   "allOf": [
@@ -111,7 +112,9 @@
       }
     },
     {
-      "if": { "properties": { "status": { "enum": ["approved", "comment", "changes_requested"] } } },
+      "if": {
+        "properties": { "status": { "enum": ["approved", "comment", "changes_requested"] } }
+      },
       "then": {
         "properties": {
           "simplification": {

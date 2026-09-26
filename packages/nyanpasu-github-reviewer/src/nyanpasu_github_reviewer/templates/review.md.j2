@@ -7,65 +7,56 @@
 
 **审查状态：** {{ review_states[data.status] }}
 
-**审查版本：** {{ data.source.head_sha | md_code }}
+**审查版本：** {{ data.source.head_sha }}
 
 {{ data.summary }}
 
-{% if data.scope is defined -%}
-{% set scope = data.scope[data.source.head_sha] -%}
-### 提交范围
-
-接收 {{ scope.counts.accept }} 个文件 · 建议移出 {{ scope.counts.relocate }} 个文件 · 待确认 {{ scope.counts.clarify }} 个文件。移出与待确认部分暂停深审，不代表审查通过。
-
-{% if scope.path_encoding is defined and scope.path_encoding == "percent" -%}
-文件路径使用百分号编码，以保留非 UTF-8 文件名。
-
-{% endif -%}
-{% set scope_decisions = {"accept": "接收", "relocate": "建议移出", "clarify": "待确认"} -%}
-<details>
-<summary>范围决策与依据</summary>
-
-| 文件 | 结论 | 仓库维护必要性 | 依据 | 替代去向或方案 |
-| --- | --- | --- | --- | --- |
-{% for group in scope.groups -%}
-| {% for path in group.files %}{{ path }}<br>{% endfor %} | {{ scope_decisions[group.decision] }} | {{ group.reason }} | {{ group.source }} | {{ group.alternative }} |
-{% endfor %}
-</details>
-
-{% endif -%}
 {% if data.stages is defined -%}
-| 审查阶段 | 进度 | 范围与结果 |
-| --- | --- | --- |
-| 常规审查 | {{ stage_states[data.stages.general.status] }} | {{ data.stages.general.summary }} |
-| 深度审查 | {{ stage_states[data.stages.deep.status] }} | {{ data.stages.deep.summary }} |
-
-{% endif -%}
-{% if data.simplification is defined -%}
-### 精简审查
-
-{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
-{% set audit = data.simplification[key] -%}
-**{{ label }}：** {{ stage_states[audit.status] }} · {{ audit.summary }}
-
-{% if audit.entries -%}
-<details>
-<summary>{{ label }}的必要性与替代方案</summary>
-
-| 范围 | 必须保留的契约 | 更简单的方案 | 结论 | 依据与限制 |
-| --- | --- | --- | --- | --- |
-{% for entry in audit.entries -%}
-| {{ entry.scope }} | {{ entry.contract }} | {{ entry.alternative }} | {{ decisions[entry.decision] }} | {{ entry.evidence }} |
-{% endfor %}
-</details>
-
-{% endif -%}
+<table>
+<thead>
+<tr><th>审查阶段</th><th>进度</th><th>范围与结果</th></tr>
+</thead>
+<tbody>
+{% for key, label in [("general", "常规审查"), ("deep", "深度审查")] -%}
+<tr>
+<td nowrap valign="top">{{ label }}</td>
+<td nowrap valign="top">{{ stage_states[data.stages[key].status] }}</td>
+<td valign="top">{{ data.stages[key].summary }}</td>
+</tr>
 {% endfor -%}
+</tbody>
+</table>
+
 {% endif -%}
 {% if data.findings -%}
-| 编号 | 问题 | 类型 | 优先级 | 状态 | 规则来源 |
-| --- | --- | --- | --- | --- | --- |
-{% for id, finding in data.findings | dictsort_natural -%}
-| {{ id }} | {{ finding.title | md_link(finding.url) }} | {% if finding.kind is defined and finding.kind == "simplification" %}精简建议（非阻塞）{% else %}问题{% endif %} | <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.png" alt="{{ priorities[finding.priority][1] }} severity" width="62" height="18" align="texttop"></picture> | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
+### 审查发现
+
+{% for label, statuses, expanded in [("待处理", ["unresolved", "partial"], true), ("已解决或已取代", ["resolved", "superseded"], false)] -%}
+<details{% if expanded %} open{% endif %}>
+<summary><strong>{{ label }}</strong></summary>
+
+<table>
+<thead>
+{# Unbreakable heading padding keeps GitHub from shrinking the 62px badge. #}
+<tr><th>编号</th><th nowrap>&emsp;严重性&emsp;</th><th>问题</th><th>状态</th><th nowrap>规则来源</th></tr>
+</thead>
+<tbody>
+{% for id, finding in data.findings | dictsort_natural if finding.status in statuses -%}
+<tr>
+<td nowrap valign="top">{{ id | md_code }}</td>
+<td nowrap align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/{{ priorities[finding.priority][0] }}-v2-light.png" alt="{{ priorities[finding.priority][1] }} severity" width="62" height="18" align="texttop"></picture></td>
+<td valign="top">{{ finding.title | md_link(finding.url) }}{% if finding.kind is defined and finding.kind == "simplification" %}<br><sub>精简建议（非阻塞）</sub>{% endif %}</td>
+<td nowrap valign="top">{{ finding_states[finding.status] }}</td>
+<td valign="top">{% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %}</td>
+</tr>
+{% else -%}
+<tr><td colspan="5">暂无{{ label }}的记录。</td></tr>
+{% endfor -%}
+</tbody>
+</table>
+
+</details>
+
 {% endfor -%}
 {% elif data.status == "approved" -%}
 没有未解决的审查问题。
@@ -75,6 +66,86 @@
 本次没有需要列入看板的问题。
 {% endif %}
 
+{% if data.scope is defined -%}
+{% set scope = data.scope[data.source.head_sha] -%}
+<details>
+<summary><strong>提交范围</strong> · 接收 {{ scope.counts.accept }} · 建议移出 {{ scope.counts.relocate }} · 待确认 {{ scope.counts.clarify }}</summary>
+
+接收 {{ scope.counts.accept }} 个文件 · 建议移出 {{ scope.counts.relocate }} 个文件 · 待确认 {{ scope.counts.clarify }} 个文件。移出与待确认部分暂停深审，不代表审查通过。
+
+{% if scope.path_encoding is defined and scope.path_encoding == "percent" -%}
+文件路径使用百分号编码，以保留非 UTF-8 文件名。
+
+{% endif -%}
+{% set scope_decisions = {"accept": "接收", "relocate": "建议移出", "clarify": "待确认"} -%}
+<table>
+<thead>
+<tr><th>文件</th><th>结论</th><th>仓库维护必要性</th><th>依据</th><th>替代去向或方案</th></tr>
+</thead>
+<tbody>
+{% for group in scope.groups -%}
+<tr>
+<td valign="top">{% for path in group.files %}{{ path | md_code }}<br>{% endfor %}</td>
+<td nowrap valign="top">{{ scope_decisions[group.decision] }}</td>
+<td valign="top">{{ group.reason }}</td>
+<td valign="top">{{ group.source }}</td>
+<td valign="top">{{ group.alternative }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+</details>
+
+{% endif -%}
+{% if data.simplification is defined -%}
+<details>
+<summary><strong>精简审查与验证依据</strong></summary>
+
+<table>
+<thead>
+<tr><th>审查范围</th><th>进度</th><th>结论</th></tr>
+</thead>
+<tbody>
+{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
+<tr>
+<td nowrap valign="top">{{ label }}</td>
+<td nowrap valign="top">{{ stage_states[data.simplification[key].status] }}</td>
+<td valign="top">{{ data.simplification[key].summary }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
+{% set audit = data.simplification[key] -%}
+{% if audit.entries -%}
+#### {{ label }}的必要性与替代方案
+
+<table>
+<thead>
+<tr><th>范围</th><th>必须保留的契约</th><th>更简单的方案</th><th>结论</th><th>依据与限制</th></tr>
+</thead>
+<tbody>
+{% for entry in audit.entries -%}
+<tr>
+<td valign="top">{{ entry.scope }}</td>
+<td valign="top">{{ entry.contract }}</td>
+<td valign="top">{{ entry.alternative }}</td>
+<td nowrap valign="top">{{ decisions[entry.decision] }}</td>
+<td valign="top">{{ entry.evidence }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+{% endif -%}
+{% endfor -%}
+</details>
+
+{% endif %}
+
 <div align="right">
-   <sup>{{ data.disclosure }}</sup>
+{% set disclosure_brand = "Powered by Nyanpasu" -%}
+   <sup>Powered by {{ "Nyanpasu" | md_link("https://github.com/ShigureLab/nyanpasu") }}{{ data.disclosure[(disclosure_brand | length):] }}</sup>
 </div>

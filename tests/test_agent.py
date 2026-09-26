@@ -1019,7 +1019,10 @@ async def test_reviewer_backend_switch_uses_fresh_review_and_current_model(tmp_p
         assert result.backend == "claude" and execution.calls[0][1] is None
         assert execution.prompts[0].startswith("Review ")
         assert "Previous task head" not in execution.prompts[0]
-        assert "Powered by Nyanpasu with claude-test medium" in execution.prompts[0]
+        assert (
+            'Powered by <a href="https://github.com/ShigureLab/nyanpasu">Nyanpasu</a> with claude-test medium'
+            in execution.prompts[0]
+        )
     finally:
         await agent.shutdown()
 

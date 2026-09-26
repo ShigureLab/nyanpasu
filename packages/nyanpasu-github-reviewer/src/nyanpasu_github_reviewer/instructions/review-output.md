@@ -30,11 +30,15 @@ The bundled schema requires `simplification.production` and `simplification.test
 
 After integration, update the same dashboard to the actual outcome: `approved`, `changes_requested`, or `comment`; mark deep `completed` only when its evidence has been reconciled, not merely because a child exited. Use `incomplete` when necessary work remains blocked after attempting recovery within your authority, and identify which stage could not finish while retaining completed stage results. APPROVE requires the necessary review scope to be complete; a running optional check is not itself a defect or a reason to request changes. Keep `source.head_sha` tied to the analyzed head, and add only verified finding and rule links. A missing dashboard discovered after review publication must reflect the actual outcome, not pretend that the review is only starting. Verify the final state and report the confirmed dashboard URL.
 
+## Rule sources
+
+For a finding based on an explicit repository guideline, documented contract, or requirement, record `rule.title` and a verified public permalink in the dashboard finding. Link the actual applicable rule; a finding thread is not itself a rule source. General correctness evidence may have no corresponding written rule. Leave `rule` absent in that case; the template keeps the rule-source column and displays “—”. Do not invent a rule, cite a loosely related document, or drop an existing verified rule when updating a finding.
+
 ## Review comments
 
-Each new actionable finding belongs in an inline review comment when it can attach to a changed diff line. Start its body with exactly one severity badge and an explicit priority field, for example:
+Each new actionable finding belongs in an inline review comment when it can attach to a changed diff line. Start its body with exactly one severity badge, explicit priority, and a short action title on the same line: `<picture>…</picture> **P1 · <action title>**`. Separate that heading from the explanation with a blank line.
 
-`![High severity](https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png) **优先级：P1**`
+Use the bundled `review.md.j2` as the single source for badge markup. Copy its complete `<picture>` fragment with the priority's severity substituted: dark and light SVG sources, the PNG fallback, meaningful alt text, and `width="62" height="18" align="texttop"`. This is the same badge used in dashboard finding tables. Do not use Markdown image syntax, a bare PNG, emoji severity indicators, or an image without explicit dimensions. Those variants lose theme support or render at an inconsistent size. Preview the dashboard and use the rendered fragment if needed; do not improvise another badge format.
 
 | Priority | Severity badge | Meaning                                                                             |
 | -------- | -------------- | ----------------------------------------------------------------------------------- |
@@ -50,13 +54,13 @@ Publish supported simplifications separately from correctness defects: set the f
 
 Use the original published thread for an existing finding. A new inline comment needs a new issue or a materially changed defect that the original published discussion no longer covers. Recovering an unpublished draft is part of completing the original review, not a duplicate public comment. Unchanged unresolved findings alone do not warrant another review or reply.
 
-Keep the final review body short: the conclusion, where the detailed findings are, and any genuinely non-inline concern. Mark a finding that cannot attach to a changed line with `非行级：<reason>` and its priority; separate distinct findings into bullets. For title/body problems, suggest a concrete improvement. Do not duplicate inline findings or mechanically list their count.
+Keep the final review body short: a conclusion heading, one factual summary paragraph, the dashboard permalink, and any genuinely non-inline concern. The dashboard owns the grouped finding index; do not repeat inline findings, a severity inventory, or the full resolved history in the review body. Mark a finding that cannot attach to a changed line with `非行级：<reason>`, and use the same fixed-size badge and priority heading as inline findings; separate distinct findings into bullets. For title/body problems, suggest a concrete improvement.
 
 Use REQUEST_CHANGES only when enabled and supported by unresolved or partially resolved P1 evidence. Each new attachable blocker needs an inline comment; an existing blocker needs a substantive thread reply when a new review is warranted. Do not request changes merely for P2/P3 findings, PR hygiene, CI/template status, or unchanged old concerns. Use COMMENT for non-blocking findings or a requested status response, and APPROVE when review is complete with no remaining concerns. Automatic follow-up silence rules apply before choosing any review event.
 
 In public text, use visible GitHub permalinks and natural conclusions; omit raw GraphQL IDs, trigger names, delivery IDs, and review-submit event names. Do not add severity badges to neutral status text or invent findings to fill a format.
 
-Every final review body must end with the exact disclosure footer supplied in the current turn input, after all other review content, without translating or editing it. The footer is generated from Nyanpasu's model configuration; do not copy an older review's model declaration.
+Every final review body must end with the exact disclosure footer supplied in the current turn input, after all other review content, without translating or editing it. Preserve the hyperlink on the Nyanpasu name in public review and comment footers. The footer is generated from Nyanpasu's model configuration; do not copy an older review's model declaration. Dashboard `disclosure` remains plain text starting with `Powered by Nyanpasu with `; the bundled template adds the same brand link, so do not store HTML or Markdown links in that field.
 
 ## Completing publication
 
