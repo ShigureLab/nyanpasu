@@ -302,10 +302,14 @@ class AgentService:
         parent = await to_thread.run_sync(self.store.task_request, parent_id)
         if parent.workspace is None:
             raise ValueError("subtasks require a configured repository workspace")
-        plugin_id = parent.metadata.get("plugin_id", parent.metadata.get("source_plugin_id"))
-        if preparer := self._subtask_preparers.get(plugin_id):
-            request = await preparer(parent, request)
-        child = await to_thread.run_sync(self.store.create_subtask, parent_id, request)
+        child = await to_thread.run_sync(self.store.existing_subtask, parent_id, request)
+        if child is None:
+            plugin_id = parent.metadata.get("plugin_id", parent.metadata.get("source_plugin_id"))
+            preparer = self._subtask_preparers.get(plugin_id)
+            prepared = await preparer(parent, request) if preparer else request
+            child = await to_thread.run_sync(
+                functools.partial(self.store.create_subtask, parent_id, request, prepared=prepared)
+            )
         if await to_thread.run_sync(self.store.task_is_active, child.task_id):
             self._schedule(child)
         return child

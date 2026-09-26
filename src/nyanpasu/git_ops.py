@@ -70,6 +70,20 @@ class WorktreeManager:
             ["git", "rev-parse", "--verify", f"{workspace.revision}^{{commit}}"], workspace.local_path
         ).stdout.strip()
         tree = self._run(["git", "rev-parse", f"{revision}^{{tree}}"], workspace.local_path).stdout.strip()
+        # Alternates do not carry a partial clone's promisor configuration.
+        # Read this tree's objects through the source repo so Git can fetch missing blobs.
+        objects_in_tree = self._run(
+            ["git", "rev-list", "--objects", "--no-object-names", tree], workspace.local_path
+        ).stdout
+        subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            cwd=workspace.local_path,
+            input=objects_in_tree,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
         # Release export attributes must not omit tests or substitute source text.
         # A temporary bare repository gives info/attributes highest precedence
         # without mutating the shared repository or exposing its objects to the child.
@@ -96,8 +110,8 @@ class WorktreeManager:
             "export_sha256": hashlib.sha256(archive).hexdigest(),
             "isolation": "base-tree-only; filesystem and network are not isolated",
         }
-        (path / ".nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
         self._run(["git", "init", "--template="], path)
+        (path / ".git" / "nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
         self._run(["git", "add", "--all", "--force"], path)
         self._run(
             [
