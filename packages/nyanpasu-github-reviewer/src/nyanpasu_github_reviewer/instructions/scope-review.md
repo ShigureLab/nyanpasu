@@ -15,7 +15,22 @@ Group the inventory by responsibility and give every path exactly one decision:
 Submit the complete plan using the same control command:
 
 ```json
-{"action":"review-scope","input":{"inventory_id":"from the inventory","groups":[{"files":["path/from/inventory.py"],"category":"production","decision":"accept","reason":"The existing service calls this implementation; this behavior must ship.","source":"Original requirement URL and existing caller location","alternative":"Keeping it only as an external experiment would not implement the service contract."}]}}
+{
+   "action": "review-scope",
+   "input": {
+      "inventory_id": "from the inventory",
+      "groups": [
+         {
+            "files": ["path/from/inventory.py"],
+            "category": "production",
+            "decision": "accept",
+            "reason": "The existing service calls this implementation; this behavior must ship.",
+            "source": "Original requirement URL and existing caller location",
+            "alternative": "Keeping it only as an external experiment would not implement the service contract."
+         }
+      ]
+   }
+}
 ```
 
 Categories are `production`, `tests`, `examples`, `evidence`, `generated`, `vendor`, `other`. Use exact paths, not globs. The service rejects stale inventories, omitted/unknown paths and duplicates. Empty diffs use empty groups. Reuse decisions only after verifying unchanged responsibilities and requirements; submit them against this inventory even on follow-ups. Once a child is dispatched the plan is frozen for this run.
