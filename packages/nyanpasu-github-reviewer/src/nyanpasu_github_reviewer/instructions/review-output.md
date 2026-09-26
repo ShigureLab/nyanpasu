@@ -36,11 +36,11 @@ Each new actionable finding belongs in an inline review comment when it can atta
 
 `![High severity](https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png) **优先级：P1**`
 
-| Priority | Severity badge | Meaning                                                            |
-| -------- | -------------- | ------------------------------------------------------------------ |
+| Priority | Severity badge | Meaning                                                                             |
+| -------- | -------------- | ----------------------------------------------------------------------------------- |
 | P1       | High           | Blocking correctness, security, data-loss, build failure, or other high-risk defect |
-| P2       | Medium         | Actionable edge case, test gap, or maintainability problem         |
-| P3       | Low            | Optional clarification, PR hygiene, or follow-up suggestion        |
+| P2       | Medium         | Actionable edge case, test gap, or maintainability problem                          |
+| P3       | Low            | Optional clarification, PR hygiene, or follow-up suggestion                         |
 
 Use only P1/P2/P3 for new findings. P0 is a legacy alias accepted only in previously published dashboard data and renders as High; do not emit it in new reviews.
 
