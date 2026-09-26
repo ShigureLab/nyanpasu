@@ -229,6 +229,39 @@ def test_snapshot_fetches_base_blobs_missing_from_partial_clone(tmp_path):
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{base}^{{tree}}")
 
 
+@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed"])
+def test_snapshot_preserves_empty_trees_and_gitlinks(tmp_path, contents):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args, cwd=repo):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    git("commit", "--allow-empty", "-m", "empty base")
+    initial = git("rev-parse", "HEAD")
+    if contents != "empty":
+        git("update-index", "--add", "--cacheinfo", "160000", initial, "deps/library with spaces")
+    if contents == "mixed":
+        (repo / "README.md").write_text("project with a submodule")
+        git("add", "README.md")
+    git("commit", "--allow-empty", "-m", "snapshot source")
+    source = git("rev-parse", "HEAD")
+    task = AgentTask(
+        task_id="snapshot",
+        context_key="snapshot",
+        action=TaskAction.RUN,
+        prompt="",
+        workspace=WorkspaceRef(key="repo", local_path=repo, revision=source),
+        workspace_mode="snapshot",
+    )
+    snapshot = WorktreeManager(_config(tmp_path)).prepare_context(task, None).session_worktree
+    assert snapshot is not None
+    assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{source}^{{tree}}")
+
+
 @pytest.mark.anyio
 async def test_reference_git_failure_returns_control_error_and_allows_retry(tmp_path):
     repo, _, head, _ = repository(tmp_path)

@@ -97,7 +97,7 @@ class WorktreeManager:
             (export / "info").mkdir(exist_ok=True)
             (export / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
             archive = subprocess.run(
-                ["git", "archive", "--format=tar", revision], cwd=export, capture_output=True, check=True
+                ["git", "archive", "--format=tar", tree], cwd=export, capture_output=True, check=True
             ).stdout
         if path.exists():
             self._remove_worktree_unlocked(workspace, path)
@@ -113,6 +113,11 @@ class WorktreeManager:
         self._run(["git", "init", "--template="], path)
         (path / ".git" / "nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
         self._run(["git", "add", "--all", "--force"], path)
+        # Archive represents gitlinks as empty directories, so restore their index entries.
+        for entry in self._run(["git", "ls-tree", "-rz", revision], workspace.local_path).stdout.split("\0"):
+            if entry.startswith("160000 "):
+                metadata, name = entry.split("\t", 1)
+                self._run(["git", "update-index", "--add", "--cacheinfo", "160000", metadata.split()[2], name], path)
         self._run(
             [
                 "git",
@@ -123,6 +128,7 @@ class WorktreeManager:
                 "-c",
                 "core.hooksPath=/dev/null",
                 "commit",
+                "--allow-empty",
                 "--no-gpg-sign",
                 "-m",
                 "Reference input snapshot",
