@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 DEFAULT_HOME = Path("~/.nyanpasu")
 CONFIG_FILE_NAME = "config.toml"
@@ -25,14 +25,39 @@ class EnvCommand(BaseModel):
         return value
 
 
-class ProcessConfig(BaseModel):
-    label: ClassVar[str] = "Agent"
+class ModelSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+    @field_validator("model", "reasoning_effort")
+    @classmethod
+    def _model_setting(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or "\0" in value:
+            raise ValueError("model settings must be nonempty and contain no NUL")
+        return value
+
+
+class FallbackModel(ModelSettings):
+    model: str
+
+    @field_validator("model")
+    @classmethod
+    def _single_model(cls, value: str) -> str:
+        if "," in value:
+            raise ValueError("fallback model must contain no comma")
+        return value
+
+
+class ProcessConfig(ModelSettings):
+    label: ClassVar[str] = "Agent"
 
     bin: str
     args: tuple[str, ...] = ()
-    model: str | None = None
-    reasoning_effort: str | None = None
     command_timeout_seconds: int = Field(default=60 * 60, gt=0)
     pass_env: tuple[str, ...] = ()
     env: dict[str, str | EnvCommand] = Field(default_factory=dict, repr=False)
@@ -56,16 +81,6 @@ class ProcessConfig(BaseModel):
     @property
     def command(self) -> tuple[str, ...]:
         return (self.bin, *self.args)
-
-    @field_validator("model", "reasoning_effort")
-    @classmethod
-    def _model_setting(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value or "\0" in value:
-            raise ValueError("model settings must be nonempty and contain no NUL")
-        return value
 
     @field_validator("pass_env", mode="before")
     @classmethod
@@ -94,11 +109,27 @@ class CodexConfig(ProcessConfig):
 class ClaudeConfig(ProcessConfig):
     label: ClassVar[str] = "Claude Code"
     bin: str = "claude"
+    fallback_models: tuple[FallbackModel, ...] = Field(default=(), max_length=3)
     args: tuple[str, ...] = ("--permission-prompts", "none", "--system-prompt-snapshot", "off")
     permission_mode: Literal["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] = (
         "auto"
     )
     allowed_tools: tuple[str, ...] = ()
+
+    @field_validator("fallback_models", mode="before")
+    @classmethod
+    def _fallback_models(cls, value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return tuple({"model": item} if isinstance(item, str) else item for item in value)
+        return value
+
+    @model_validator(mode="after")
+    def _native_fallback_effort(self) -> ClaudeConfig:
+        if any(model.reasoning_effort is not None for model in self.fallback_models):
+            efforts = (self.reasoning_effort, *(model.reasoning_effort for model in self.fallback_models))
+            if any(effort not in {None, "low", "medium", "high", "xhigh"} for effort in efforts):
+                raise ValueError("Claude per-model fallback reasoning supports low, medium, high, and xhigh")
+        return self
 
 
 class ServerConfig(BaseModel):
@@ -237,6 +268,8 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
     }.items():
         if (value := os.getenv(f"NYANPASU_CLAUDE_{suffix}")) is not None:
             claude[field] = value
+    if (fallback_models := os.getenv("NYANPASU_CLAUDE_FALLBACK_MODELS")) is not None:
+        claude["fallback_models"] = _as_str_tuple(fallback_models)
     if (timeout := os.getenv("NYANPASU_COMMAND_TIMEOUT_SECONDS")) is not None:
         claude["command_timeout_seconds"] = int(timeout)
     if claude:

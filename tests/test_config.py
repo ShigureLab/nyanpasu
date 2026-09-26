@@ -4,7 +4,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from nyanpasu.config import CodexConfig, EnvCommand, ServerConfig, default_config_path, load_config, nyanpasu_home
+from nyanpasu.config import (
+    ClaudeConfig,
+    CodexConfig,
+    EnvCommand,
+    ServerConfig,
+    default_config_path,
+    load_config,
+    nyanpasu_home,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -107,6 +115,36 @@ def test_model_environment_overrides_file(tmp_path: Path, monkeypatch) -> None:
 
     assert config.codex.model == "environment-model"
     assert config.codex.reasoning_effort == "medium"
+
+
+def test_claude_fallback_models_and_environment_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[claude]\nmodel = "primary"\nfallback_models = [{model = "first", reasoning_effort = "medium"}, "second"]\n'
+    )
+    assert [(model.model, model.reasoning_effort) for model in load_config().claude.fallback_models] == [
+        ("first", "medium"),
+        ("second", None),
+    ]
+    monkeypatch.setenv("NYANPASU_CLAUDE_FALLBACK_MODELS", "env-first, env-second")
+    assert [model.model for model in load_config().claude.fallback_models] == ["env-first", "env-second"]
+    monkeypatch.setenv("NYANPASU_CLAUDE_FALLBACK_MODELS", "")
+    assert load_config().claude.fallback_models == ()
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        ("",),
+        ("with,comma",),
+        ({"model": "backup", "reasoning_effort": ""},),
+        ({"model": "backup", "reasoning_effort": "max"},),
+        ("a", "b", "c", "d"),
+    ],
+)
+def test_claude_fallback_models_reject_invalid_settings(models):
+    with pytest.raises(ValueError):
+        ClaudeConfig(fallback_models=models)
 
 
 @pytest.mark.parametrize("field", ["model", "reasoning_effort"])

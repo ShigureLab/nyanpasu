@@ -18,6 +18,9 @@ pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
 [claude]
 bin = "claude"
+# Optional ordered fallback chain for generation and unavailable auto review.
+# Use provider-supported IDs; omitted reasoning_effort inherits the primary setting.
+# fallback_models = [{ model = "sonnet", reasoning_effort = "medium" }, "haiku"]
 # Defaults; use args = [] for older CLIs without these options.
 args = ["--permission-prompts", "none", "--system-prompt-snapshot", "off"]
 permission_mode = "auto"

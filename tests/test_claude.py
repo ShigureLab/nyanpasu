@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.agent import AgentService
-from nyanpasu.claude import ClaudeBackend
+from nyanpasu.claude import AutoReviewUnavailable, ClaudeBackend
 from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig, load_config
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
@@ -76,6 +76,187 @@ async def test_session_resume_and_updated_instructions(configured: NyanpasuConfi
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     assert argv[argv.index("--permission-prompts") + 1] == "none"
     assert "test-model" in argv and "medium" in argv
+    assert "--fallback-model" not in argv
+
+
+AUTO_REVIEW_ERROR = (
+    "glm-5.3[1m] is temporarily unavailable, so auto mode cannot determine the safety of Bash right now. "
+    "Wait briefly and then try this action again. If it keeps failing, continue with other tasks that don't "
+    "require this action and come back to it later. Note: reading files, searching code, and other "
+    "read-only operations do not require the classifier and can still be used."
+)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("backup_effort", ["high", None])
+async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per_model_effort(
+    tmp_path, process, backup_effort
+):
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        runtime=RuntimeConfig(backend="claude"),
+        claude=ClaudeConfig(
+            model="glm-5.3[1m]",
+            reasoning_effort="xhigh",
+            fallback_models=(
+                {"model": "glm-5.3-flash[1m]", "reasoning_effort": "medium"},
+                {"model": "deepseek-v4.1-flash-ali[1m]", "reasoning_effort": backup_effort},
+            ),
+        ),
+    )
+    successful = process.side_effect
+
+    async def respond(argv, *, input_text, received, **kwargs):
+        model = argv[argv.index("--model") + 1]
+        message = json.loads(input_text)
+        await received({"type": "system", "subtype": "init", "session_id": message["session_id"], "model": model})
+        if model != "deepseek-v4.1-flash-ali[1m]":
+            await received(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "is_error": True, "content": AUTO_REVIEW_ERROR}],
+                    },
+                }
+            )
+            pytest.fail("classifier failure must stop the attempt before a misleading success result")
+        return await successful(argv, input_text=input_text, received=received, **kwargs)
+
+    process.side_effect = respond
+    agent = AgentService(config, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    try:
+        result = await agent.run_now(
+            AgentTask(task_id="review", context_key="review", action=TaskAction.RUN, prompt="run")
+        )
+        assert result and result.status == "completed" and result.final_message == "done"
+        invocations = process.call_args_list
+        requests = [json.loads(call.kwargs["input_text"]) for call in invocations]
+        assert len(requests) == 3
+        assert {request["session_id"] for request in requests} == {result.thread_id}
+        assert len({request["uuid"] for request in requests}) == 3
+        assert result.turn_id == requests[-1]["uuid"]
+        for index, invocation in enumerate(invocations):
+            argv = invocation.args[0]
+            assert argv[argv.index("--permission-mode") + 1] == "auto"
+            assert ("--resume" in argv) == (index > 0)
+            if index:
+                assert "Check completed actions" in requests[index]["message"]["content"]
+        first_settings = json.loads(invocations[0].args[0][invocations[0].args[0].index("--settings") + 1])
+        assert first_settings == {
+            "effortLevel": "xhigh",
+            "modelSettings": {
+                "glm-5.3": {"effortLevel": "xhigh"},
+                "glm-5.3-flash": {"effortLevel": "medium"},
+                "deepseek-v4.1-flash-ali": {"effortLevel": backup_effort or "xhigh"},
+            },
+        }
+        last_argv = invocations[-1].args[0]
+        assert last_argv[last_argv.index("--effort") + 1] == (backup_effort or "xhigh")
+        assert "--fallback-model" not in last_argv
+        context = agent.store.get_context("review")
+        assert context and context.thread_id == result.thread_id
+        assert agent.store.task_run("review").turn_id == result.turn_id
+        backend = agent.backends.get("claude").execution
+        assert isinstance(backend, ClaudeBackend)
+        assert backend.config == config.claude
+        app = create_app(config, agent=agent)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            runtime = (await client.get("/api/runtime")).json()
+        assert [model["model"] for model in runtime["fallback_models"]] == [
+            "glm-5.3-flash[1m]",
+            "deepseek-v4.1-flash-ali[1m]",
+        ]
+        assert len([entry for entry in runtime["diagnostics"] if entry["target"] == "claude.model_fallback"]) == 2
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_auto_review_fallback_skips_model_already_used_by_native_generation(configured, tmp_path, process):
+    successful = process.side_effect
+
+    async def respond(argv, *, input_text, received, **kwargs):
+        if process.await_count == 1:
+            message = json.loads(input_text)
+            await received({"type": "system", "subtype": "init", "session_id": message["session_id"]})
+            await received({"type": "system", "subtype": "model_fallback", "fallback_model": "first"})
+            await received(
+                {
+                    "type": "user",
+                    "message": {"content": [{"type": "tool_result", "is_error": True, "content": AUTO_REVIEW_ERROR}]},
+                }
+            )
+        return await successful(argv, input_text=input_text, received=received, **kwargs)
+
+    process.side_effect = respond
+    backend = ClaudeBackend(
+        configured.model_copy(update={"claude": ClaudeConfig(model="primary", fallback_models=("first", "second"))})
+    )
+    result = await backend.run_turn(cwd=tmp_path, prompt="run", thread_id=None)
+    assert result.final_message == "done" and process.await_count == 2
+    last_argv = process.call_args_list[-1].args[0]
+    assert last_argv[last_argv.index("--model") + 1] == "second"
+    assert "--fallback-model" not in last_argv
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fallback_models", [(), ("backup",)])
+@pytest.mark.parametrize("review_model", [None, "review-model"])
+async def test_exhausted_auto_review_models_fail_the_task(tmp_path, process, fallback_models, review_model):
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        runtime=RuntimeConfig(backend="claude"),
+        claude=ClaudeConfig(
+            model="primary",
+            fallback_models=fallback_models,
+            env={"CLAUDE_CODE_AUTO_MODE_MODEL": review_model} if review_model else {},
+        ),
+    )
+
+    async def respond(argv, *, input_text, received, **kwargs):
+        message = json.loads(input_text)
+        await received({"type": "system", "subtype": "init", "session_id": message["session_id"]})
+        await received(
+            {
+                "type": "user",
+                "toolDenialKind": "automode-unavailable",
+                "message": {
+                    "content": [{"type": "tool_result", "is_error": True, "content": "classifier unavailable"}]
+                },
+            }
+        )
+        pytest.fail("unavailable classifiers must never be treated as successful completion")
+
+    process.side_effect = respond
+    agent = AgentService(config, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    try:
+        with pytest.raises(AutoReviewUnavailable, match="classifier unavailable"):
+            await agent.run_now(AgentTask(task_id="failed", context_key="review", action=TaskAction.RUN, prompt="run"))
+        assert process.await_count == (1 if review_model else 1 + len(fallback_models))
+        assert agent.store.task_run("failed").status == "failed"
+        context = agent.store.get_context("review")
+        assert context and context.thread_id
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reason", ["Permission denied by auto mode: unsafe command", "command exited with code 1"])
+async def test_ordinary_tool_denials_do_not_switch_models(configured, tmp_path, process, reason):
+    successful = process.side_effect
+
+    async def respond(argv, *, input_text, received, **kwargs):
+        await received(
+            {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True, "content": reason}]}}
+        )
+        return await successful(argv, input_text=input_text, received=received, **kwargs)
+
+    process.side_effect = respond
+    backend = ClaudeBackend(configured.model_copy(update={"claude": ClaudeConfig(fallback_models=("backup",))}))
+    result = await backend.run_turn(cwd=tmp_path, prompt="run", thread_id=None)
+    assert result.final_message == "done" and process.await_count == 1
+    assert backend.runtime_info()["diagnostics"] == []
 
 
 @pytest.mark.anyio

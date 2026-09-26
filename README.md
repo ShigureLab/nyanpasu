@@ -115,6 +115,26 @@ Both backends support `bin`, `args`, `model`, `reasoning_effort`, `command_timeo
 
 Set `model` and `reasoning_effort` to pin the agent's configuration for new and resumed sessions. Omitted values inherit the CLI's defaults. The Dashboard's Runtime page and the reviewer's disclosure footer use the configured values. `NYANPASU_CODEX_MODEL` / `NYANPASU_CLAUDE_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` / `NYANPASU_CLAUDE_REASONING_EFFORT` override the TOML settings.
 
+Claude supports an optional ordered fallback chain, with an optional reasoning effort for each model:
+
+```toml
+[claude]
+model = "opus"
+reasoning_effort = "high"
+fallback_models = [
+  { model = "sonnet", reasoning_effort = "medium" },
+  { model = "haiku", reasoning_effort = "low" },
+]
+```
+
+Use model IDs available through your provider, with at most three fallback models. A string list such as `fallback_models = ["sonnet", "haiku"]` inherits the primary reasoning effort. Per-model efforts support `low`, `medium`, `high`, and `xhigh`, subject to provider support. They control task generation; Claude manages its separate safety classifier's reasoning settings. `NYANPASU_CLAUDE_FALLBACK_MODELS` overrides the list with comma-separated IDs; an empty value clears it. Codex does not use this setting.
+
+Generation failures use Claude's native [`--fallback-model` flag](https://code.claude.com/docs/en/model-config#fallback-model-chains), requiring a CLI version supporting ordered chains. For auto review, Nyanpasu detects the specific tool failure saying the model is temporarily unavailable and auto mode cannot determine the action's safety. It stops that process, resumes the same session with the next model, and asks it to check completed work before retrying the blocked action through auto review. This preserves `permission_mode = "auto"`; an ordinary safety rejection does not trigger fallback. If every configured model fails auto review, the task fails instead of accepting a misleading successful completion. Changing the task model only helps when your provider also changes the classifier model.
+
+Each new task starts with the primary model. The Dashboard's Runtime page shows the configured chain and records fallback and classifier-unavailability warnings with session identifiers. An omitted list leaves native CLI fallback settings in effect, but Nyanpasu's auto-review recovery requires an explicit list.
+
+If your CLI supports `CLAUDE_CODE_AUTO_MODE_MODEL`, set it through `claude.env` to pin a separate safety classifier. Nyanpasu then leaves classifier fallback to the CLI and fails the task if review remains unavailable; changing generation models cannot recover that classifier.
+
 Automatic permission review is enabled by default for both backends, including when these settings are omitted:
 
 | Backend     | Default safety settings                                                                               |

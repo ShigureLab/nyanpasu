@@ -257,6 +257,9 @@ def dashboard_router(
         return {
             "backend": config.runtime.backend,
             "model": config.process_config().model,
+            "fallback_models": [model.model_dump() for model in config.claude.fallback_models]
+            if config.runtime.backend == "claude"
+            else [],
             "reasoning_effort": config.process_config().reasoning_effort,
             "bin": config.process_config().bin,
             "concurrency": config.runtime.concurrency,

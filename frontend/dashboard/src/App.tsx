@@ -32,6 +32,7 @@ interface Runtime {
   connection: string;
   backend: string;
   model: string | null;
+  fallback_models: Array<{ model: string; reasoning_effort: string | null }>;
   reasoning_effort: string | null;
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
@@ -565,6 +566,17 @@ function RuntimeView({
               <span>Configured model</span>
               <h2>{data.data.model ?? 'Backend default'}</h2>
               <span>Reasoning: {data.data.reasoning_effort ?? 'Backend default'}</span>
+              {data.data.fallback_models.length > 0 && (
+                <p>
+                  Fallback:{' '}
+                  {data.data.fallback_models
+                    .map(
+                      (model) =>
+                        `${model.model} (${model.reasoning_effort ?? data.data?.reasoning_effort ?? 'default'})`,
+                    )
+                    .join(' → ')}
+                </p>
+              )}
             </article>
           </div>
           <h2>Context leases</h2>
