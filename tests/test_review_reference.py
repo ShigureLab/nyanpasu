@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 
 import pytest
@@ -229,7 +230,7 @@ def test_snapshot_fetches_base_blobs_missing_from_partial_clone(tmp_path):
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{base}^{{tree}}")
 
 
-@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed", "symlinks"])
+@pytest.mark.parametrize("contents", ["empty", "submodule", "mixed", "symlinks", "byte-paths"])
 def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -253,6 +254,10 @@ def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
         (repo / "relative").symlink_to("../../outside")
         (repo / "link-text").symlink_to("dir/../target")
         git("add", ".")
+    if contents == "byte-paths":
+        (repo / os.fsdecode(b"file-\xff")).write_bytes(b"file with a byte-oriented path")
+        git("add", ".")
+        git("update-index", "--add", "--cacheinfo", "160000", initial, os.fsdecode(b"deps/library-\xfe"))
     git("commit", "--allow-empty", "-m", "snapshot source")
     source = git("rev-parse", "HEAD")
     task = AgentTask(

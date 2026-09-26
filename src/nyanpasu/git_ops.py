@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -116,10 +117,24 @@ class WorktreeManager:
         (path / ".git" / "nyanpasu-source.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
         self._run(["git", "add", "--all", "--force"], path)
         # Archive represents gitlinks as empty directories, so restore their index entries.
-        for entry in self._run(["git", "ls-tree", "-rz", revision], workspace.local_path).stdout.split("\0"):
-            if entry.startswith("160000 "):
-                metadata, name = entry.split("\t", 1)
-                self._run(["git", "update-index", "--add", "--cacheinfo", "160000", metadata.split()[2], name], path)
+        entries = subprocess.run(
+            ["git", "ls-tree", "-rz", revision], cwd=workspace.local_path, capture_output=True, check=True
+        ).stdout
+        for entry in entries.split(b"\0"):
+            if entry.startswith(b"160000 "):
+                metadata, name = entry.split(b"\t", 1)
+                self._run(
+                    [
+                        "git",
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        "160000",
+                        metadata.split()[2].decode("ascii"),
+                        os.fsdecode(name),
+                    ],
+                    path,
+                )
         self._run(
             [
                 "git",
