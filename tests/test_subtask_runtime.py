@@ -171,7 +171,7 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
 
 
 @pytest.mark.anyio
-async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(tmp_path):
+async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(tmp_path, monkeypatch):
     import shlex
     import sys
     from pathlib import Path
@@ -215,13 +215,38 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
         evidence.write_text('{"observed":"failure reproduced"}')
         with pytest.raises(ValueError, match="descendants"):
             await agent.control.dispatch(child_id, "cancel", {"task_ids": ["parent"]})
+        destination = config.state_dir / "artifacts" / "subtasks" / child_id
+        with pytest.raises(ValueError, match="inside"):
+            await agent.control.dispatch(
+                child_id, "complete", {"summary": "invalid later file", "artifacts": ["evidence.json", str(request)]}
+            )
+        assert list(destination.glob("*")) == []
+        assert agent.store.subtask_result(child_id) is None
+
+        def unavailable_store(*args):
+            raise OSError("result store unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(agent.store, "record_subtask_result", unavailable_store)
+            with pytest.raises(OSError, match="result store unavailable"):
+                await agent.control.dispatch(
+                    child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
+                )
+        assert list(destination.glob("*")) == []
         result = await agent.control.dispatch(
             child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
+        )
+        assert (
+            await agent.control.dispatch(
+                child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
+            )
+            == result
         )
         evidence.write_text("changed later")
         assert Path(result["artifacts"][0]["path"]).read_text() == '{"observed":"failure reproduced"}'
         with pytest.raises(ValueError, match="frozen"):
-            await agent.control.dispatch(child_id, "complete", {"summary": "different"})
+            await agent.control.dispatch(child_id, "complete", {"summary": "different", "artifacts": ["evidence.json"]})
+        assert list(destination.iterdir()) == [Path(result["artifacts"][0]["path"])]
         with pytest.raises(ValueError, match="inside"):
             await agent.control.dispatch(child_id, "complete", {"summary": "escape", "artifacts": [str(request)]})
         await agent.wait_for_subtasks("parent", [child_id])

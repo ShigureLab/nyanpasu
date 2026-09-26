@@ -157,8 +157,8 @@ Do not expose the control file or its contents, or include it in evidence. Only 
             raise ValueError("task has no workspace")
         root = context.session_worktree.resolve()
         destination = self.agent.config.state_dir / "artifacts" / "subtasks" / task_id
-        destination.mkdir(parents=True, exist_ok=True)
         artifacts = []
+        contents: dict[Path, bytes] = {}
         for name in completion.artifacts:
             source = (root / name).resolve()
             if not source.is_relative_to(root) or not source.is_file():
@@ -168,12 +168,26 @@ Do not expose the control file or its contents, or include it in evidence. Only 
             content = source.read_bytes()
             digest = hashlib.sha256(content).hexdigest()
             target = destination / digest
-            if not target.exists():
-                target.write_bytes(content)
-                target.chmod(0o444)
+            contents[target] = content
             artifacts.append({"name": name, "path": str(target), "sha256": digest, "bytes": len(content)})
         result = {"summary": completion.summary, "artifacts": artifacts, "data": completion.data}
-        store.record_subtask_result(task_id, result)
+        if frozen := store.subtask_result(task_id):
+            if frozen != result:
+                raise ValueError("result is already frozen")
+            return frozen
+        destination.mkdir(parents=True, exist_ok=True)
+        created = []
+        try:
+            for target, content in contents.items():
+                if not target.exists():
+                    created.append(target)
+                    target.write_bytes(content)
+                    target.chmod(0o444)
+            store.record_subtask_result(task_id, result)
+        except Exception:
+            for target in created:
+                target.unlink(missing_ok=True)
+            raise
         return result
 
     async def close(self):
