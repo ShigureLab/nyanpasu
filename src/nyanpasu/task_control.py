@@ -61,7 +61,8 @@ class TaskControl:
         try:
             command = shlex.join([sys.executable, "-m", "nyanpasu.task_control", str(control)])
             yield f"""\nNyanpasu subtask control (for this turn only):
-Write a JSON request file, then run: {command} REQUEST_FILE
+Pipe a JSON request to: {command} -
+Alternatively, replace - with a request-file path. Stdin requires no filesystem writes.
 Requests:
 {{"action":"create","input":{{"request_key":"stable-purpose-key","prompt":"self-contained task","developer_instructions":"role and constraints","revision":"optional pinned commit","purpose":"design"}}}}
 {{"action":"inspect"}}
@@ -137,10 +138,8 @@ Do not expose the control file or its contents, or include it in evidence. Only 
                 raise ValueError("task_ids must belong to this task's descendants")
             if action == "await":
                 return await self.agent.wait_for_subtasks(task_id, ids)
-            cancelled = []
             for identity in ids:
-                cancelled.extend(await to_thread.run_sync(store.cancel_task_tree, identity))
-            await self.agent.stop_tasks(cancelled)
+                await self.agent.cancel_subtask(identity)
             return {"cancelled": ids}
         if action == "complete":
             completion = Completion.model_validate(payload)
@@ -214,9 +213,8 @@ def call_control(control: Path, request: dict[str, Any]) -> dict[str, Any]:
 
 if __name__ == "__main__":
     try:
-        print(
-            json.dumps(call_control(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text())), ensure_ascii=False)
-        )
+        raw = sys.stdin.read() if sys.argv[2] == "-" else Path(sys.argv[2]).read_text()
+        print(json.dumps(call_control(Path(sys.argv[1]), json.loads(raw)), ensure_ascii=False))
     except (ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)

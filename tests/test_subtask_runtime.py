@@ -201,15 +201,21 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
     try:
         await agent.submit(_task("parent"))
         await started.wait()
-        command = next(line for line in backend.instructions[0].splitlines() if line.startswith("Write a JSON"))
-        control = Path(shlex.split(command.split("then run: ")[1])[-2])
+        command = next(line for line in backend.instructions[0].splitlines() if line.startswith("Pipe a JSON"))
+        control = Path(shlex.split(command.split("request to: ")[1])[-2])
         capability = json.loads(control.read_text())
-        request = tmp_path / "request.json"
-        request.write_text(json.dumps({"action": "create", "input": {"request_key": "design", "prompt": "child"}}))
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "nyanpasu.task_control", str(control), str(request), stdout=asyncio.subprocess.PIPE
+            sys.executable,
+            "-m",
+            "nyanpasu.task_control",
+            str(control),
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
         )
-        output, _ = await proc.communicate()
+        output, _ = await proc.communicate(
+            json.dumps({"action": "create", "input": {"request_key": "design", "prompt": "child"}}).encode()
+        )
         assert proc.returncode == 0
         child_id = json.loads(output)["task_id"]
         await wait_status(agent, child_id, "running")
@@ -224,7 +230,7 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
         destination = config.state_dir / "artifacts" / "subtasks" / child_id
         with pytest.raises(ValueError, match="inside"):
             await agent.control.dispatch(
-                child_id, "complete", {"summary": "invalid later file", "artifacts": ["evidence.json", str(request)]}
+                child_id, "complete", {"summary": "invalid later file", "artifacts": ["evidence.json", str(control)]}
             )
         assert list(destination.glob("*")) == []
         assert agent.store.subtask_result(child_id) is None
@@ -254,7 +260,7 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
             await agent.control.dispatch(child_id, "complete", {"summary": "different", "artifacts": ["evidence.json"]})
         assert list(destination.iterdir()) == [Path(result["artifacts"][0]["path"])]
         with pytest.raises(ValueError, match="inside"):
-            await agent.control.dispatch(child_id, "complete", {"summary": "escape", "artifacts": [str(request)]})
+            await agent.control.dispatch(child_id, "complete", {"summary": "escape", "artifacts": [str(control)]})
         await agent.wait_for_subtasks("parent", [child_id])
         release.set()
         await wait_status(agent, "parent", "completed")

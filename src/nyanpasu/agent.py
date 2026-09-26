@@ -113,14 +113,20 @@ class AgentService:
             )
 
     def _schedule(self, task: AgentTask) -> None:
-        if any(runner.get_name() == task.task_id for runner in self._tasks):
+        if task.task_id in self._runners:
             return
         runner = asyncio.create_task(self._run_task_guarded(task), name=task.task_id)
         self._tasks.add(runner)
         self._runners[task.task_id] = runner
         runner.add_done_callback(self._tasks.discard)
-        runner.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-        runner.add_done_callback(lambda _: self._runners.pop(task.task_id, None))
+        runner.add_done_callback(self._runner_finished)
+
+    def _runner_finished(self, runner: asyncio.Task[None]) -> None:
+        error = None if runner.cancelled() else runner.exception()
+        # A failed interrupt must keep blocking cleanup on this live backend.
+        # Closing scopes persist the recovery work across service restarts.
+        if error is None or not runner.cancelling():
+            self._runners.pop(runner.get_name(), None)
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
         async with self._submit_lock:
@@ -315,23 +321,19 @@ class AgentService:
                 if isinstance(outcome, Exception):
                     raise outcome
 
-    async def cancel_subtasks(self, task_id: str) -> None:
-        for child in await to_thread.run_sync(self.store.subtasks, task_id):
-            await to_thread.run_sync(self.store.cancel_task_tree, child.task_id)
-        await self._stop_descendants(task_id)
+    async def cancel_subtask(self, task_id: str) -> None:
+        await self._stop_context_tree(await to_thread.run_sync(self.store.task_request, task_id))
 
     async def _stop_context_tree(self, task: AgentTask) -> None:
         scopes = await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
         ids = []
         for scope in scopes:
             for record in await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation):
-                if record.action is not TaskAction.CLEANUP and record.status in {
-                    TaskStatus.QUEUED,
-                    TaskStatus.RUNNING,
-                    TaskStatus.WAITING,
-                }:
-                    ids.extend(await to_thread.run_sync(self.store.cancel_task_tree, record.task_id))
-        await self.stop_tasks(list(set(ids)))
+                if record.action is not TaskAction.CLEANUP:
+                    ids.append(record.task_id)
+        await self.stop_tasks(ids)
+        for identity in ids:
+            await to_thread.run_sync(self.store.cancel_task_tree, identity)
 
     async def _run_context_task(self, task: AgentTask, record: TaskRunSummary) -> TaskRunResult:
         started_at = time.monotonic()

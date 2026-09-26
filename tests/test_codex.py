@@ -266,12 +266,12 @@ async def test_cancel_waits_for_native_turn_to_stop(tmp_path, cancel_during_star
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("stop", ["shutdown", "cleanup"])
+@pytest.mark.parametrize("stop", ["shutdown", "cleanup", "cancel"])
 @pytest.mark.parametrize("failure", ["rpc", "completion_timeout"])
 async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path, monkeypatch, stop, failure):
     from nyanpasu.agent import AgentService
     from nyanpasu.backends import Backend, Backends
-    from nyanpasu.models import TaskAction
+    from nyanpasu.models import SubtaskRequest, TaskAction
     from nyanpasu.transcript.codex import CodexHistorySource
     from tests.test_agent import FakeCodex, FakeWorktrees, _config, _task, fake_backends
     from tests.test_subtask_runtime import wait_status
@@ -298,7 +298,15 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
         config, worktrees=worktrees, backends=Backends(config, {"codex": Backend(backend, CodexHistorySource(backend))})
     )
     try:
-        await first.submit(_task("parent"))
+        target = _task("parent")
+        if stop == "cancel":
+            # The parent controls a real app-server child without starting a second native turn.
+            first.store.record_task(target)
+            first.store.mark_task_running(target.task_id, None)
+            first._admitted_roots.add(target.task_id)
+            target = await first.create_subtask(target.task_id, SubtaskRequest(request_key="child", prompt="child"))
+        else:
+            await first.submit(target)
         async with asyncio.timeout(3):
             while not backend._turn_waiters:
                 await asyncio.sleep(0.005)
@@ -306,12 +314,19 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
             await first.shutdown()
             assert first.store.task_status("parent") == "queued"
         else:
+            if stop == "cancel":
+                with pytest.raises(RuntimeError, match="Cannot confirm Codex stopped"):
+                    await first.control.dispatch("parent", "cancel", {"task_ids": [target.task_id]})
+                assert first.store.context_scope(target.context_key).lifecycle == "closing"
+                assert first.store.task_status(target.task_id) == "running"
             await first.submit(_task("cleanup").model_copy(update={"action": TaskAction.CLEANUP}))
             await wait_status(first, "cleanup", "failed")
-            assert first.store.task_status("parent") == "cancelled"
+            assert first.store.task_status(target.task_id) == "running"
             assert first.store.context_scope("demo:1").lifecycle == "closing"
+            await first.submit(_task("cleanup-retry").model_copy(update={"action": TaskAction.CLEANUP}))
+            await wait_status(first, "cleanup-retry", "failed")
         assert worktrees.removed == []
-        assert first.store.task_run("parent").thread_id == "thread-1"
+        assert first.store.task_run(target.task_id).thread_id == "thread-1"
     finally:
         await first.shutdown()
 
