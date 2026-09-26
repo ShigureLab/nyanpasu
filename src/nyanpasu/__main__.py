@@ -14,6 +14,7 @@ from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
 from nyanpasu.models import AgentTask
 from nyanpasu.store import StateStore
+from nyanpasu.task_control import call_control
 from nyanpasu.web import create_app
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
@@ -82,6 +83,15 @@ def status(limit: int = 20) -> None:
             ensure_ascii=False,
         )
     )
+
+
+@app.command()
+def subtask(control: Path, request: Path) -> None:
+    """Send a JSON request using the current turn's control file."""
+    try:
+        typer.echo(json.dumps(call_control(control, json.loads(request.read_text())), ensure_ascii=False))
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _task_from_json(data: dict[str, Any]) -> AgentTask:

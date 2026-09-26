@@ -111,11 +111,19 @@ class StateStore:
                 lifecycle TEXT NOT NULL DEFAULT 'active',
                 parent_context_key TEXT, parent_generation INTEGER
             )""")
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(subtask_requests)")}
+            if "parent_context_key" in columns:
+                conn.execute("ALTER TABLE subtask_requests RENAME TO legacy_subtask_requests")
             conn.execute("""CREATE TABLE IF NOT EXISTS subtask_requests (
-                parent_context_key TEXT NOT NULL, parent_generation INTEGER NOT NULL,
+                parent_task_id TEXT NOT NULL,
                 request_key TEXT NOT NULL, request_json TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (parent_context_key, parent_generation, request_key)
+                PRIMARY KEY (parent_task_id, request_key)
             )""")
+            if "parent_context_key" in columns:
+                conn.execute("""INSERT INTO subtask_requests
+                    SELECT r.spawned_by_task_id,s.request_key,s.request_json,s.task_id
+                    FROM legacy_subtask_requests s JOIN task_runs r ON r.task_id=s.task_id""")
+                conn.execute("DROP TABLE legacy_subtask_requests")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_spawned_by ON task_runs(spawned_by_task_id)")
             conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
                 SELECT context_key, 1 FROM agent_contexts""")
@@ -243,6 +251,17 @@ class StateStore:
     def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
 
+    def bind_task_event_worktree(self, task_id: str, path: Path) -> None:
+        # Creation may finish during cancellation; record ownership without reviving the task.
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE task_runs SET event_worktree=?,updated_at=? WHERE task_id=? AND EXISTS (
+                    SELECT 1 FROM context_scopes c WHERE c.context_key=task_runs.context_key
+                    AND c.generation=task_runs.context_generation AND c.lifecycle <> 'closed'
+                )""",
+                (str(path), time.time(), task_id),
+            )
+
     @staticmethod
     def _ensure_scope(conn: sqlite3.Connection, key: str, *, reopen: bool = False) -> ContextScope:
         conn.execute("INSERT OR IGNORE INTO context_scopes (context_key,generation) VALUES (?,1)", (key,))
@@ -287,11 +306,11 @@ class StateStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             parent = self._active_task(conn, parent_id)
-            identity = (parent["context_key"], parent["context_generation"], request.request_key)
+            identity = (parent_id, request.request_key)
             serialized = request.model_dump_json()
             previous = conn.execute(
                 """SELECT task_id,request_json FROM subtask_requests
-                WHERE parent_context_key=? AND parent_generation=? AND request_key=?""",
+                WHERE parent_task_id=? AND request_key=?""",
                 identity,
             ).fetchone()
             if previous is not None:
@@ -325,7 +344,7 @@ class StateStore:
             conn.execute(
                 """INSERT INTO context_scopes
                 (context_key,generation,parent_context_key,parent_generation) VALUES (?,1,?,?)""",
-                (child.context_key, *identity[:2]),
+                (child.context_key, parent["context_key"], parent["context_generation"]),
             )
             now = time.time()
             conn.execute(
@@ -343,7 +362,7 @@ class StateStore:
                     parent_id,
                 ),
             )
-            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?,?)", (*identity, serialized, task_id))
+            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?)", (*identity, serialized, task_id))
             return child
 
     def root_task_id(self, task_id: str) -> str:
@@ -459,6 +478,14 @@ class StateStore:
             ).fetchall()
         return [ContextScope.model_validate(dict(row)) for row in rows]
 
+    def tasks_for_scope(self, key: str, generation: int) -> list[TaskRunSummary]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ({TASK_RUNS}) WHERE context_key=? AND context_generation=? ORDER BY created_at DESC",
+                (key, generation),
+            ).fetchall()
+        return [_task_summary_from_row(row) for row in rows]
+
     def close_context_scope(self, key: str, generation: int) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -491,13 +518,16 @@ class StateStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             ids = [task_id, *(row["task_id"] for row in self._descendants(conn, task_id))]
-            for identity in ids:
-                conn.execute(
-                    """UPDATE task_runs SET status='cancelled',updated_at=?
-                    WHERE task_id=? AND status IN ('queued','running','waiting')""",
-                    (time.time(), identity),
-                )
+            self._cancel_tasks(conn, ids)
         return ids
+
+    @staticmethod
+    def _cancel_tasks(conn: sqlite3.Connection, ids: list[str]) -> None:
+        conn.executemany(
+            """UPDATE task_runs SET status='cancelled',updated_at=?
+            WHERE task_id=? AND status IN ('queued','running','waiting')""",
+            [(time.time(), identity) for identity in ids],
+        )
 
     def update_pending_task_backend(self, task_id: str, backend: str) -> None:
         with self._connect() as conn:
@@ -525,6 +555,15 @@ class StateStore:
         context: AgentContext | None = None,
     ) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                """SELECT 1 FROM task_runs t JOIN context_scopes c
+                ON t.context_key=c.context_key AND t.context_generation=c.generation
+                WHERE t.task_id=? AND c.lifecycle <> 'closed'""",
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                return
             conn.execute(
                 "UPDATE task_runs SET backend=?,thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
                 (backend, thread_id, turn_id, time.time(), task_id),
@@ -532,8 +571,8 @@ class StateStore:
             if context is not None:
                 self._upsert_context(conn, replace_context(context, thread_id=thread_id))
 
-    def mark_task_done(self, result: TaskRunResult) -> None:
-        self._update_task(
+    def mark_task_done(self, result: TaskRunResult) -> bool:
+        return self._update_task(
             result.task_id,
             result.status,
             backend=result.backend,
@@ -541,6 +580,7 @@ class StateStore:
             turn_id=result.turn_id,
             event_worktree=result.event_worktree,
             error=result.error,
+            final_message=result.final_message,
         )
 
     def mark_task_failed(self, task_id: str, error: str) -> None:
@@ -920,9 +960,16 @@ class StateStore:
         thread_id: str | None = None,
         turn_id: str | None = None,
         error: str | None = None,
-    ) -> None:
+        final_message: str | None = None,
+    ) -> bool:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
+        if status is TaskStatus.COMPLETED and final_message is not None:
+            updates.append(
+                "subtask_result = CASE WHEN spawned_by_task_id IS NOT NULL "
+                "THEN coalesce(subtask_result, ?) ELSE subtask_result END"
+            )
+            values.append(json_dumps({"summary": final_message, "artifacts": [], "data": {}}))
         if backend is not None:
             updates.append("backend = ?")
             values.append(backend)
@@ -937,7 +984,7 @@ class StateStore:
             values.append(turn_id)
         values.append(task_id)
         with self._connect() as conn:
-            conn.execute(
+            updated = conn.execute(
                 f"""UPDATE task_runs SET {", ".join(updates)} WHERE task_id = ? AND status <> 'cancelled'
                     AND (action IN ('cleanup','ignored') OR EXISTS (
                         SELECT 1 FROM context_scopes c WHERE c.context_key=task_runs.context_key
@@ -945,6 +992,10 @@ class StateStore:
                     ))""",
                 values,
             )
+            if status is TaskStatus.FAILED and updated.rowcount:
+                # A restart must never see a failed owner with active descendants.
+                self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
+            return bool(updated.rowcount)
 
 
 def replace_context(context: AgentContext, **changes: Any) -> AgentContext:

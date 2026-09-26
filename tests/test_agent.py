@@ -393,6 +393,82 @@ async def test_agent_context_lease_serializes_same_context_across_service_instan
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("conflict", ["closing", "cancelled"])
+async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_path, monkeypatch, conflict):
+    config = _config(tmp_path)
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, FakeCodex()))
+    other = StateStore(config.db_path)
+    publish = AsyncMock()
+    agent.add_post_process_hook("review", publish)
+    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    commit = agent.store.mark_task_done
+
+    def finish(result):
+        if conflict == "closing":
+            record = other.task_run(task.task_id)
+            other.begin_context_cleanup(task.context_key, record.context_generation)
+        else:
+            other.cancel_task_tree(task.task_id)
+        committed = commit(result)
+        assert not committed
+        return committed
+
+    monkeypatch.setattr(agent.store, "mark_task_done", finish)
+    try:
+        await agent.submit(task)
+        await asyncio.wait_for(agent._runners[task.task_id], 2)
+        publish.assert_not_called()
+        assert other.task_status(task.task_id) != "completed"
+        assert worktrees.removed == []
+        assert all(path.is_dir() for path in worktrees.event_paths)
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_completion(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config = config.model_copy(
+        update={"runtime": config.runtime.model_copy(update={"context_lease_heartbeat_seconds": 0.01})}
+    )
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, FakeCodex()))
+    publishing, release = asyncio.Event(), asyncio.Event()
+    published = []
+
+    async def publish(task, result):
+        assert agent.store.task_status(task.task_id) == "completed"
+        publishing.set()
+        await release.wait()
+        published.append(result.final_message)
+
+    agent.add_post_process_hook("review", publish)
+    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    run = asyncio.create_task(agent.run_now(task))
+    try:
+        await asyncio.wait_for(publishing.wait(), 2)
+        lease = agent.store.get_context_lease(task.context_key)
+        assert lease is not None
+        async with asyncio.timeout(2):
+            while True:
+                current = agent.store.get_context_lease(task.context_key)
+                assert current is not None
+                if current.expires_at != lease.expires_at:
+                    break
+                await asyncio.sleep(0.01)
+        assert not run.done()
+        release.set()
+        await run
+        assert published == ["done"]
+        assert worktrees.removed == worktrees.event_paths
+        assert agent.store.get_context_lease(task.context_key) is None
+    finally:
+        release.set()
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path: Path) -> None:
     config = _config(tmp_path, concurrency=1)
     store = StateStore(config.db_path)
@@ -479,7 +555,7 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
     await second.shutdown()
 
     assert [thread for _, thread in resumed_backend.calls] == [None if switch_backend else "thread-1", session_id]
-    assert resumed_backend.instructions[0] == "Keep the original role."
+    assert resumed_backend.instructions[0].split("\nNyanpasu subtask control")[0] == "Keep the original role."
     if not switch_backend:
         assert "Continue from the saved conversation" in resumed_backend.prompts[0]
     assert "Continue from the saved conversation" not in resumed_backend.prompts[1]
@@ -686,7 +762,10 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
 
     await agent.run_now(task.model_copy(update={"task_id": "task-2", "dedupe_key": "task-2"}))
 
-    assert codex.instructions[0] == codex.instructions[1]
+    assert (
+        codex.instructions[0].split("\nNyanpasu subtask control")[0]
+        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+    )
     assert "Persistent role." in codex.instructions[0]
     assert "Configured instruction documents:" in codex.instructions[0]
     assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.instructions[0]
@@ -833,7 +912,10 @@ async def test_reviewer_events_during_review_resume_with_completed_task_head(tmp
     assert "Target head: head-c" in codex.prompts[1]
     assert "Previous task head (not proof of completed review): head-a" in codex.prompts[1]
     assert codex.calls[1][1] == "thread-1"
-    assert codex.instructions[0] == codex.instructions[1]
+    assert (
+        codex.instructions[0].split("\nNyanpasu subtask control")[0]
+        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+    )
     context = agent.store.get_context(first.context_key)
     assert context is not None and context.revision == "head-c"
     await agent.shutdown()
