@@ -1,6 +1,6 @@
 # Independent design and test evidence
 
-Read this before implementation review. First establish the dashboard as required by review-output.md. In a continuation you may already know the implementation; disclose that and give a fresh child the original requirements, never your previous design conclusions.
+Read this after scope-review.md and before implementation review. Complete the program-validated repository admission plan before deciding independent design or dispatching any child. In a continuation you may already know the implementation; disclose that and give a fresh child the original requirements, never your previous design conclusions.
 
 Record a brief decision in `review-plan.json` and the native conversation: `run`, `skip`, or `reuse`, the reason, source head, and requirement sources. The agent makes this decision; the service owns lifecycle, version pinning, scheduling, and cleanup.
 
@@ -19,6 +19,7 @@ Use the Nyanpasu subtask control supplied for this turn. For independent design,
       "purpose": "independent-design",
       "prompt": "Minimum required design, simpler alternatives, and failure model",
       "inputs": {
+         "review_files": ["accepted/changed/path.py"],
          "reason": "Why this change benefits from a reference",
          "requirements": [
             {

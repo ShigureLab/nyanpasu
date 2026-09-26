@@ -150,7 +150,7 @@ Do not expose the control file or its contents, or include it in evidence. Only 
         if action == "complete":
             completion = Completion.model_validate(payload)
             return await to_thread.run_sync(self._freeze, task_id, completion)
-        raise ValueError(f"unknown subtask action: {action}")
+        return await self.agent.plugin_control(task_id, action, payload)
 
     def _freeze(self, task_id: str, completion: Completion) -> dict[str, Any]:
         store = self.agent.store

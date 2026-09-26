@@ -837,6 +837,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
         worktrees=FakeWorktrees(tmp_path / "worktrees"),
         backends=fake_backends(config, backend, config.runtime.backend),
     )
+    monkeypatch.setattr(module, "build_inventory", lambda config, task: {"inventory_id": task.workspace.revision})
     plugin.runtime = Mock(config=agent.config)
     agent.add_task_preparer(plugin.id, plugin.prepare_task)
     return agent, plugin, backend, head

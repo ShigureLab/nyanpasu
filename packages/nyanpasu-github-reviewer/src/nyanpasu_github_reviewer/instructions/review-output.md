@@ -12,6 +12,10 @@ For an existing dashboard, retain stable finding IDs and published canonical thr
 
 On that warranted update, old deep completion without necessity evidence must be reassessed, not copied into the new definition. Carry forward applicable recorded decisions only after checking their scope against the current head; reset unreviewed production/test scope to pending or running. A policy upgrade alone does not warrant unsolicited re-review or publication on an otherwise unchanged PR.
 
+### Repository admission before deep review
+
+Follow scope-review.md and copy the service-returned `scope` report into the dashboard. Show accepted, relocation and clarification counts plus reasons, sources and alternatives. Scope decisions describe repository admission, not implementation correctness or finished review. `relocate` and `clarify` pause deep work on those files; they must remain visible and prevent whole-PR APPROVE. A final COMMENT may report the scope concern with the accepted-scope review, retaining the deferred paths explicitly. Evidence-only checks needed for acceptance may continue with a bounded purpose. Preserve the existing P0/P1 policy for REQUEST_CHANGES; do not invent high-severity bugs to report a scope objection.
+
 ### General result before deep completion
 
 When general review is complete, publish verified actionable findings without waiting for deep work. Use their canonical threads and COMMENT, or REQUEST_CHANGES for qualifying blockers when enabled. Do not create an empty GitHub review just to announce progress: the dashboard is the status channel. Recheck the live head and publication mode before every checkpoint.
