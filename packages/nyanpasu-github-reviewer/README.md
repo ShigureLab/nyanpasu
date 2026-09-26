@@ -89,7 +89,7 @@ The poller combines repository events, PR state polling, and PR timeline polling
 
 ## Review Dashboard
 
-The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install both in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install), and verify `gh-slate --version`.
+The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install the skill and **gh-slate 0.1.1 or newer** in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install). For a uv tool installation, run `uv tool upgrade gh-slate`; verify `gh-slate --version` meets this minimum before deploying the reviewer template.
 
 ```toml
 [codex.env]
@@ -100,6 +100,8 @@ github_login = "your-bot-login"
 ```
 
 The agent follows the skill to read existing slate data, preview changes, publish with the observed revision, and verify the result. The reviewer package ships one `review` profile in [templates/boards.toml](src/nyanpasu_github_reviewer/templates/boards.toml), with a [Jinja template](src/nyanpasu_github_reviewer/templates/review.md.j2), [JSON Schema](src/nyanpasu_github_reviewer/templates/review.schema.json), and [example data](src/nyanpasu_github_reviewer/templates/review.example.json). Each turn supplies the installed profile's absolute path, including resumed sessions; the agent must use it on first creation and reuse the embedded definition on follow-up reviews. A different existing definition is replaced with this profile on the next warranted update. Restart the service after upgrading the reviewer package.
+
+The template requires gh-slate's `dictsort_natural` filter to display finding IDs in numeric order (`F1`, `F2`, …, `F10`) without changing IDs or canonical thread links. Upgrade the CLI before deploying this template.
 
 The dashboard has Chinese headings and shows the analyzed head SHA, review status, separate general/deep stages, summary, and findings with priority, resolution status, canonical thread links, and optional rule-source links. Summaries and finding titles follow `review_language`. The statuses are `reviewing`, `preliminary`, `approved`, `changes_requested`, `comment`, and `incomplete`. `preliminary` delivers completed general results while deep work remains pending or running; an unfinished review never displays approval. Each stage records its own scope and outcome. Findings use stable object keys, and resolved or superseded entries remain in the table. The disclosure text comes from the current turn's model declaration. Detailed findings remain in their threads.
 

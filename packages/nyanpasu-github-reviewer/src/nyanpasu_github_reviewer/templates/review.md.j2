@@ -42,7 +42,7 @@
 {% if data.findings -%}
 | 编号 | 问题 | 类型 | 优先级 | 状态 | 规则来源 |
 | --- | --- | --- | --- | --- | --- |
-{% for id, finding in data.findings | dictsort -%}
+{% for id, finding in data.findings | dictsort_natural -%}
 | {{ id }} | {{ finding.title | md_link(finding.url) }} | {% if finding.kind is defined and finding.kind == "simplification" %}精简建议（非阻塞）{% else %}问题{% endif %} | ![{{ finding.priority }}](https://img.shields.io/badge/{{ finding.priority }}-{{ priorities[finding.priority][0] }}-{{ priorities[finding.priority][1] }}) | {{ finding_states[finding.status] }} | {% if finding.rule is defined %}{{ finding.rule.title | md_link(finding.rule.url) }}{% else %}—{% endif %} |
 {% endfor -%}
 {% elif data.status == "approved" -%}
