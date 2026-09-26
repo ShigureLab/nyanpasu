@@ -99,7 +99,21 @@
     },
     {
       "if": { "properties": { "status": { "const": "changes_requested" } } },
-      "then": { "properties": { "findings": { "minProperties": 1 } } }
+      "then": {
+        "properties": {
+          "findings": {
+            "description": "Requesting changes requires an unresolved or partially resolved P0/P1 finding.",
+            "not": {
+              "additionalProperties": {
+                "anyOf": [
+                  { "properties": { "priority": { "enum": ["P2", "P3"] } } },
+                  { "properties": { "status": { "enum": ["resolved", "superseded"] } } }
+                ]
+              }
+            }
+          }
+        }
+      }
     },
     {
       "if": { "properties": { "status": { "const": "approved" } } },
