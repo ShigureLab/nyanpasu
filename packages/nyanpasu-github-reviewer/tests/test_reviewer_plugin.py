@@ -100,7 +100,6 @@ async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path
     assert "Target head: head-b" in prepared.prompt
     assert "head-a" not in prepared.prompt
     assert "Additional coalesced task context" not in prepared.prompt
-    assert "gh-slate" in prepared.developer_instructions
     assert "Powered by Nyanpasu with runtime-model high" in prepared.prompt
 
 

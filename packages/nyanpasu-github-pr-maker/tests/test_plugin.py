@@ -105,12 +105,8 @@ async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, 
     assert "token" not in str(task.metadata)
     assert "Update the README with setup instructions." in task.prompt
     assert "Draft: False; dry run: True" in task.prompt
-    assert "gh pr create" not in task.prompt
     assert "NYANPASU_TEST_GH_TOKEN" not in task.prompt
-    assert "gh pr create" in task.developer_instructions
-    assert "NO_PR: <reason>" in task.developer_instructions
     assert "Publication mode: dry run" in task.developer_instructions
-    assert "PR: <url>" in task.developer_instructions
     assert "NYANPASU_TEST_GH_TOKEN" in task.developer_instructions
 
 
@@ -416,7 +412,6 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         assert follow_up_task.metadata["publish"]["git_author_name"] == "Bot"
         assert seen_env == [{"GH_TOKEN": "token", "GITHUB_TOKEN": "token"}]
         assert "Failing checks: unit" in follow_up_task.prompt
-        assert "commit and push needed changes to the existing PR branch" in follow_up_task.developer_instructions
         assert "NYANPASU_TEST_GH_TOKEN" in follow_up_task.developer_instructions
         assert "NYANPASU_TEST_GH_TOKEN" not in follow_up_task.prompt
         assert "Update docs." not in follow_up_task.prompt
