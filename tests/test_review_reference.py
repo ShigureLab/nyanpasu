@@ -279,12 +279,15 @@ def test_snapshot_preserves_source_tree_entries(tmp_path, contents):
     snapshot = WorktreeManager(_config(tmp_path)).prepare_context(task, None).session_worktree
     assert snapshot is not None
     assert git("rev-parse", "HEAD^{tree}", cwd=snapshot) == git("rev-parse", f"{source}^{{tree}}")
+    assert git("status", "--porcelain", cwd=snapshot) == ""
     if contents == "symlinks":
         assert (tmp_path / "outside").read_text() == "untouched target"
     if contents == "clean-filters":
         assert (snapshot / "legacy.txt").read_bytes() == b"committed before attributes\r\n"
         assert (snapshot / "run.sh").read_bytes() == b"#!/bin/sh\necho keep\n"
         assert (snapshot / "run.sh").stat().st_mode & 0o111
+        (snapshot / "legacy.txt").write_bytes(b"reference experiment\r\n")
+        assert "+reference experiment" in git("diff", "HEAD", cwd=snapshot)
 
 
 @pytest.mark.anyio
