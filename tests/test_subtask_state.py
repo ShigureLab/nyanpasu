@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -41,6 +42,39 @@ def test_concurrent_retries_create_one_child_and_preserve_input(tmp_path):
     assert store.context_scope(child.context_key).parent_context_key == parent.context_key
     with pytest.raises(ValueError, match="different input"):
         store.create_subtask(parent.task_id, request().model_copy(update={"prompt": "Changed requirements"}))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_request_keys_belong_to_each_parent_and_survive_migration(tmp_path, legacy):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    first = root(store)
+    child = store.create_subtask(first.task_id, request())
+    if legacy:
+        with sqlite3.connect(path) as conn:
+            conn.executescript("""
+                ALTER TABLE subtask_requests RENAME TO current_requests;
+                CREATE TABLE subtask_requests (
+                    parent_context_key TEXT NOT NULL, parent_generation INTEGER NOT NULL,
+                    request_key TEXT NOT NULL, request_json TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
+                    PRIMARY KEY (parent_context_key, parent_generation, request_key)
+                );
+                INSERT INTO subtask_requests
+                    SELECT p.context_key,p.context_generation,s.request_key,s.request_json,s.task_id
+                    FROM current_requests s JOIN task_runs p ON p.task_id=s.parent_task_id;
+                DROP TABLE current_requests;
+            """)
+    store = StateStore(path)
+    assert store.create_subtask(first.task_id, request()) == child
+    finish(store, child)
+    finish(store, first)
+    second = root(store, "followup")
+    assert second.context_generation == first.context_generation
+    next_child = store.create_subtask(second.task_id, request())
+    assert next_child.task_id != child.task_id
+    assert next_child.spawned_by_task_id == second.task_id
+    store.wait_for_subtasks(second.task_id, [next_child.task_id])
+    assert not store.wait_is_ready(second.task_id)
 
 
 @pytest.mark.parametrize("finish_before_wait", [False, True])

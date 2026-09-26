@@ -254,7 +254,8 @@ class AgentService:
         try:
             while await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 record = await to_thread.run_sync(self.store.task_run, task.task_id)
-                if record.status is TaskStatus.WAITING:
+                if await to_thread.run_sync(self.store.waiting_for, task.task_id):
+                    await to_thread.run_sync(self.store.mark_task_waiting, task.task_id)
                     while not await to_thread.run_sync(self.store.wait_is_ready, task.task_id):
                         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                             return None

@@ -111,11 +111,19 @@ class StateStore:
                 lifecycle TEXT NOT NULL DEFAULT 'active',
                 parent_context_key TEXT, parent_generation INTEGER
             )""")
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(subtask_requests)")}
+            if "parent_context_key" in columns:
+                conn.execute("ALTER TABLE subtask_requests RENAME TO legacy_subtask_requests")
             conn.execute("""CREATE TABLE IF NOT EXISTS subtask_requests (
-                parent_context_key TEXT NOT NULL, parent_generation INTEGER NOT NULL,
+                parent_task_id TEXT NOT NULL,
                 request_key TEXT NOT NULL, request_json TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (parent_context_key, parent_generation, request_key)
+                PRIMARY KEY (parent_task_id, request_key)
             )""")
+            if "parent_context_key" in columns:
+                conn.execute("""INSERT INTO subtask_requests
+                    SELECT r.spawned_by_task_id,s.request_key,s.request_json,s.task_id
+                    FROM legacy_subtask_requests s JOIN task_runs r ON r.task_id=s.task_id""")
+                conn.execute("DROP TABLE legacy_subtask_requests")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_spawned_by ON task_runs(spawned_by_task_id)")
             conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
                 SELECT context_key, 1 FROM agent_contexts""")
@@ -287,11 +295,11 @@ class StateStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             parent = self._active_task(conn, parent_id)
-            identity = (parent["context_key"], parent["context_generation"], request.request_key)
+            identity = (parent_id, request.request_key)
             serialized = request.model_dump_json()
             previous = conn.execute(
                 """SELECT task_id,request_json FROM subtask_requests
-                WHERE parent_context_key=? AND parent_generation=? AND request_key=?""",
+                WHERE parent_task_id=? AND request_key=?""",
                 identity,
             ).fetchone()
             if previous is not None:
@@ -325,7 +333,7 @@ class StateStore:
             conn.execute(
                 """INSERT INTO context_scopes
                 (context_key,generation,parent_context_key,parent_generation) VALUES (?,1,?,?)""",
-                (child.context_key, *identity[:2]),
+                (child.context_key, parent["context_key"], parent["context_generation"]),
             )
             now = time.time()
             conn.execute(
@@ -343,7 +351,7 @@ class StateStore:
                     parent_id,
                 ),
             )
-            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?,?)", (*identity, serialized, task_id))
+            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?)", (*identity, serialized, task_id))
             return child
 
     def root_task_id(self, task_id: str) -> str:
@@ -558,6 +566,7 @@ class StateStore:
             turn_id=result.turn_id,
             event_worktree=result.event_worktree,
             error=result.error,
+            final_message=result.final_message,
         )
 
     def mark_task_failed(self, task_id: str, error: str) -> None:
@@ -937,9 +946,16 @@ class StateStore:
         thread_id: str | None = None,
         turn_id: str | None = None,
         error: str | None = None,
+        final_message: str | None = None,
     ) -> None:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
+        if status is TaskStatus.COMPLETED and final_message is not None:
+            updates.append(
+                "subtask_result = CASE WHEN spawned_by_task_id IS NOT NULL "
+                "THEN coalesce(subtask_result, ?) ELSE subtask_result END"
+            )
+            values.append(json_dumps({"summary": final_message, "artifacts": [], "data": {}}))
         if backend is not None:
             updates.append("backend = ?")
             values.append(backend)

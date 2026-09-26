@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -111,7 +112,8 @@ async def wait_status(agent: AgentService, task_id: str, status: str):
 
 
 @pytest.mark.anyio
-async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_path):
+@pytest.mark.parametrize("turn_finished", [False, True])
+async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_path, turn_finished):
     config = _config(tmp_path, concurrency=1)
     parent_started, child_started = asyncio.Event(), asyncio.Event()
 
@@ -136,10 +138,22 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
     child = await first.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
     await child_started.wait()
     await first.wait_for_subtasks("parent", [child.task_id])
-    parent_release.set()
-    await wait_status(first, "parent", "waiting")
+    if turn_finished:
+        parent_release.set()
+        await wait_status(first, "parent", "waiting")
     await first.shutdown()
-    backend = FakeCodex()
+    parent_context = first.store.get_context("demo:1")
+    assert parent_context is not None
+
+    class Recovered(FakeCodex):
+        async def run_turn(self, **kwargs):
+            if kwargs["cwd"] == parent_context.session_worktree:
+                assert second.store.task_status(child.task_id) == "completed"
+                evidence = json.loads(kwargs["prompt"].split("Subtask results (verify evidence before using):\n")[1])
+                assert evidence[0]["result"] == {"summary": "done", "artifacts": [], "data": {}}
+            return await super().run_turn(**kwargs)
+
+    backend = Recovered()
     second = AgentService(
         config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
     )
@@ -158,7 +172,6 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
 
 @pytest.mark.anyio
 async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(tmp_path):
-    import json
     import shlex
     import sys
     from pathlib import Path
@@ -214,6 +227,7 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
         await agent.wait_for_subtasks("parent", [child_id])
         release.set()
         await wait_status(agent, "parent", "completed")
+        assert agent.store.subtask_result(child_id) == result
         assert not control.exists()
         # A copy of an old capability also fails after its native turn has ended.
         old = tmp_path / "old.json"
