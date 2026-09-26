@@ -185,7 +185,10 @@ async def test_unavailable_codex_does_not_hide_task_metadata_or_expose_other_thr
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("backend", ["codex", "claude"])
-async def test_session_task_tree_preserves_ownership_evidence_and_history_without_native_reads(tmp_path: Path, backend):
+@pytest.mark.parametrize("await_grandchild", [False, True])
+async def test_session_task_tree_preserves_ownership_evidence_and_history_without_native_reads(
+    tmp_path: Path, backend, await_grandchild
+):
     config = NyanpasuConfig(state_dir=tmp_path)
     store = StateStore(config.db_path)
     for index, name in enumerate(("earlier", "current"), start=1):
@@ -222,9 +225,10 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
     store.mark_task_running(audit.task_id, None)
     store.bind_task_execution(audit.task_id, "audit-session", "audit-turn", backend)
     experiment = store.create_subtask(audit.task_id, SubtaskRequest(request_key="experiment", prompt="Experiment"))
-    store.wait_for_subtasks(audit.task_id, [experiment.task_id])
-    store.mark_task_waiting(audit.task_id)
-    store.wait_for_subtasks("current", [audit.task_id])
+    if not await_grandchild:
+        store.wait_for_subtasks(audit.task_id, [experiment.task_id])
+        store.mark_task_waiting(audit.task_id)
+    store.wait_for_subtasks("current", [experiment.task_id if await_grandchild else audit.task_id])
     store.mark_task_waiting("current")
     source = MemorySessionSource()
     app = create_app(config, session_sources=lambda _: source)
@@ -244,10 +248,12 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
         assert children["design"]["artifacts"][0]["name"] == "evidence.txt"
         assert "path" not in children["design"]["artifacts"][0]
         assert not children["design"]["waiting"]
-        assert children["audit"]["waiting"]
+        assert children["audit"]["waiting"] is not await_grandchild
         grandchild = children["audit"]["children"][0]
         assert grandchild["task_id"] == experiment.task_id and grandchild["waiting"]
         assert grandchild["status"] == "queued" and grandchild["session_id"] is None
+        subtree = (await client.get(f"/api/sessions/{prefix}audit-session/task-tree")).json()
+        assert subtree["groups"][0]["children"][0]["waiting"]
         earlier = (await client.get(endpoint, params={"offset": 1, "limit": 1})).json()
         assert not earlier["has_more"] and earlier["groups"][0]["task_id"] == "earlier"
         assert earlier["groups"][0]["children"][0]["error"] == "Old experiment failed"
@@ -261,3 +267,6 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
         assert roots["items"][0]["session_id"] == prefix + "parent-session"
         assert roots["items"][0]["task_count"] == 2
         assert (await client.get("/api/sessions")).json()["total"] == 3
+        store.cancel_task_tree("current")
+        cancelled = (await client.get(f"/api/sessions/{prefix}audit-session/task-tree")).json()
+        assert not cancelled["groups"][0]["children"][0]["waiting"]

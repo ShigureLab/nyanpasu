@@ -220,13 +220,20 @@ class TranscriptReader:
                         UNION ALL
                         SELECT child.task_id FROM task_runs child JOIN tree ON child.spawned_by_task_id=tree.task_id
                     )
-                    SELECT r.*,stored.wait_for,stored.subtask_result FROM ({TASKS}) r
+                    SELECT r.*,stored.subtask_result FROM ({TASKS}) r
                     JOIN tree ON tree.task_id=r.task_id JOIN task_runs stored ON stored.task_id=r.task_id
                     ORDER BY r.created_at,r.task_id""",
                     identities,
                 ).fetchall()
+            waiting_for = {
+                identity
+                for row in conn.execute(
+                    "SELECT wait_for FROM task_runs WHERE wait_for IS NOT NULL "
+                    "AND status IN ('queued','running','waiting')"
+                )
+                for identity in json.loads(row["wait_for"])
+            }
         nodes: dict[str, dict[str, Any]] = {}
-        waits = {row["task_id"]: json.loads(row["wait_for"] or "[]") for row in rows}
         for row in rows:
             result = json.loads(row["subtask_result"] or "{}")
             nodes[row["task_id"]] = {
@@ -234,7 +241,7 @@ class TranscriptReader:
                 "purpose": json.loads(row["task_json"]).get("metadata", {}).get("purpose"),
                 "status": row["status"],
                 "created_at": iso_time(row["created_at"]),
-                "waiting": row["task_id"] in waits.get(row["spawned_by_task_id"], []),
+                "waiting": row["task_id"] in waiting_for,
                 "summary": result.get("summary"),
                 "error": row["error"],
                 "artifacts": [

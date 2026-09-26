@@ -134,7 +134,7 @@ workspace 从父任务继承，agent 不能指定任意仓库路径。`revision`
 
 child 默认继承父任务已配置的 backend、模型和权限上限，agent 只能在运行时允许的范围内选择。child 及更深后代共享根执行的准入，不额外获取 `runtime.concurrency` 额度；原生会话耗用仍在各自 transcript 中，根关联可用于后续汇总。第一版不新增另一套 subtask 并发配置，reviewer 只需要一层 child。
 
-幂等键至少在 `(parent context, generation, request_key)` 内唯一。重复请求且输入一致时返回同一个 child；同一 key 携带不同输入时返回冲突。明确重试失败的 child 使用新 attempt，并保留先前结果；不因某次工具调用超时而自动重复启动。
+幂等键在 `(parent task ID, request_key)` 内唯一；同一 context 的后续 root task 可以复用相同 request key。重复请求且输入一致时返回同一个 child；同一 key 携带不同输入时返回冲突。明确重试失败的 child 使用新 attempt，并保留先前结果；不因某次工具调用超时而自动重复启动。
 
 运行时通过每个 run 独立的控制文件交付有限权限凭据，CLI 获得控制文件路径；路径可进入 prompt，凭据不可进入 prompt、日志或 Git。避免修改服务进程全局环境，以免并发任务串用身份。权限限定在自身、可见的后代和相应产物；不能调用通用管理员入口。
 
