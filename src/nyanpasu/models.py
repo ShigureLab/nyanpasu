@@ -183,6 +183,8 @@ class DashboardTotals(NyanpasuModel):
     completed: int
     failed: int
     backlog: int
+    waiting: int = 0
+    cancelled: int = 0
     contexts: int
     active_leases: int
 
@@ -194,6 +196,8 @@ class DashboardPluginSummary(NyanpasuModel):
     running: int = 0
     completed: int = 0
     failed: int = 0
+    waiting: int = 0
+    cancelled: int = 0
     last_updated_at: float | None = None
 
 

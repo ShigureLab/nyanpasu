@@ -21,6 +21,7 @@ export interface Session {
   created_at: string;
   updated_at: string;
   task_count: number;
+  spawned_by_task_id: string | null;
   execution_uncertain: boolean;
   coverage: Coverage;
   origin: string;
@@ -60,6 +61,8 @@ export interface Task {
   action: string;
   session_id: string | null;
   coalesced_into: string | null;
+  spawned_by_task_id: string | null;
+  context_generation: number;
   error: string | null;
   plugin_id: string;
   created_at: number;
@@ -70,6 +73,14 @@ export interface TaskDetail extends Omit<Task, 'title' | 'plugin_id'> {
   turn_id: string | null;
   event_worktree: string | null;
   task: unknown;
+  lifecycle: string;
+  waiting_for: string[];
+  children: Array<{ task_id: string; status: string; context_key: string }>;
+  subtask_result: {
+    summary: string;
+    artifacts: Array<{ name: string; sha256: string; bytes: number }>;
+    data: Record<string, unknown>;
+  } | null;
   history_error?: string;
 }
 export interface Diagnostic {

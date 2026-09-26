@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import AgentTask, TaskAction, TaskRunResult, TaskStatus
+from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.web import create_app
@@ -181,3 +181,92 @@ async def test_unavailable_codex_does_not_hide_task_metadata_or_expose_other_thr
         assert (await client.get("/api/sessions/unrelated/transcript")).status_code == 404
         assert (await client.get("/api/sessions")).json()["items"][0]["state"] == "failed"
         assert (await client.get("/api/tasks/failed")).json()["error"] == "backend process failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("backend", ["codex", "claude"])
+@pytest.mark.parametrize("await_grandchild", [False, True])
+async def test_session_task_tree_preserves_ownership_evidence_and_history_without_native_reads(
+    tmp_path: Path, backend, await_grandchild
+):
+    config = NyanpasuConfig(state_dir=tmp_path)
+    store = StateStore(config.db_path)
+    for index, name in enumerate(("earlier", "current"), start=1):
+        store.record_task(
+            AgentTask(task_id=name, context_key="pr", action=TaskAction.RUN, prompt=name), default_backend=backend
+        )
+        store.mark_task_running(name, None)
+        store.bind_task_execution(name, "parent-session", name, backend)
+        with store._connect() as conn:
+            conn.execute("UPDATE task_runs SET created_at=? WHERE task_id=?", (index, name))
+    old = store.create_subtask("earlier", SubtaskRequest(request_key="old", prompt="Old review", purpose="old"))
+    store.mark_task_failed(old.task_id, "Old experiment failed")
+    design = store.create_subtask("current", SubtaskRequest(request_key="design", prompt="Design", purpose="design"))
+    store.bind_task_execution(design.task_id, "design-session", "design-turn", backend)
+    store.record_subtask_result(
+        design.task_id,
+        {
+            "summary": "Independent design verified",
+            "artifacts": [{"name": "evidence.txt", "path": "/private/artifact", "sha256": "a" * 64, "bytes": 7}],
+            "data": {},
+        },
+    )
+    store.mark_task_done(
+        TaskRunResult(
+            task_id=design.task_id,
+            status=TaskStatus.COMPLETED,
+            backend=backend,
+            thread_id="design-session",
+            turn_id="design-turn",
+            final_message="",
+        )
+    )
+    audit = store.create_subtask("current", SubtaskRequest(request_key="audit", prompt="Audit", purpose="audit"))
+    store.mark_task_running(audit.task_id, None)
+    store.bind_task_execution(audit.task_id, "audit-session", "audit-turn", backend)
+    experiment = store.create_subtask(audit.task_id, SubtaskRequest(request_key="experiment", prompt="Experiment"))
+    if not await_grandchild:
+        store.wait_for_subtasks(audit.task_id, [experiment.task_id])
+        store.mark_task_waiting(audit.task_id)
+    store.wait_for_subtasks("current", [experiment.task_id if await_grandchild else audit.task_id])
+    store.mark_task_waiting("current")
+    source = MemorySessionSource()
+    app = create_app(config, session_sources=lambda _: source)
+    prefix = "claude:" if backend == "claude" else ""
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        endpoint = f"/api/sessions/{prefix}parent-session/task-tree"
+        response = await client.get(endpoint, params={"limit": 1})
+        assert response.status_code == 200
+        tree = response.json()
+        assert tree["parent"] is None and tree["has_more"]
+        root = tree["groups"][0]
+        assert root["task_id"] == "current" and root["status"] == "waiting"
+        children = {child["title"]: child for child in root["children"]}
+        assert children["design"]["summary"] == "Independent design verified"
+        assert children["design"]["purpose"] == "design"
+        assert children["design"]["session_id"] == prefix + "design-session"
+        assert children["design"]["artifacts"][0]["name"] == "evidence.txt"
+        assert "path" not in children["design"]["artifacts"][0]
+        assert not children["design"]["waiting"]
+        assert children["audit"]["waiting"] is not await_grandchild
+        grandchild = children["audit"]["children"][0]
+        assert grandchild["task_id"] == experiment.task_id and grandchild["waiting"]
+        assert grandchild["status"] == "queued" and grandchild["session_id"] is None
+        subtree = (await client.get(f"/api/sessions/{prefix}audit-session/task-tree")).json()
+        assert subtree["groups"][0]["children"][0]["waiting"]
+        earlier = (await client.get(endpoint, params={"offset": 1, "limit": 1})).json()
+        assert not earlier["has_more"] and earlier["groups"][0]["task_id"] == "earlier"
+        assert earlier["groups"][0]["children"][0]["error"] == "Old experiment failed"
+        detail = (await client.get(f"/api/sessions/{prefix}design-session/task-tree")).json()
+        assert detail["groups"] == []
+        assert detail["parent"] == {"task_id": "current", "session_id": prefix + "parent-session", "title": "current"}
+        assert (await client.get("/api/sessions/missing/task-tree")).status_code == 404
+        assert source.calls == []  # Relationships remain available even when native history is offline.
+        roots = (await client.get("/api/sessions?include_subtasks=false&limit=1")).json()
+        assert roots["total"] == 1 and not roots["has_more"]
+        assert roots["items"][0]["session_id"] == prefix + "parent-session"
+        assert roots["items"][0]["task_count"] == 2
+        assert (await client.get("/api/sessions")).json()["total"] == 3
+        store.cancel_task_tree("current")
+        cancelled = (await client.get(f"/api/sessions/{prefix}audit-session/task-tree")).json()
+        assert not cancelled["groups"][0]["children"][0]["waiting"]

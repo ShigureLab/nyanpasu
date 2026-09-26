@@ -154,12 +154,13 @@ test('Claude native messages, tools, edits, search and live results share the da
     page.getByRole('heading', { name: 'Claude result', exact: true }),
   ).toBeVisible();
   await expect(page.locator('.session-index')).toContainText('Claude Code');
-  await page.getByText('Session details', { exact: false }).first().click();
+  await page.getByRole('tab', { name: 'Session details', exact: true }).click();
   await expect(page.locator('.session-metadata')).toContainText(
     'claude-test-model',
   );
   await expect(page.locator('.session-metadata')).toContainText('Claude Code');
   await expect(page.locator('.session-metadata')).not.toContainText('Codex');
+  await page.getByRole('tab', { name: 'Conversation', exact: true }).click();
   await expect(page.locator('[data-entry-id="claude-bash"]')).toContainText(
     'failed',
   );
@@ -618,6 +619,7 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   page,
 }) => {
   await page.goto('/dashboard?session=fixture-thread');
+  await page.getByRole('tab', { name: 'Session details', exact: true }).click();
   await expect(page.locator('.session-metadata')).toContainText('Native session ID');
   await expect(page.locator('.session-metadata')).toContainText('fixture-thread');
   await expect(page.locator('.session-metadata')).toContainText('demo:transcript');
@@ -636,4 +638,230 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await page.getByLabel('Diagnostic level').selectOption('warn');
   await expect(page.locator('.diagnostic')).toHaveCount(1);
   await expect(page.locator('.diagnostic pre')).toHaveCount(0);
+});
+
+test('waiting parent links to child evidence and preserves task navigation', async ({ page }) => {
+  await page.goto('/dashboard?view=tasks&task=fixture-review');
+  await expect(page.getByRole('region', { name: 'Subtasks', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Waiting for results', exact: true }),
+  ).toBeVisible();
+  await page.getByLabel('Task status').selectOption('waiting');
+  await expect(page.locator('.task-list')).toContainText('Review with subtasks');
+  const child = page
+    .getByRole('region', { name: 'Subtasks', exact: true })
+    .locator('.subtask-row')
+    .filter({ hasText: 'completed' });
+  await child.getByRole('button').click();
+  await expect(page.getByRole('region', { name: 'Subtask evidence' })).toContainText(
+    'Reference design verified',
+  );
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'reference.md', exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('reference.md');
+  await page.getByRole('button', { name: 'fixture-review', exact: true }).click();
+  await expect(
+    page.getByRole('region', { name: 'Waiting for results', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel('Task status')).toHaveValue('waiting');
+});
+
+test('task details link directly to an awaited grandchild', async ({ page, request }) => {
+  const root = await (await request.get('/api/tasks/fixture-review')).json();
+  const audit = root.children.find((child: { status: string }) => child.status === 'waiting');
+  const auditDetail = await (await request.get(`/api/tasks/${audit.task_id}`)).json();
+  const grandchild = auditDetail.children[0];
+  await page.route('**/api/tasks/fixture-review', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...root, waiting_for: [grandchild.task_id] } });
+  });
+  await page.goto('/dashboard?view=tasks&task=fixture-review');
+  const waits = page.getByRole('region', { name: 'Waiting for results', exact: true });
+  await waits.getByRole('button', { name: grandchild.task_id, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`task=${grandchild.task_id}`));
+  await expect(page.locator('.task-detail')).toContainText('Parent task');
+  await expect(page.getByRole('button', { name: audit.task_id, exact: true })).toBeVisible();
+});
+
+test('parent sessions show nested progress and evidence while preserving filters and collapsed groups', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-review-thread');
+  await page.getByRole('button', { name: '◉ Live', exact: true }).click();
+  await page.getByRole('tab', { name: 'Sub tasks', exact: true }).click();
+  const tree = page.getByRole('region', { name: 'Related tasks' });
+  const summary = tree.locator('.subtasks-progress');
+  await expect(summary).toContainText('1 completed');
+  await expect(summary).toContainText('1 waiting');
+  await expect(summary).toContainText('1 queued');
+  await expect(tree.getByText('Awaited by ancestor', { exact: true })).toHaveCount(2);
+  await expect(tree.getByText('Reference design verified', { exact: true })).toBeVisible();
+  await expect(tree.getByRole('button', { name: 'Module review', exact: true })).toBeVisible();
+
+  const rows = page.locator('.session-row');
+  await expect(rows.filter({ hasText: 'independent-design' })).toHaveCount(0);
+  await page.getByLabel('Show subtask sessions').check();
+  await expect(rows.filter({ hasText: 'independent-design' })).toHaveCount(1);
+  await page.getByLabel('Find session').fill('independent-design');
+  await expect(rows).toHaveCount(1);
+
+  await tree.getByText('Evidence (1)', { exact: true }).click();
+  const downloadPromise = page.waitForEvent('download');
+  await tree.getByRole('button', { name: 'reference.md', exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('reference.md');
+  expect(await download.failure()).toBeNull();
+
+  const group = tree.locator('.session-task-group');
+  await group.locator(':scope > summary').click();
+  await expect(group).not.toHaveAttribute('open');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(tree.locator('.session-task-groups')).toHaveAttribute('aria-busy', 'false');
+  await expect(group).not.toHaveAttribute('open');
+  await expect(page.getByLabel('Find session')).toHaveValue('independent-design');
+  await expect(page.getByLabel('Show subtask sessions')).toBeChecked();
+
+  await page.route('**/task-tree?*', (route) =>
+    route.fulfill({ status: 503, json: { detail: 'Task tree unavailable' } }),
+  );
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(tree.locator('.error')).toContainText('Task tree unavailable');
+  await expect(group).not.toHaveAttribute('open');
+  await expect(page.locator('[data-entry-id]').first()).toBeAttached();
+  await page.unroute('**/task-tree?*');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(tree.locator('.error')).toHaveCount(0);
+  await group.locator(':scope > summary').click();
+  await tree.getByRole('button', { name: 'Module review', exact: true }).click();
+  await expect(page).toHaveURL(/view=tasks/);
+  await expect(page.locator('.task-detail')).toContainText('module-review');
+});
+
+test('opening a child conversation and returning restores the parent reading position', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-review-thread');
+  await page.getByRole('button', { name: '◉ Live', exact: true }).click();
+  await expect(page.locator('[data-entry-id]')).toHaveCount(50);
+  const scroll = page.getByLabel('Session transcript', { exact: true });
+  await scroll.evaluate((element) => {
+    element.scrollTop = 350;
+  });
+  await expect(page.getByRole('button', { name: 'Jump to latest ↓', exact: true })).toBeVisible();
+  const anchor = await scroll.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const entry = [...element.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
+      (item) => item.getBoundingClientRect().bottom > top,
+    )!;
+    return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
+  });
+  await page.getByRole('tab', { name: 'Sub tasks', exact: true }).click();
+  const tree = page.getByRole('region', { name: 'Related tasks' });
+  await tree.getByRole('button', { name: 'Independent design', exact: true }).click();
+  await expect(page).toHaveURL(/session=fixture-design-thread/);
+  await expect(
+    page.getByRole('heading', { name: 'independent-design', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.parent-session-link').getByText('Review with subtasks', { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator('[data-entry-id]').first()).toBeAttached();
+  await page.getByRole('button', { name: '← Back to parent session', exact: true }).click();
+  await expect(page).toHaveURL(/session=fixture-review-thread/);
+  await expect(
+    page.getByRole('heading', { name: 'Review with subtasks', exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      scroll.evaluate((element, id) => {
+        const entry = element.querySelector(`[data-entry-id="${id}"]`);
+        return entry
+          ? entry.getBoundingClientRect().top - element.getBoundingClientRect().top
+          : null;
+      }, anchor.id),
+    )
+    .toBeCloseTo(anchor.offset, 0);
+  await expect(page.getByRole('button', { name: 'Jump to latest ↓', exact: true })).toBeVisible();
+});
+
+test('session tabs preserve reading state during background updates and share consistent task colors', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/dashboard?session=fixture-review-thread');
+  const conversation = page.getByRole('tab', { name: 'Conversation', exact: true });
+  const details = page.getByRole('tab', { name: 'Session details', exact: true });
+  const subtasks = page.getByRole('tab', { name: 'Sub tasks', exact: true });
+  await expect(conversation).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tabpanel', { name: 'Session details', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: '◉ Live', exact: true }).click();
+  await expect(page.locator('[data-entry-id]')).toHaveCount(50);
+  const scroll = page.getByLabel('Session transcript', { exact: true });
+  const original = await scroll.elementHandle();
+  await scroll.evaluate((element) => {
+    element.scrollTop = 350;
+  });
+  await expect(page.getByRole('button', { name: 'Jump to latest ↓', exact: true })).toBeVisible();
+  const anchor = await scroll.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const entry = [...element.querySelectorAll<HTMLElement>('[data-entry-id]')].find(
+      (item) => item.getBoundingClientRect().bottom > top,
+    )!;
+    return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
+  });
+  await page.getByLabel('Search complete session').fill('saved search input');
+  await details.click();
+  await expect(page.locator('.session-metadata')).toBeVisible();
+  await expect(scroll).toBeHidden();
+  await details.press('End');
+  await expect(subtasks).toBeFocused();
+  await expect(subtasks).toHaveAttribute('aria-selected', 'true');
+  const tree = page.getByRole('region', { name: 'Related tasks' });
+  const colors = await tree
+    .locator('.task-card')
+    .evaluateAll((cards) => cards.map((card) => getComputedStyle(card).borderTopColor));
+  expect(new Set(colors).size).toBe(3);
+  for (const [index, type] of ['Independent design', 'Test audit', 'Module review'].entries()) {
+    await expect(tree.getByRole('button', { name: type, exact: true })).toBeVisible();
+    expect(
+      await tree
+        .getByLabel('Task types')
+        .getByText(type, { exact: false })
+        .evaluate((element) => getComputedStyle(element).color),
+    ).toBe(colors[index]);
+  }
+  const group = tree.locator('.session-task-group');
+  await group.locator(':scope > summary').click();
+  await request.post('/test/append');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(tree.locator('.session-task-groups')).toHaveAttribute('aria-busy', 'false');
+  await expect(subtasks).toHaveAttribute('aria-selected', 'true');
+  await expect(group).not.toHaveAttribute('open');
+  await conversation.click();
+  await expect(page.getByLabel('Search complete session')).toHaveValue('saved search input');
+  expect(
+    await original!.evaluate((element) => element === document.querySelector('.transcript-scroll')),
+  ).toBe(true);
+  await expect
+    .poll(() =>
+      scroll.evaluate((element, id) => {
+        const entry = element.querySelector(`[data-entry-id="${id}"]`);
+        return entry
+          ? entry.getBoundingClientRect().top - element.getBoundingClientRect().top
+          : null;
+      }, anchor.id),
+    )
+    .toBeCloseTo(anchor.offset, 0);
+  await subtasks.click();
+  await expect(group).not.toHaveAttribute('open');
+  await details.click();
+  await page.reload();
+  await expect(details).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.session-metadata')).toBeVisible();
+  await expect(scroll).toBeHidden();
+  await page.goto('/dashboard?session=fixture-thread&tab=subtasks');
+  await expect(
+    page.getByText('No sub tasks have been created for this session.', { exact: true }),
+  ).toBeVisible();
 });

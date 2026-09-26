@@ -59,6 +59,10 @@ def title(task: dict[str, Any]) -> str:
     return str(request.get("title") or task.get("prompt") or task["task_id"]).splitlines()[0][:160]
 
 
+def task_link(row: sqlite3.Row) -> dict[str, Any]:
+    return {"task_id": row["task_id"], "session_id": row["session_id"], "title": title(json.loads(row["task_json"]))}
+
+
 def take(
     entries: list[TranscriptEntry], limit: int, *, reverse: bool = False, budget: int = BUDGET
 ) -> list[dict[str, Any]]:
@@ -106,12 +110,21 @@ class TranscriptReader:
         )
 
     async def sessions(
-        self, q: str = "", state: str = "", context: str = "", offset: int = 0, limit: int = 50
+        self,
+        q: str = "",
+        state: str = "",
+        context: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        *,
+        include_subtasks: bool = True,
     ) -> dict[str, Any]:
         with self.connect() as conn:
             rows = conn.execute(f"SELECT * FROM ({TASKS}) WHERE session_id IS NOT NULL ORDER BY created_at").fetchall()
         groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
+            if not include_subtasks and row["spawned_by_task_id"] is not None:
+                continue
             groups.setdefault(row["session_id"], []).append(dict(row))
         items = await asyncio.gather(*(self._session(session_id, tasks) for session_id, tasks in groups.items()))
         items = [
@@ -154,6 +167,7 @@ class TranscriptReader:
             "state": latest["status"],
             "execution_uncertain": latest["status"] == "running" and (latest["lease_expires_at"] or 0) < time.time(),
             "task_count": len(tasks),
+            "spawned_by_task_id": latest["spawned_by_task_id"],
             "coverage": Coverage().model_dump(),
             "previous_session_id": None,
             **(runtime if include_runtime else {}),
@@ -175,11 +189,77 @@ class TranscriptReader:
                     "cwd": row["event_worktree"],
                     "revision": workspace.get("revision"),
                     "created_at": iso_time(row["created_at"]),
-                    "ended_at": iso_time(row["updated_at"]) if row["status"] in {"completed", "failed"} else None,
+                    "ended_at": iso_time(row["updated_at"])
+                    if row["status"] in {"completed", "failed", "cancelled"}
+                    else None,
                 }
             )
         data["has_more_tasks"] = offset + limit < len(tasks)
         return redact(data)
+
+    def task_tree(self, session_id: str, offset: int = 0, limit: int = 10) -> dict[str, Any]:
+        tasks = self._tasks(session_id)
+        latest = next(task for task in reversed(tasks) if not task["coalesced_into"])
+        with self.connect() as conn:
+            parent = conn.execute(
+                f"SELECT * FROM ({TASKS}) WHERE task_id=?", (latest["spawned_by_task_id"],)
+            ).fetchone()
+            roots = conn.execute(
+                f"""SELECT task_id FROM ({TASKS}) r WHERE session_id=?
+                    AND EXISTS (SELECT 1 FROM task_runs child WHERE child.spawned_by_task_id=r.task_id)
+                    ORDER BY created_at DESC,task_id DESC LIMIT ? OFFSET ?""",
+                (session_id, limit + 1, offset),
+            ).fetchall()
+            identities = [row["task_id"] for row in roots[:limit]]
+            rows = []
+            if identities:
+                placeholders = ",".join("?" for _ in identities)
+                rows = conn.execute(
+                    f"""WITH RECURSIVE tree(task_id) AS (
+                        SELECT task_id FROM task_runs WHERE task_id IN ({placeholders})
+                        UNION ALL
+                        SELECT child.task_id FROM task_runs child JOIN tree ON child.spawned_by_task_id=tree.task_id
+                    )
+                    SELECT r.*,stored.subtask_result FROM ({TASKS}) r
+                    JOIN tree ON tree.task_id=r.task_id JOIN task_runs stored ON stored.task_id=r.task_id
+                    ORDER BY r.created_at,r.task_id""",
+                    identities,
+                ).fetchall()
+            waiting_for = {
+                identity
+                for row in conn.execute(
+                    "SELECT wait_for FROM task_runs WHERE wait_for IS NOT NULL "
+                    "AND status IN ('queued','running','waiting')"
+                )
+                for identity in json.loads(row["wait_for"])
+            }
+        nodes: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            result = json.loads(row["subtask_result"] or "{}")
+            nodes[row["task_id"]] = {
+                **task_link(row),
+                "purpose": json.loads(row["task_json"]).get("metadata", {}).get("purpose"),
+                "status": row["status"],
+                "created_at": iso_time(row["created_at"]),
+                "waiting": row["task_id"] in waiting_for,
+                "summary": result.get("summary"),
+                "error": row["error"],
+                "artifacts": [
+                    {key: artifact[key] for key in ("name", "sha256", "bytes")}
+                    for artifact in result.get("artifacts", [])
+                ],
+                "children": [],
+            }
+        for row in rows:
+            if row["task_id"] not in identities:
+                nodes[row["spawned_by_task_id"]]["children"].append(nodes[row["task_id"]])
+        return redact(
+            {
+                "parent": task_link(parent) if parent else None,
+                "groups": [nodes[identity] for identity in identities],
+                "has_more": len(roots) > limit,
+            }
+        )
 
     @staticmethod
     def _change_position(snapshot: Snapshot) -> dict[str, Any]:

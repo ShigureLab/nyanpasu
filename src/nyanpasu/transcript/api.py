@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from nyanpasu.transcript.content import redact
-from nyanpasu.transcript.models import TranscriptChanges, TranscriptEntry, TranscriptWindow
+from nyanpasu.transcript.models import SessionTaskTree, TranscriptChanges, TranscriptEntry, TranscriptWindow
 from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
 
@@ -41,12 +43,23 @@ def dashboard_router(
         }
 
     @router.get("/sessions")
-    async def sessions(q: Search = "", state: str = "", context: str = "", offset: Offset = 0, limit: PageSize = 50):
-        return await reader.sessions(q, state, context, offset, limit)
+    async def sessions(
+        q: Search = "",
+        state: str = "",
+        context: str = "",
+        offset: Offset = 0,
+        limit: PageSize = 50,
+        include_subtasks: bool = True,
+    ):
+        return await reader.sessions(q, state, context, offset, limit, include_subtasks=include_subtasks)
 
     @router.get("/sessions/{session_id}")
     async def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):
         return await reader.session(session_id, offset, limit)
+
+    @router.get("/sessions/{session_id}/task-tree", response_model=SessionTaskTree)
+    def task_tree(session_id: str, offset: Offset = 0, limit: PageSize = 10):
+        return reader.task_tree(session_id, offset, limit)
 
     @router.get("/sessions/{session_id}/transcript", response_model=TranscriptWindow | TranscriptChanges)
     async def transcript(
@@ -126,7 +139,9 @@ def dashboard_router(
             where.append("r.status=?")
             args.append(state)
         if plugin:
-            where.append("coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core')=?")
+            where.append(
+                "coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),json_extract(r.task_json,'$.metadata.source_plugin_id'),'core')=?"
+            )
             args.append(plugin)
         with reader.connect() as conn:
             total = conn.execute(f"SELECT count(*) FROM ({TASKS}) r WHERE {' AND '.join(where)}", args).fetchone()[0]
@@ -134,12 +149,12 @@ def dashboard_router(
                 f"""
                 SELECT r.task_id,r.context_key,r.action,r.status,r.updated_at,r.created_at,
                        substr(r.error,1,1000) AS error,r.session_id,r.session_backend AS backend,
-                       coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),'core') AS plugin_id,
+                       coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),json_extract(r.task_json,'$.metadata.source_plugin_id'),'core') AS plugin_id,
                        coalesce(json_extract(r.task_json,'$.metadata.request.title'),substr(json_extract(r.task_json,'$.prompt'),1,160),r.task_id) AS title,
-                       r.coalesced_into
+                       r.coalesced_into,r.spawned_by_task_id,r.context_generation
                 FROM ({TASKS}) r
                 WHERE {" AND ".join(where)}
-                ORDER BY (r.status='running') DESC,(r.status='queued') DESC,r.updated_at DESC
+                ORDER BY (r.status='running') DESC,(r.status='waiting') DESC,(r.status='queued') DESC,r.updated_at DESC
                 LIMIT ? OFFSET ?
             """,
                 (*args, limit, offset),
@@ -154,6 +169,23 @@ def dashboard_router(
                 raise HTTPException(404, "Task not found")
             data = dict(row)
             data["task"] = json.loads(data.pop("task_json"))
+            evidence = conn.execute(
+                "SELECT wait_for,subtask_result FROM task_runs WHERE task_id=?", (task_id,)
+            ).fetchone()
+            data["waiting_for"] = json.loads(evidence["wait_for"] or "[]")
+            data["subtask_result"] = json.loads(evidence["subtask_result"]) if evidence["subtask_result"] else None
+            data["children"] = [
+                dict(child)
+                for child in conn.execute(
+                    "SELECT task_id,status,context_key FROM task_runs WHERE spawned_by_task_id=? ORDER BY created_at",
+                    (task_id,),
+                )
+            ]
+            scope = conn.execute(
+                "SELECT lifecycle FROM context_scopes WHERE context_key=? AND generation=?",
+                (data["context_key"], data["context_generation"]),
+            ).fetchone()
+            data["lifecycle"] = scope["lifecycle"] if scope else "closed"
             if data["coalesced_into"]:
                 target = conn.execute(
                     "SELECT turn_id FROM task_runs WHERE task_id=?", (data["coalesced_into"],)
@@ -170,11 +202,37 @@ def dashboard_router(
                 data["history_error"] = str(exc)
         return redact(data)
 
+    @router.get("/tasks/{task_id}/artifacts/{artifact_index}")
+    def artifact(task_id: str, artifact_index: int):
+        with reader.connect() as conn:
+            row = conn.execute("SELECT subtask_result FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        result = json.loads(row["subtask_result"]) if row and row["subtask_result"] else {}
+        artifacts = result.get("artifacts", [])
+        if artifact_index < 0 or artifact_index >= len(artifacts):
+            raise HTTPException(404, "Artifact not found")
+        item = artifacts[artifact_index]
+        path = Path(item["path"]).resolve()
+        if not path.is_relative_to((config.state_dir / "artifacts" / "subtasks").resolve()):
+            raise HTTPException(404, "Artifact not found")
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Artifact is unavailable") from exc
+        if hashlib.sha256(content).hexdigest() != item["sha256"]:
+            raise HTTPException(409, "Artifact no longer matches its recorded digest")
+        return Response(
+            content,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="artifact-{artifact_index}"',
+            },
+        )
+
     @router.get("/plugins")
     def plugins():
         with reader.connect() as conn:
             rows = conn.execute("""
-                SELECT coalesce(json_extract(task_json,'$.metadata.plugin_id'),'core') AS plugin_id,
+                SELECT coalesce(json_extract(task_json,'$.metadata.plugin_id'),json_extract(task_json,'$.metadata.source_plugin_id'),'core') AS plugin_id,
                        status,action,count(*) AS count,max(updated_at) AS last_updated_at
                 FROM task_runs GROUP BY plugin_id,status,action
             """).fetchall()
@@ -202,6 +260,7 @@ def dashboard_router(
             "reasoning_effort": config.process_config().reasoning_effort,
             "bin": config.process_config().bin,
             "concurrency": config.runtime.concurrency,
+            "concurrency_scope": "root executions; descendants share the root slot, including while waiting",
             "leases": leases,
             "generated_at": time.time(),
             **redact(runtime_info()),

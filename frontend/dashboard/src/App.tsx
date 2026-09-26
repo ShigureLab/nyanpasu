@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  useApi,
   backendLabel,
   query,
   useNavigation,
@@ -12,6 +11,7 @@ import {
   type Diagnostic,
 } from './api';
 import { Copy, Status } from './Entry';
+import { Download } from './Download';
 import { Transcript } from './Transcript';
 import { Time } from './Time';
 import { useSessions } from './useSessions';
@@ -50,9 +50,11 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
   const overview = useResource<Overview>('/api/overview', live, refresh);
   const [sessionQuery, setSessionQuery] = useState('');
   const [sessionState, setSessionState] = useState('');
+  const [showSubtasks, setShowSubtasks] = useState(false);
   const sessionList = useRef<HTMLDivElement>(null);
   const sessionEnd = useRef<HTMLDivElement>(null);
   const sessionPath = query('/api/sessions', {
+    include_subtasks: showSubtasks,
     q: sessionQuery,
     state: sessionState,
     context: selection.get('context'),
@@ -159,10 +161,20 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                 }}
               >
                 <option value="">All statuses</option>
-                {['running', 'completed', 'failed'].map((state) => (
-                  <option key={state}>{state}</option>
-                ))}
+                {['queued', 'running', 'waiting', 'completed', 'failed', 'cancelled'].map(
+                  (state) => (
+                    <option key={state}>{state}</option>
+                  ),
+                )}
               </select>
+              <label className="session-subtask-toggle">
+                <input
+                  type="checkbox"
+                  checked={showSubtasks}
+                  onChange={(event) => setShowSubtasks(event.target.checked)}
+                />
+                Show subtask sessions
+              </label>
               {selection.has('context') && (
                 <button onClick={() => navigate({ context: null })}>Clear context filter</button>
               )}
@@ -183,6 +195,7 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                     onClick={() => {
                       navigate({
                         session: item.session_id,
+                        tab: null,
                         entry: null,
                         task: null,
                         block: null,
@@ -200,6 +213,7 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                     <code>{item.context_key}</code>
                     <small>
                       {item.task_count} tasks · {backendLabel(item.backend)}
+                      {item.spawned_by_task_id && ' · subtask'}
                     </small>
                   </button>
                 ))}
@@ -261,7 +275,6 @@ function Tasks({
   live: boolean;
   refresh: number;
 }) {
-  const { get } = useApi();
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [offset, setOffset] = useState(0);
@@ -276,19 +289,6 @@ function Tasks({
     live,
     refresh,
   );
-  async function openTask(task: Task) {
-    if (task.session_id) {
-      const target = await get<{ entry_id: string | null }>(
-        `/api/tasks/${encodeURIComponent(task.task_id)}`,
-      );
-      navigate({
-        view: 'sessions',
-        session: task.session_id,
-        task: task.task_id,
-        entry: target.entry_id,
-      });
-    } else navigate({ task: task.task_id });
-  }
   return (
     <section className="full-view">
       <span className="eyebrow">DISPATCH & EXECUTION</span>
@@ -313,7 +313,7 @@ function Tasks({
           }}
         >
           <option value="">All statuses</option>
-          {['queued', 'running', 'failed', 'completed'].map((value) => (
+          {['queued', 'running', 'waiting', 'failed', 'cancelled', 'completed'].map((value) => (
             <option key={value}>{value}</option>
           ))}
         </select>
@@ -324,7 +324,11 @@ function Tasks({
       {data.error && <p className="notice error">{data.error}</p>}
       <div className="task-list">
         {data.data?.items.map((task) => (
-          <button key={task.task_id} className="task-row" onClick={() => void openTask(task)}>
+          <button
+            key={task.task_id}
+            className="task-row"
+            onClick={() => navigate({ task: task.task_id })}
+          >
             <Status state={task.status} />
             <div>
               <strong>{task.title}</strong>
@@ -334,6 +338,7 @@ function Tasks({
             <span>
               {task.action}
               {task.coalesced_into ? ' · coalesced' : ''}
+              {task.spawned_by_task_id ? ' · subtask' : ''}
             </span>
             <span>{task.plugin_id}</span>
             <div className="task-times">
@@ -376,12 +381,66 @@ function Tasks({
                   </button>
                 </p>
               )}
+              <p>
+                Lifecycle: {detail.data.lifecycle} · Generation {detail.data.context_generation}
+              </p>
+              {detail.data.spawned_by_task_id && (
+                <p>
+                  Parent task{' '}
+                  <button onClick={() => navigate({ task: detail.data!.spawned_by_task_id })}>
+                    {detail.data.spawned_by_task_id}
+                  </button>
+                </p>
+              )}
+              {detail.data.waiting_for.length > 0 &&
+                ['queued', 'running', 'waiting'].includes(detail.data.status) && (
+                  <section aria-label="Waiting for results">
+                    <h3>Waiting for results</h3>
+                    {detail.data.waiting_for.map((taskId) => (
+                      <div className="subtask-row" key={taskId}>
+                        <button onClick={() => navigate({ task: taskId })}>{taskId}</button>
+                      </div>
+                    ))}
+                  </section>
+                )}
+              {detail.data.children.length > 0 && (
+                <section aria-label="Subtasks">
+                  <h3>Subtasks</h3>
+                  {detail.data.children.map((child) => (
+                    <div className="subtask-row" key={child.task_id}>
+                      <Status state={child.status} />
+                      <button onClick={() => navigate({ task: child.task_id })}>
+                        {child.task_id}
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {detail.data.subtask_result && (
+                <section aria-label="Subtask evidence">
+                  <h3>Result and evidence</h3>
+                  <p>{detail.data.subtask_result.summary}</p>
+                  {detail.data.subtask_result.artifacts.map((artifact, index) => (
+                    <div className="subtask-artifact" key={artifact.sha256 + artifact.name}>
+                      <Download
+                        path={`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${index}`}
+                        filename={artifact.name.split('/').at(-1) ?? 'evidence'}
+                      >
+                        {artifact.name}
+                      </Download>
+                      <span>{artifact.bytes} bytes</span>
+                      <code title="SHA-256">{artifact.sha256}</code>
+                    </div>
+                  ))}
+                </section>
+              )}
               {detail.data.session_id && (
                 <button
                   onClick={() =>
                     navigate({
                       view: 'sessions',
                       session: String(detail.data!.session_id),
+                      tab: null,
                       entry: detail.data!.entry_id as string | null,
                     })
                   }
@@ -498,8 +557,9 @@ function RuntimeView({
               <Status state={data.data.connection} />
             </article>
             <article>
-              <span>Concurrency limit</span>
+              <span>Root task concurrency</span>
               <h2>{data.data.concurrency}</h2>
+              <p>Subtasks share their root’s slot, including while it waits.</p>
             </article>
             <article>
               <span>Configured model</span>

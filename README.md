@@ -195,6 +195,8 @@ Dashboard token. Without a webhook secret, that endpoint requires the server tok
 
 Each backend owns its native conversation history. Nyanpasu stores scheduling metadata and session references; the Dashboard reads native messages, reasoning, tool calls, edits, and results without maintaining another conversation database. Session details identify the backend and native session ID. Historical conversations remain readable after changing backends while their runtime and history files remain available.
 
+The session list shows root sessions by default; enable **Show subtask sessions** to include children. Each session has **Conversation**, **Session details**, and **Sub tasks** tabs. Switching tabs preserves reading position, search input, and expanded task groups; the selected tab can be bookmarked. Subtask cards use consistent colors for independent design, module review, and test audit, with text labels and separate status indicators. They include nested children, waiting relationships, result summaries, and downloadable evidence. Open a child conversation and use **Back to parent session** to return to your reading position.
+
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
 
@@ -304,3 +306,11 @@ Plugins that need current external state before execution can register `runtime.
 Task merging is opt-in with a `coalesce_key` and requires a registered preparer. Compatible queued tasks with the same key, plugin, and context can merge within `runtime.coalesce_window_seconds`; the preparer owns their domain-specific merge. Ordinary tasks remain separate. Recording and merging happen in one transaction, and a running task cannot receive late merged events. This window does not delay task execution or guarantee that nearby events will share a turn.
 
 By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs the selected backend there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.
+
+### Managed subtasks and independent review
+
+An agent can create, inspect, await, cancel and complete owned subtasks using the per-turn control command. `runtime.concurrency` counts root executions: descendants share the root slot, including while the parent waits. Closing a context stops and reclaims its descendants; frozen evidence remains available from task details in the Dashboard.
+
+The GitHub reviewer chooses when independent design is useful. A design child gets a fresh repository exported from the pinned merge-base, original requirements and a failure-model prompt. The parent compares both designs and audits whether tests catch realistic failures without breaking on behavior-preserving changes. This supplies independent inputs, not an OS/network sandbox.
+
+See [the design and control protocol](docs/review-subtasks-design.md), [validation and limits](docs/subtask-validation.md), and [the provisional reviewer evaluation cases](evals/reviewer/README.md).

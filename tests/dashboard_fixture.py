@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,9 +9,10 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import SecretStr
 
+from nyanpasu.agent import AgentService
 from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.diagnostics import diagnostic
-from nyanpasu.models import AgentTask, TaskAction, TaskRunResult, TaskStatus
+from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from tests.claude_source import SESSION, records, write_session
@@ -43,6 +45,53 @@ def fixture_app():
             final_message="",
         )
     )
+    review = AgentTask(
+        task_id="fixture-review",
+        context_key="demo:review",
+        action=TaskAction.RUN,
+        prompt="Review a lifecycle change",
+        metadata={"request": {"title": "Review with subtasks"}},
+    )
+    state.record_task(review)
+    state.mark_task_running(review.task_id, None)
+    state.bind_task_execution(review.task_id, "fixture-review-thread", "fixture-turn")
+    design = state.create_subtask(
+        review.task_id, SubtaskRequest(request_key="design", prompt="Reference design", purpose="independent-design")
+    )
+    audit = state.create_subtask(
+        review.task_id, SubtaskRequest(request_key="audit", prompt="Audit tests", purpose="test-audit")
+    )
+    state.mark_task_running(audit.task_id, None)
+    state.bind_task_execution(audit.task_id, "fixture-audit-thread", "fixture-turn")
+    experiment = state.create_subtask(
+        audit.task_id, SubtaskRequest(request_key="experiment", prompt="Check cleanup", purpose="module-review")
+    )
+    state.wait_for_subtasks(audit.task_id, [experiment.task_id])
+    state.mark_task_waiting(audit.task_id)
+    evidence = b"Frozen independent design evidence\n"
+    digest = hashlib.sha256(evidence).hexdigest()
+    artifact = config.state_dir / "artifacts" / "subtasks" / design.task_id / digest
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(evidence)
+    state.record_subtask_result(
+        design.task_id,
+        {
+            "summary": "Reference design verified",
+            "artifacts": [{"name": "reference.md", "path": str(artifact), "sha256": digest, "bytes": len(evidence)}],
+            "data": {},
+        },
+    )
+    state.mark_task_done(
+        TaskRunResult(
+            task_id=design.task_id,
+            status=TaskStatus.COMPLETED,
+            thread_id="fixture-design-thread",
+            turn_id="fixture-turn",
+            final_message="",
+        )
+    )
+    state.wait_for_subtasks(review.task_id, [audit.task_id])
+    state.mark_task_waiting(review.task_id)
     items: list[dict[str, Any]] = [
         {
             "id": "input",
@@ -172,7 +221,15 @@ def fixture_app():
             )
         )
     claude_source = ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(claude_home)})
-    app = create_app(config, session_sources={"codex": source, "claude": claude_source}.__getitem__)
+
+    class FixtureAgent(AgentService):
+        async def startup(self):
+            # Display persisted UI states without recovering them into real model runs.
+            return None
+
+    app = create_app(
+        config, agent=FixtureAgent(config), session_sources={"codex": source, "claude": claude_source}.__getitem__
+    )
     app.state.agent.backends.get("codex").execution.diagnostics.extend(
         [
             diagnostic("2026-09-14T00:00:00Z WARN codex_core::network: Reconnecting after a network interruption"),
