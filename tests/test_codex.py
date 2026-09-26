@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import tomllib
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from nyanpasu.codex import CodexAppServerBackend, CodexExecBackend, safe_codex_env
+from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
 from nyanpasu.config import CodexConfig, NyanpasuConfig
 
 if TYPE_CHECKING:
@@ -82,49 +81,6 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
     finally:
         asyncio.set_event_loop(None)
         loop.close()
-
-
-def test_exec_backend_argv_includes_approvals_reviewer(tmp_path: Path) -> None:
-    config = NyanpasuConfig(
-        state_dir=tmp_path / "state",
-        codex=CodexConfig(approval_policy="on-request", approvals_reviewer="auto_review"),
-    )
-    backend = CodexExecBackend(config)
-
-    argv = backend._argv(cwd=tmp_path, thread_id=None, output_path=tmp_path / "out.txt")
-
-    assert "-c" in argv
-    assert 'approvals_reviewer="auto_review"' in argv
-    assert 'approval_policy="on-request"' in argv
-    assert 'sandbox_mode="workspace-write"' in argv
-
-
-def test_exec_instructions_are_toml_safe_for_new_and_resumed_sessions(tmp_path: Path) -> None:
-    backend = CodexExecBackend(NyanpasuConfig(state_dir=tmp_path / "state"))
-    instructions = 'Review "carefully".\n保留规则。 Path: C:\\repo; literal $(command) and `text`.'
-    for thread_id in (None, "thread-1"):
-        argv = backend._argv(
-            cwd=tmp_path,
-            thread_id=thread_id,
-            output_path=tmp_path / "out.txt",
-            developer_instructions=instructions,
-        )
-        override = next(arg for arg in argv if arg.startswith("developer_instructions="))
-        assert tomllib.loads(override)["developer_instructions"] == instructions
-        assert not any("base_instructions" in arg or "model_instructions_file" in arg for arg in argv)
-
-
-@pytest.mark.parametrize("thread_id", [None, "thread-1"])
-def test_exec_pins_model_and_effort_for_new_and_resumed_sessions(tmp_path: Path, thread_id) -> None:
-    backend = CodexExecBackend(
-        NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(model="configured-model", reasoning_effort="medium"))
-    )
-
-    argv = backend._argv(cwd=tmp_path, thread_id=thread_id, output_path=tmp_path / "out.txt")
-
-    assert argv[argv.index("--model") + 1] == "configured-model"
-    override = next(arg for arg in argv if arg.startswith("model_reasoning_effort="))
-    assert tomllib.loads(override)["model_reasoning_effort"] == "medium"
 
 
 def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:

@@ -32,7 +32,6 @@ host = "127.0.0.1"
 port = 8765
 
 [codex]
-backend = "app-server"
 model = "gpt-6-astra"
 reasoning_effort = "medium"
 sandbox = "workspace-write"

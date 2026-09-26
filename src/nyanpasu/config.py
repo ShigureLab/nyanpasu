@@ -86,7 +86,6 @@ class ProcessConfig(BaseModel):
 class CodexConfig(ProcessConfig):
     label: ClassVar[str] = "Codex"
     bin: str = "codex"
-    backend: Literal["app-server", "exec"] = "app-server"
     sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
     approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
@@ -215,7 +214,6 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
         data["server"] = server
     codex = dict(data.get("codex") or {})
     env_codex = {
-        "NYANPASU_CODEX_BACKEND": "backend",
         "NYANPASU_CODEX_BIN": "bin",
         "NYANPASU_CODEX_MODEL": "model",
         "NYANPASU_CODEX_REASONING_EFFORT": "reasoning_effort",

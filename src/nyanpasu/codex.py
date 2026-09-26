@@ -4,19 +4,17 @@ import asyncio
 import contextlib
 import json
 import os
-import tempfile
 from collections import deque
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
-from nyanpasu.execution import ExecutionStarted, JsonProcessRunner, json_lines, stop_process
+from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from pathlib import Path
 
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.diagnostics import Diagnostic
@@ -30,112 +28,10 @@ class CodexSessionSource(Protocol):
     async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict[str, Any]: ...
 
 
-class CodexExecBackend:
+class CodexAppServerBackend:
     def __init__(self, config: NyanpasuConfig) -> None:
         self.config = config
         self._env = MappingProxyType(safe_codex_env(config))
-        self._history = CodexAppServerBackend(config, env=self._env)
-        self._runner = JsonProcessRunner()
-
-    def runtime_info(self) -> dict:
-        return self._runner.runtime_info()
-
-    async def run_turn(
-        self,
-        *,
-        cwd: Path,
-        prompt: str,
-        thread_id: str | None,
-        developer_instructions: str = "",
-        on_started: ExecutionStarted | None = None,
-    ) -> RunResult:
-        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as output_file:
-            output_path = Path(output_file.name)
-        argv = self._argv(
-            cwd=cwd,
-            thread_id=thread_id,
-            output_path=output_path,
-            developer_instructions=developer_instructions,
-        )
-        try:
-            parsed_thread_id, turn_id = thread_id, None
-
-            async def received(event: dict[str, Any]) -> None:
-                nonlocal parsed_thread_id, turn_id
-                if event.get("type") == "thread.started":
-                    parsed_thread_id = event.get("thread_id")
-                if event.get("type") == "turn.started":
-                    turn_id = event.get("turn_id")
-                if event.get("type") in {"thread.started", "turn.started"} and parsed_thread_id and on_started:
-                    await on_started(parsed_thread_id, turn_id)
-
-            returncode, stderr_tail = await self._runner.run(
-                argv,
-                cwd=cwd,
-                env=self._env,
-                input_text=prompt,
-                timeout=self.config.codex.command_timeout_seconds,
-                received=received,
-            )
-            if returncode != 0:
-                raise RuntimeError(stderr_tail or f"codex exited {returncode}")
-            final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
-            if not parsed_thread_id:
-                raise RuntimeError("codex did not report a thread id")
-            return RunResult(
-                thread_id=parsed_thread_id,
-                turn_id=turn_id,
-                final_message=final_message.strip(),
-            )
-        finally:
-            output_path.unlink(missing_ok=True)
-
-    def _argv(
-        self, *, cwd: Path, thread_id: str | None, output_path: Path, developer_instructions: str = ""
-    ) -> list[str]:
-        if thread_id:
-            argv = [*self.config.codex.command, "exec", "resume", thread_id, "-"]
-        else:
-            argv = [*self.config.codex.command, "exec", "-", "-C", str(cwd)]
-        if self.config.codex.model:
-            argv.extend(["--model", self.config.codex.model])
-        if self.config.codex.reasoning_effort:
-            argv.extend(["-c", f"model_reasoning_effort={json.dumps(self.config.codex.reasoning_effort)}"])
-        if developer_instructions:
-            argv.extend(["-c", f"developer_instructions={json.dumps(developer_instructions, ensure_ascii=False)}"])
-        argv.extend(
-            [
-                "-c",
-                f'approvals_reviewer="{self.config.codex.approvals_reviewer}"',
-                "-c",
-                f'sandbox_mode="{self.config.codex.sandbox}"',
-                "-c",
-                f'approval_policy="{self.config.codex.approval_policy}"',
-                "--json",
-                "--output-last-message",
-                str(output_path),
-            ]
-        )
-        return argv
-
-    async def close(self) -> None:
-        await self._runner.close()
-        await self._history.close()
-
-    async def cleanup_thread(self, thread_id: str) -> None:
-        await self._history.cleanup_thread(thread_id)
-
-    async def read_thread(self, thread_id: str) -> dict[str, Any]:
-        return await self._history.read_thread(thread_id)
-
-    async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict[str, Any]:
-        return await self._history.list_turns(thread_id, cursor)
-
-
-class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig, *, env: Mapping[str, str] | None = None) -> None:
-        self.config = config
-        self._env = MappingProxyType(safe_codex_env(config) if env is None else dict(env))
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
