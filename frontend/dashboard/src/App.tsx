@@ -392,6 +392,17 @@ function Tasks({
                   </button>
                 </p>
               )}
+              {detail.data.waiting_for.length > 0 &&
+                ['queued', 'running', 'waiting'].includes(detail.data.status) && (
+                  <section aria-label="Waiting for results">
+                    <h3>Waiting for results</h3>
+                    {detail.data.waiting_for.map((taskId) => (
+                      <div className="subtask-row" key={taskId}>
+                        <button onClick={() => navigate({ task: taskId })}>{taskId}</button>
+                      </div>
+                    ))}
+                  </section>
+                )}
               {detail.data.children.length > 0 && (
                 <section aria-label="Subtasks">
                   <h3>Subtasks</h3>
@@ -401,9 +412,6 @@ function Tasks({
                       <button onClick={() => navigate({ task: child.task_id })}>
                         {child.task_id}
                       </button>
-                      {detail.data!.waiting_for.includes(child.task_id) && (
-                        <span>Waiting for result</span>
-                      )}
                     </div>
                   ))}
                 </section>

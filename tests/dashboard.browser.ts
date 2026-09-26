@@ -643,7 +643,9 @@ test('session metadata, task dates and structured backend diagnostics are visibl
 test('waiting parent links to child evidence and preserves task navigation', async ({ page }) => {
   await page.goto('/dashboard?view=tasks&task=fixture-review');
   await expect(page.getByRole('region', { name: 'Subtasks', exact: true })).toBeVisible();
-  await expect(page.getByText('Waiting for result', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Waiting for results', exact: true }),
+  ).toBeVisible();
   await page.getByLabel('Task status').selectOption('waiting');
   await expect(page.locator('.task-list')).toContainText('Review with subtasks');
   const child = page
@@ -659,8 +661,27 @@ test('waiting parent links to child evidence and preserves task navigation', asy
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('reference.md');
   await page.getByRole('button', { name: 'fixture-review', exact: true }).click();
-  await expect(page.getByText('Waiting for result', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Waiting for results', exact: true }),
+  ).toBeVisible();
   await expect(page.getByLabel('Task status')).toHaveValue('waiting');
+});
+
+test('task details link directly to an awaited grandchild', async ({ page, request }) => {
+  const root = await (await request.get('/api/tasks/fixture-review')).json();
+  const audit = root.children.find((child: { status: string }) => child.status === 'waiting');
+  const auditDetail = await (await request.get(`/api/tasks/${audit.task_id}`)).json();
+  const grandchild = auditDetail.children[0];
+  await page.route('**/api/tasks/fixture-review', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...root, waiting_for: [grandchild.task_id] } });
+  });
+  await page.goto('/dashboard?view=tasks&task=fixture-review');
+  const waits = page.getByRole('region', { name: 'Waiting for results', exact: true });
+  await waits.getByRole('button', { name: grandchild.task_id, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`task=${grandchild.task_id}`));
+  await expect(page.locator('.task-detail')).toContainText('Parent task');
+  await expect(page.getByRole('button', { name: audit.task_id, exact: true })).toBeVisible();
 });
 
 test('parent sessions show nested progress and evidence while preserving filters and collapsed groups', async ({
