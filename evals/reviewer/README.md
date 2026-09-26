@@ -13,4 +13,4 @@ A maintainer judges each finding without seeing which condition produced it: cor
 | Cached size      | `cases.json`, `cached-size`    | Can duplicate state be removed while preserving observed behavior? |
 | Required adapter | `cases.json`, `adapter`        | Does the reviewer preserve the real protocol boundary?             |
 
-Run code experiments in disposable workspaces. Record a clean baseline, one plausible defect, and a behavior-preserving alternative when relevant. A syntax/import/environment failure is inconclusive. The directed runtime experiments used to validate this implementation are recorded in `docs/subtask-validation.md`; they are separate from model evaluation.
+Run code experiments in disposable workspaces. Record a clean baseline, one plausible defect, and a behavior-preserving alternative when relevant. A syntax/import/environment failure is inconclusive. The directed runtime experiments used to validate this implementation are separate from model evaluation.

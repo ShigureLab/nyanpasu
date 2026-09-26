@@ -314,4 +314,4 @@ Before deep review, the reviewer uses `review-scope` to inspect a pinned Git fil
 
 The GitHub reviewer chooses when independent design is useful. A design child gets a fresh repository exported from the pinned merge-base and original requirements, derives the minimum responsibilities and reusable base behavior, then builds a failure model. The parent compares designs and audits production/test necessity, including concrete deletion, consolidation or replacement alternatives and reasons to retain them. It also checks whether tests catch realistic failures without breaking on behavior-preserving changes. The review dashboard requires necessity records before deep completion; it does not require a quota of simplification findings. This supplies independent inputs, not an OS/network sandbox.
 
-See [the design and control protocol](docs/review-subtasks-design.md), [validation and limits](docs/subtask-validation.md), and [the provisional reviewer evaluation cases](evals/reviewer/README.md).
+See [the provisional reviewer evaluation cases](evals/reviewer/README.md).
