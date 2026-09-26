@@ -10,7 +10,6 @@ port = 8765
 [codex]
 bin = "codex"
 args = []
-backend = "app-server"
 command_timeout_seconds = 3600
 sandbox = "workspace-write"
 approval_policy = "on-request"

@@ -47,7 +47,6 @@ host = "0.0.0.0"
 port = 9999
 
 [codex]
-backend = "exec"
 model = "configured-model"
 reasoning_effort = "medium"
 approval_policy = "on-request"
@@ -80,7 +79,6 @@ poll_interval_seconds = 600
     assert config.state_dir == (tmp_path / "home").resolve()
     assert config.server.host == "0.0.0.0"
     assert config.server.port == 9999
-    assert config.codex.backend == "exec"
     assert config.codex.model == "configured-model"
     assert config.codex.reasoning_effort == "medium"
     assert config.codex.approval_policy == "on-request"

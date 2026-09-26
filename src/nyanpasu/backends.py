@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from nyanpasu.claude import ClaudeBackend
-from nyanpasu.codex import CodexAppServerBackend, CodexExecBackend
+from nyanpasu.codex import CodexAppServerBackend
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.transcript.codex import CodexHistorySource
 
@@ -30,11 +30,7 @@ class Backends:
     def get(self, name: str) -> Backend:
         if name not in self._instances:
             if name == "codex":
-                codex = (
-                    CodexExecBackend(self.config)
-                    if self.config.codex.backend == "exec"
-                    else CodexAppServerBackend(self.config)
-                )
+                codex = CodexAppServerBackend(self.config)
                 backend = Backend(codex, CodexHistorySource(codex))
             elif name == "claude":
                 claude = ClaudeBackend(self.config)

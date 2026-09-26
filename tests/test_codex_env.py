@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from nyanpasu.codex import CodexAppServerBackend, CodexExecBackend, safe_codex_env
+from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
 from nyanpasu.config import CodexConfig, EnvCommand, NyanpasuConfig
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ def test_command_failure_prevents_backend_creation(tmp_path: Path, monkeypatch, 
         codex=CodexConfig(pass_env=("GH_TOKEN",), env={"GH_TOKEN": EnvCommand(cmd=(sys.executable, "-c", script))}),
     )
     with pytest.raises(ValueError, match=f"codex.env.GH_TOKEN:.*{message}") as error:
-        CodexExecBackend(config)
+        CodexAppServerBackend(config)
     assert "secret" not in str(error.value)
 
 
@@ -98,15 +98,12 @@ def test_command_timeout_is_bounded_and_does_not_expose_output(tmp_path: Path, m
         ),
     )
     with pytest.raises(ValueError, match=r"codex.env.GH_TOKEN: command timed out after 10 seconds") as error:
-        CodexExecBackend(config)
+        CodexAppServerBackend(config)
     assert "private-secret" not in str(error.value)
     assert error.value.__suppress_context__
 
 
-@pytest.mark.parametrize("backend_class", [CodexExecBackend, CodexAppServerBackend])
-def test_backend_reuses_environment_across_turns_restarts_and_cleanup(
-    tmp_path: Path, monkeypatch, backend_class
-) -> None:
+def test_backend_reuses_environment_across_restarts(tmp_path: Path, monkeypatch) -> None:
     program = tmp_path / "codex"
     captured = tmp_path / "environments"
     counter = tmp_path / "resolutions"
@@ -114,14 +111,10 @@ def test_backend_reuses_environment_across_turns_restarts_and_cleanup(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         f"with open({str(captured)!r}, 'a') as out: out.write(os.environ['GH_TOKEN'] + '\\n')\n"
-        "if sys.argv[1] == 'exec':\n"
-        "    sys.stdin.read()\n"
-        "    print(json.dumps({'type': 'thread.started', 'thread_id': 'thread-1'}))\n"
-        "else:\n"
-        "    for line in sys.stdin:\n"
-        "        request = json.loads(line)\n"
-        "        if 'id' in request:\n"
-        "            print(json.dumps({'id': request['id'], 'result': {}}), flush=True)\n",
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if 'id' in request:\n"
+        "        print(json.dumps({'id': request['id'], 'result': {}}), flush=True)\n",
         encoding="utf-8",
     )
     program.chmod(0o755)
@@ -141,26 +134,21 @@ def test_backend_reuses_environment_across_turns_restarts_and_cleanup(
             },
         ),
     )
-    backend = backend_class(config)
+    backend = CodexAppServerBackend(config)
     monkeypatch.setenv("GH_TOKEN", "changed")
 
     async def run() -> None:
         try:
-            if isinstance(backend, CodexExecBackend):
-                await backend.run_turn(cwd=tmp_path, prompt="first", thread_id=None)
-                await backend.run_turn(cwd=tmp_path, prompt="next", thread_id="thread-1")
-                await backend.cleanup_thread("thread-1")
-            else:
-                await backend._ensure_started()
-                await backend.close()
-                await backend._ensure_started()
+            await backend._ensure_started()
+            await backend.close()
+            await backend._ensure_started()
         finally:
             await backend.close()
 
     asyncio.run(run())
 
     assert counter.read_text().splitlines() == ["resolved"]
-    assert captured.read_text().splitlines() == ["initial"] * (3 if backend_class is CodexExecBackend else 2)
+    assert captured.read_text().splitlines() == ["initial"] * 2
 
 
 def test_importing_cli_does_not_resolve_environment(tmp_path: Path) -> None:
