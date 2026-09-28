@@ -4,6 +4,19 @@ Nyanpasu is a plugin-oriented agent service. The core runtime is deliberately ge
 
 GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 
+## Python Compatibility
+
+Nyanpasu requires Python 3.11.4 or newer. CI covers Python 3.11–3.15, including
+free-threaded Python 3.15 (`3.15t`), using the normal workspace dependencies and
+`uv.lock`.
+
+Python 3.15 support is pending a stable Pydantic release. For now, Python 3.15 uses
+Pydantic 2.14.0b2 or newer (the lockfile selects 2.14.0b2 with pydantic-core 2.49.0);
+Python 3.11–3.14 retain the stable dependency path. Keep this change in Draft until
+a stable Pydantic release supports both 3.15 variants, replace the beta minimum
+with that stable version, regenerate `uv.lock`, and rerun the complete CI matrix.
+No global prerelease opt-in or alternative dependency overlay is needed.
+
 ## Core Responsibilities
 
 - Async task execution with per-context serialization and bounded concurrency.

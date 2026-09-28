@@ -31,7 +31,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
 
       - name: Install Python dependencies
-        run: uv sync --all-extras --dev --python 3.14
+        run: uv sync --locked --all-extras --dev --python 3.14
 
       - name: Check, test, and build Dashboard
         run: |
@@ -50,9 +50,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.11', '3.12', '3.13', '3.14', '3.15', '3.15t']
         architecture: ['x64']
     name: unittest - Python ${{ matrix.python-version }} on ${{ matrix.architecture }}
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -75,6 +77,27 @@ jobs:
       - name: Install dependencies
         run: |
           just ci-install
+
+      - name: Verify Python runtime
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import sys
+          import sysconfig
+
+          import nyanpasu.__main__
+          import nyanpasu_github
+          import nyanpasu_github_pr_maker
+          import nyanpasu_github_reviewer
+
+          expected = os.environ["UV_PYTHON"]
+          assert sys.version_info[:2] == tuple(map(int, expected.rstrip("t").split(".")))
+          free_threaded = expected.endswith("t")
+          assert bool(sysconfig.get_config_var("Py_GIL_DISABLED")) == free_threaded
+          if free_threaded:
+              assert not sys._is_gil_enabled(), "Dependencies must not re-enable the GIL"
+          print(sys.version)
+          PY
 
       - name: unit test
         run: |
