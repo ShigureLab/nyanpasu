@@ -214,7 +214,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.12.0" },
     { name = "fastapi", specifier = ">=0.125.0" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "pydantic", marker = "python_full_version < '3.15'", specifier = ">=2.12.0" },
+    { name = "pydantic", specifier = ">=2.12.0" },
     { name = "pydantic", marker = "python_full_version >= '3.15'", specifier = ">=2.14.0b2" },
     { name = "typer", specifier = ">=0.20.0" },
     { name = "uvicorn", specifier = ">=0.38.0" },
@@ -247,8 +247,7 @@ dependencies = [
 requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "nyanpasu", editable = "." },
-    { name = "pydantic", marker = "python_full_version < '3.15'", specifier = ">=2.12.0" },
-    { name = "pydantic", marker = "python_full_version >= '3.15'", specifier = ">=2.14.0b2" },
+    { name = "pydantic", specifier = ">=2.12.0" },
 ]
 
 [[package]]
@@ -270,8 +269,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "nyanpasu", editable = "." },
     { name = "nyanpasu-github", editable = "packages/nyanpasu-github" },
-    { name = "pydantic", marker = "python_full_version < '3.15'", specifier = ">=2.12.0" },
-    { name = "pydantic", marker = "python_full_version >= '3.15'", specifier = ">=2.14.0b2" },
+    { name = "pydantic", specifier = ">=2.12.0" },
 ]
 
 [[package]]
@@ -296,8 +294,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "nyanpasu", editable = "." },
     { name = "nyanpasu-github", editable = "packages/nyanpasu-github" },
-    { name = "pydantic", marker = "python_full_version < '3.15'", specifier = ">=2.12.0" },
-    { name = "pydantic", marker = "python_full_version >= '3.15'", specifier = ">=2.14.0b2" },
+    { name = "pydantic", specifier = ">=2.12.0" },
     { name = "typer", specifier = ">=0.20.0" },
 ]
 

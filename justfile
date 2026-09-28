@@ -46,7 +46,7 @@ clean-builds:
   rm -rf *.egg-info/
 
 ci-install:
-  uv sync --locked --all-extras --dev
+  just install
 
 ci-fmt-check:
   uv run ruff format --check --diff .
@@ -56,5 +56,5 @@ ci-lint:
   just lint
 
 ci-test:
-  uv run --locked pytest --reruns 3 --reruns-delay 1
+  uv run pytest --reruns 3 --reruns-delay 1
   just clean
