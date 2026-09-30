@@ -6,6 +6,7 @@ import pytest
 
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import ReviewAction
+from nyanpasu_github_reviewer.prompt import review_trigger
 
 
 def pr_payload(action: str = "synchronize", *, state: str = "open", draft: bool = False) -> dict[str, Any]:
@@ -126,11 +127,38 @@ def test_issue_comment_mention_on_pr_triggers_review() -> None:
     assert event.raw["nyanpasu"]["comment_url"].endswith("#issuecomment-1")
 
 
-def test_issue_comment_without_mention_is_ignored() -> None:
+@pytest.mark.parametrize("action", ["created", "edited"])
+@pytest.mark.parametrize("body", ["/review", "please /review this PR", "看一下\n/REVIEW", "(/review)"])
+def test_issue_comment_review_command_triggers_explicit_review(action: str, body: str) -> None:
+    payload = issue_comment_payload(body)
+    payload["action"] = action
+
+    event = parse_github_event("issue_comment", "delivery-1", payload, agent_login="review-bot")
+
+    assert event.action is ReviewAction.REVIEW
+    assert event.pr is not None and event.pr.number == 123
+    assert review_trigger(event).explicit_request
+    assert event.raw["nyanpasu"]["trigger"] == "review_command"
+    assert event.raw["nyanpasu"]["body_excerpt"] == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "ordinary comment",
+        "/reviewer",
+        "/reviews",
+        "/review-all",
+        "docs/review",
+        "/review/file",
+        "https://example.com/review",
+    ],
+)
+def test_issue_comment_without_review_request_is_ignored(body: str) -> None:
     event = parse_github_event(
         "issue_comment",
         "delivery-1",
-        issue_comment_payload("ordinary comment"),
+        issue_comment_payload(body),
         agent_login="review-bot",
     )
 
@@ -138,11 +166,24 @@ def test_issue_comment_without_mention_is_ignored() -> None:
 
 
 @pytest.mark.parametrize("action", ["created", "edited"])
-def test_issue_comment_by_agent_is_ignored_even_with_self_mention(action: str) -> None:
-    payload = issue_comment_payload("@review-bot please review")
+@pytest.mark.parametrize("body", ["@review-bot please review", "/review"])
+def test_issue_comment_by_agent_is_ignored_even_with_review_request(action: str, body: str) -> None:
+    payload = issue_comment_payload(body)
     payload["action"] = action
     payload["comment"]["user"]["login"] = "REVIEW-BOT"
     event = parse_github_event("issue_comment", "self-comment", payload, agent_login="review-bot")
+    assert event.action is ReviewAction.IGNORED
+
+
+@pytest.mark.parametrize("is_pr,action", [(False, "created"), (True, "deleted")])
+def test_review_command_ignores_ordinary_issues_and_deleted_comments(is_pr: bool, action: str) -> None:
+    payload = issue_comment_payload("/review")
+    payload["action"] = action
+    if not is_pr:
+        del payload["issue"]["pull_request"]
+
+    event = parse_github_event("issue_comment", "delivery-1", payload, agent_login="review-bot")
+
     assert event.action is ReviewAction.IGNORED
 
 
@@ -159,8 +200,21 @@ def test_pull_request_review_comment_reply_triggers_followup_candidate() -> None
     assert event.raw["nyanpasu"]["in_reply_to_id"] == 10
 
 
-def test_pull_request_review_comment_by_agent_is_ignored() -> None:
-    payload = review_comment_payload()
+@pytest.mark.parametrize("action", ["created", "edited", "updated"])
+def test_pull_request_review_comment_command_triggers_review_without_reply(action: str) -> None:
+    payload = review_comment_payload(body="/review", in_reply_to_id=None)
+    payload["action"] = action
+
+    event = parse_github_event("pull_request_review_comment", "delivery-1", payload, agent_login="review-bot")
+
+    assert event.action is ReviewAction.REVIEW
+    assert review_trigger(event).explicit_request
+    assert event.raw["nyanpasu"]["trigger"] == "review_command"
+
+
+@pytest.mark.parametrize("body", ["ping", "/review"])
+def test_pull_request_review_comment_by_agent_is_ignored(body: str) -> None:
+    payload = review_comment_payload(body=body)
     payload["comment"]["user"] = {"login": "review-bot"}  # type: ignore[index]
 
     event = parse_github_event("pull_request_review_comment", "delivery-1", payload, agent_login="review-bot")
@@ -168,16 +222,20 @@ def test_pull_request_review_comment_by_agent_is_ignored() -> None:
     assert event.action is ReviewAction.IGNORED
 
 
-def test_pull_request_review_body_mention_triggers_review() -> None:
+@pytest.mark.parametrize(
+    "body,trigger", [("@review-bot 看一下", "mentioned_pull_request_review"), ("/review", "review_command")]
+)
+def test_pull_request_review_body_request_triggers_review(body: str, trigger: str) -> None:
     event = parse_github_event(
         "pull_request_review",
         "delivery-1",
-        pull_request_review_payload("@review-bot 看一下"),
+        pull_request_review_payload(body),
         agent_login="review-bot",
     )
 
     assert event.action is ReviewAction.REVIEW
-    assert event.raw["nyanpasu"]["trigger"] == "mentioned_pull_request_review"
+    assert event.raw["nyanpasu"]["trigger"] == trigger
+    assert review_trigger(event).explicit_request
     assert event.raw["nyanpasu"]["comment_url"].endswith("#pullrequestreview-30")
 
 
@@ -188,5 +246,14 @@ def test_pull_request_review_without_mention_is_ignored() -> None:
         pull_request_review_payload("ordinary review"),
         agent_login="review-bot",
     )
+
+    assert event.action is ReviewAction.IGNORED
+
+
+def test_pull_request_review_command_by_agent_is_ignored() -> None:
+    payload = pull_request_review_payload("/review")
+    payload["review"]["user"]["login"] = "REVIEW-BOT"
+
+    event = parse_github_event("pull_request_review", "delivery-1", payload, agent_login="review-bot")
 
     assert event.action is ReviewAction.IGNORED

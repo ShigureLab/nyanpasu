@@ -5,11 +5,12 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
+from test_github_events import issue_comment_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.config import CodexConfig, NyanpasuConfig
 from nyanpasu.models import AgentContext, TaskAction
 from nyanpasu_github_reviewer.events import parse_github_event
-from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_task
 
 if TYPE_CHECKING:
@@ -154,6 +155,25 @@ def test_manual_review_preserves_explicit_request(tmp_path: Path, monkeypatch) -
     task = manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 1)
 
     assert task.metadata["triggers"][0]["kind"] == "manual_review"
+
+
+@pytest.mark.parametrize("github_event", ["issue_comment", "pull_request_review_comment", "pull_request_review"])
+@pytest.mark.parametrize("body", ["/review", "context " * 200 + "\n/review"])
+def test_review_command_becomes_runnable_explicit_request(tmp_path: Path, monkeypatch, github_event: str, body: str):
+    _stub_github(monkeypatch)
+    if github_event == "issue_comment":
+        payload = issue_comment_payload(body)
+    elif github_event == "pull_request_review_comment":
+        payload = review_comment_payload(body=body, in_reply_to_id=None)
+    else:
+        payload = pull_request_review_payload(body)
+    event = parse_github_event(github_event, "command-1", payload, agent_login="review-bot")
+
+    task = _plugin(tmp_path).event_to_task(event)
+
+    assert task.action is TaskAction.RUN
+    assert ReviewTrigger.model_validate(task.metadata["triggers"][0]).explicit_request
+    assert task.metadata["triggers"][0]["kind"] == "review_command"
 
 
 @pytest.mark.parametrize(

@@ -736,7 +736,12 @@ async def test_pr_state_poll_does_not_open_old_pr_first_seen_after_cursor(tmp_pa
 
 
 @pytest.mark.anyio
-async def test_pr_timeline_poll_processes_mentions_after_pr_update(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "body,trigger", [("@review-bot please review", "mentioned_issue_comment"), ("/review", "review_command")]
+)
+async def test_pr_timeline_poll_processes_review_requests_after_pr_update(
+    tmp_path: Path, body: str, trigger: str
+) -> None:
     config = _config(tmp_path)
     store = GitHubReviewerStore(tmp_path / "state.sqlite3")
     agent = FakeAgent()
@@ -746,8 +751,8 @@ async def test_pr_timeline_poll_processes_mentions_after_pr_update(tmp_path: Pat
         [_pull_request_api_item(1, sha="old", updated_at="2026-05-30T10:06:00Z", title="Edited")],
     ]
     timeline_batches = [
-        [_timeline_issue_comment_item(created_at="2026-05-30T10:05:00Z", updated_at="2026-05-30T10:05:00Z")],
-        [_timeline_issue_comment_item(created_at="2026-05-30T10:05:00Z", updated_at="2026-05-30T10:05:00Z")],
+        [_timeline_issue_comment_item(body, created_at="2026-05-30T10:05:00Z", updated_at="2026-05-30T10:05:00Z")],
+        [_timeline_issue_comment_item(body, created_at="2026-05-30T10:05:00Z", updated_at="2026-05-30T10:05:00Z")],
     ]
 
     def list_pull_requests(_: GitHubReviewerConfig, __: str) -> list[dict[str, Any]]:
@@ -772,7 +777,7 @@ async def test_pr_timeline_poll_processes_mentions_after_pr_update(tmp_path: Pat
     assert second.submitted == 2
     assert repeated.submitted == 0
     assert [event.github_event for event in agent.events] == ["issue_comment", "pull_request"]
-    assert agent.events[0].raw["nyanpasu"]["trigger"] == "mentioned_issue_comment"
+    assert agent.events[0].raw["nyanpasu"]["trigger"] == trigger
     assert store.get_pr_timeline_cursor("ExampleOrg/ExampleRepo", 1) is not None
 
 

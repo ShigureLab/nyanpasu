@@ -46,6 +46,7 @@ class ReviewTrigger(GitHubReviewerModel):
             "manual_review",
             "mentioned_issue_comment",
             "mentioned_pull_request_review",
+            "review_command",
             "review_requested",
             "review_thread_comment",
         }

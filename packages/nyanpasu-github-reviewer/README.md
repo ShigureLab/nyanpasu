@@ -77,6 +77,8 @@ Webhook endpoint:
 POST /plugins/github-reviewer/webhook
 ```
 
+To explicitly request a review, include `/review` in a PR comment, inline review comment, or review body, just like mentioning the configured `@github_login`. The command is case-insensitive and must be a standalone token (for example, `please /review`); strings such as `/reviewer`, `docs/review`, and `https://example.com/review` do not match. New and edited comments are supported through both webhooks and polling. Comments and reviews authored by the configured agent itself are ignored.
+
 Manual plugin commands:
 
 ```bash

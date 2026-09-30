@@ -47,6 +47,10 @@ def _mentions_login(text: str, login: str | None) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
+def _contains_review_command(text: str) -> bool:
+    return re.search(r"(?<![\w/])/review(?![\w/-])", text, flags=re.IGNORECASE) is not None
+
+
 def _comment_context(payload: dict[str, Any], *, trigger: str, summary: str) -> dict[str, Any]:
     comment = payload.get("comment")
     if not isinstance(comment, dict):
@@ -197,11 +201,14 @@ def parse_github_event(
                 raw=payload,
             )
         body = str(comment.get("body") or "") if isinstance(comment, dict) else ""
-        if action_name in {"created", "edited"} and _mentions_login(body, agent_login):
+        review_command = _contains_review_command(body)
+        if action_name in {"created", "edited"} and (review_command or _mentions_login(body, agent_login)):
             raw = _comment_context(
                 payload,
-                trigger="mentioned_issue_comment",
-                summary=f"A PR comment explicitly mentioned `@{agent_login}`.",
+                trigger="review_command" if review_command else "mentioned_issue_comment",
+                summary="A PR comment explicitly requested review with `/review`."
+                if review_command
+                else f"A PR comment explicitly mentioned `@{agent_login}`.",
             )
             return ReviewEvent(
                 delivery_id=delivery_id,
@@ -244,11 +251,14 @@ def parse_github_event(
         comment = payload.get("comment")
         body = str(comment.get("body") or "") if isinstance(comment, dict) else ""
         is_reply = isinstance(comment, dict) and comment.get("in_reply_to_id") is not None
-        if is_reply or _mentions_login(body, agent_login):
+        review_command = _contains_review_command(body)
+        if is_reply or review_command or _mentions_login(body, agent_login):
             raw = _comment_context(
                 payload,
-                trigger="review_thread_comment",
-                summary="A user replied in a PR review thread or mentioned the agent in a review comment.",
+                trigger="review_command" if review_command else "review_thread_comment",
+                summary="A PR review comment explicitly requested review with `/review`."
+                if review_command
+                else "A user replied in a PR review thread or mentioned the agent in a review comment.",
             )
             return ReviewEvent(
                 delivery_id=delivery_id,
@@ -291,11 +301,14 @@ def parse_github_event(
                 raw=payload,
             )
         body = str(review.get("body") or "")
-        if _mentions_login(body, agent_login):
+        review_command = _contains_review_command(body)
+        if review_command or _mentions_login(body, agent_login):
             raw = _review_context(
                 payload,
-                trigger="mentioned_pull_request_review",
-                summary=f"A PR review body explicitly mentioned `@{agent_login}`.",
+                trigger="review_command" if review_command else "mentioned_pull_request_review",
+                summary="A PR review body explicitly requested review with `/review`."
+                if review_command
+                else f"A PR review body explicitly mentioned `@{agent_login}`.",
             )
             return ReviewEvent(
                 delivery_id=delivery_id,
