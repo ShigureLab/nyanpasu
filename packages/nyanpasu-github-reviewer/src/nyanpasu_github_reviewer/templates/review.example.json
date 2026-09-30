@@ -1,6 +1,11 @@
 {
   "status": "comment",
-  "source": { "head_sha": "0123456789abcdef0123456789abcdef01234567" },
+  "source": {
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "base_ref": "main",
+    "merge_base_sha": "abcdef0123456789abcdef0123456789abcdef01",
+    "inventory_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
   "summary": "常规与深度审查已完成；建议删除重复维护的启用状态，相关边界测试仍有保留价值。以下均为示例数据。",
   "stages": {
     "general": {

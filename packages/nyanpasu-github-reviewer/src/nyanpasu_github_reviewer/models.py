@@ -76,25 +76,13 @@ class PullRequestTimelineCursor(GitHubReviewerModel):
     updated_at: float
 
 
-class PullRequestSnapshot(GitHubReviewerModel):
-    repo: str
-    number: int
+class PullRequestSnapshot(PullRequestRef):
     node_id: str
-    url: str
-    state: str
-    draft: bool
-    base_ref: str
-    head_ref: str
     head_repo: str
-    head_sha: str
     title_hash: str
     body_hash: str
     created_at: str
     updated_at: str
-
-    @property
-    def key(self) -> str:
-        return f"{self.repo}#{self.number}"
 
 
 class GitHubEventJournalStatus(StrEnum):

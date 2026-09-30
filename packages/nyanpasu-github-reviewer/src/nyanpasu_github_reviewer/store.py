@@ -100,6 +100,8 @@ class GitHubReviewerStore:
                 """
             )
             _ensure_column(conn, "github_pr_snapshots", "created_at_github", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "github_pr_snapshots", "base_sha", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "github_pr_snapshots", "stack_json", "TEXT")
 
     def get_poll_event_cursor(self, repo: str) -> PollEventCursor | None:
         with self._connect() as conn:
@@ -206,12 +208,20 @@ class GitHubReviewerStore:
             row = conn.execute(
                 """
                 SELECT repo, number, node_id, url, state, draft, base_ref, head_ref, head_repo, head_sha,
-                    title_hash, body_hash, created_at_github, updated_at
+                    title_hash, body_hash, created_at_github, updated_at, base_sha, stack_json
                 FROM github_pr_snapshots WHERE repo = ? AND number = ?
                 """,
                 (repo, number),
             ).fetchone()
         return _pr_snapshot_from_row(row) if row is not None else None
+
+    def list_open_pr_numbers(self, repo: str) -> set[int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT number FROM github_pr_snapshots WHERE repo = ? AND state = 'open'",
+                (repo,),
+            ).fetchall()
+        return {int(row["number"]) for row in rows}
 
     def upsert_pr_snapshot(self, snapshot: PullRequestSnapshot) -> None:
         now = time.time()
@@ -220,15 +230,17 @@ class GitHubReviewerStore:
                 """
                 INSERT INTO github_pr_snapshots (
                     repo, number, node_id, url, state, draft, base_ref, head_ref, head_repo, head_sha,
-                    title_hash, body_hash, created_at_github, updated_at, created_at, modified_at
+                    title_hash, body_hash, created_at_github, updated_at, created_at, modified_at, base_sha, stack_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repo, number) DO UPDATE SET
                     node_id = excluded.node_id,
                     url = excluded.url,
                     state = excluded.state,
                     draft = excluded.draft,
                     base_ref = excluded.base_ref,
+                    base_sha = excluded.base_sha,
+                    stack_json = excluded.stack_json,
                     head_ref = excluded.head_ref,
                     head_repo = excluded.head_repo,
                     head_sha = excluded.head_sha,
@@ -255,6 +267,8 @@ class GitHubReviewerStore:
                     snapshot.updated_at,
                     now,
                     now,
+                    snapshot.base_sha,
+                    snapshot.stack.model_dump_json() if snapshot.stack else None,
                 ),
             )
 
@@ -426,6 +440,8 @@ def _pr_snapshot_from_row(row: sqlite3.Row) -> PullRequestSnapshot:
         state=str(row["state"]),
         draft=bool(row["draft"]),
         base_ref=str(row["base_ref"]),
+        base_sha=str(row["base_sha"]),
+        stack=json.loads(row["stack_json"]) if row["stack_json"] else None,
         head_ref=str(row["head_ref"]),
         head_repo=str(row["head_repo"]),
         head_sha=str(row["head_sha"]),

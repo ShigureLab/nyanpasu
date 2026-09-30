@@ -10,9 +10,12 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["head_sha"],
+      "required": ["head_sha", "base_ref", "merge_base_sha", "inventory_id"],
       "properties": {
-        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "base_ref": { "type": "string", "minLength": 1 },
+        "merge_base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "inventory_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
     "summary": { "type": "string", "minLength": 1 },
@@ -43,7 +46,7 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 1,
-      "propertyNames": { "pattern": "^[0-9a-f]{40}$" },
+      "propertyNames": { "pattern": "^[0-9a-f]{64}$" },
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,

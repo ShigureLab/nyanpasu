@@ -118,6 +118,11 @@ class GitHubRepoConfig(GitHubModel):
         return Path(value).expanduser().resolve()
 
 
+class PullRequestStackRef(GitHubModel):
+    number: int
+    base_ref: str
+
+
 class PullRequestRef(GitHubModel):
     repo: str
     number: int
@@ -127,10 +132,48 @@ class PullRequestRef(GitHubModel):
     head_sha: str
     state: str
     draft: bool
+    base_sha: str = ""
+    stack: PullRequestStackRef | None = None
 
     @property
     def key(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    @property
+    def target_branch(self) -> str:
+        """The branch used for eligibility; diffs still use the direct base."""
+        return self.stack.base_ref if self.stack is not None else self.base_ref
+
+    def targets_any(self, branches: tuple[str, ...]) -> bool:
+        return not branches or self.target_branch in branches
+
+    @classmethod
+    def from_github(cls, repo: str, data: dict[str, Any]) -> PullRequestRef:
+        stack = data.get("stack")
+        return cls(
+            repo=repo,
+            number=int(data["number"]),
+            url=str(data.get("html_url") or data.get("url") or ""),
+            base_ref=str(data["base"]["ref"]),
+            base_sha=str(data["base"].get("sha") or ""),
+            head_ref=str(data["head"]["ref"]),
+            head_sha=str(data["head"]["sha"]),
+            state=str(data.get("state", "open")).lower(),
+            draft=bool(data.get("draft", False)),
+            stack=PullRequestStackRef(number=stack["number"], base_ref=stack["base"]["ref"]) if stack else None,
+        )
+
+    def github_payload(self) -> dict[str, Any]:
+        """The PR fields shared by synthetic webhook and timeline events."""
+        return {
+            "number": self.number,
+            "html_url": self.url,
+            "state": self.state,
+            "draft": self.draft,
+            "base": {"ref": self.base_ref, "sha": self.base_sha},
+            "head": {"ref": self.head_ref, "sha": self.head_sha},
+            "stack": {"number": self.stack.number, "base": {"ref": self.stack.base_ref}} if self.stack else None,
+        }
 
 
 def repo_configs_from_settings(repos: dict[str, GitHubRepoSettings]) -> dict[str, GitHubRepoConfig]:

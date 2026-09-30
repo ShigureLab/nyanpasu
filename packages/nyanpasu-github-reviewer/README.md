@@ -85,7 +85,17 @@ uv run nyanpasu-github-reviewer poll
 uv run nyanpasu-github-reviewer review owner/repo 123
 ```
 
-The poller combines repository events, PR state polling, and PR timeline polling into one event journal. The first run records the current cursors and snapshots without processing older work; later runs process filtered events after those cursors. Already journaled events and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` dispatches every matching journal event in the poll window; a positive value is an explicit per-cycle cap.
+The poller combines repository events, PR state polling, and PR timeline polling into one event journal. The first run records the current cursors and snapshots without processing older work; later runs compare PR state and process timeline events after those cursors. Already journaled events and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` dispatches every matching journal event in the poll window; a positive value is an explicit per-cycle cap.
+
+### Stacked pull requests
+
+GitHub stack metadata comes from the PR REST API; the service does not require a local `gh stack` installation or checkout. For a stack member, `base_branches` applies to the stack's trunk. For an ordinary PR it applies to the direct base. In both cases, the review diff uses the PR's direct base and its merge-base with the head. Session, worktree, coalescing and cleanup ownership remain per PR.
+
+Discovery lists recent PRs without a direct-base filter and also scans every open PR page. The open scan is not limited by `poll_event_pages`, so old upper layers remain visible. Previously open snapshots missing from discovery are fetched individually, so closures still trigger cleanup after falling outside the recent page window, regardless of direct base or stack membership. State comparison includes stack membership and direct-base SHA changes for upper layers, even when the head and PR `updated_at` are unchanged. Moving the trunk alone does not schedule the whole repository for review. Timeline reads remain incremental and respect the target-branch policy.
+
+Each task pins a review inventory, including the direct base ref and merge-base. Its `inventory_id` stays unchanged when the target advances without changing the effective diff. The Dashboard source and scope use that inventory ID so a retarget or changed merge-base cannot reuse a head-only scope record. The root reviewer calls the task-control action `review-verify` immediately before publication to recheck current eligibility and the comparison range. A mismatch requires a new review run; a recovered inventory from before range tracking also requires a new run. This verifies the observed GitHub state, not an atomic lock across a later GitHub write.
+
+Existing dashboards retain their embedded definitions until the next warranted update selects the bundled profile. On that update, use the source supplied by the service and reconcile scope against the new inventory. A metadata-only update with unchanged scope and verified completed publication follows the normal silence rule. Stack review findings belong to the layer introducing them; approving a layer does not establish that the whole stack is ready to merge.
 
 ## Review Dashboard
 
@@ -170,6 +180,8 @@ draft true -> false                  -> pull_request.ready_for_review
 head_sha changed                     -> pull_request.synchronize
 title/body changed                   -> pull_request.edited
 base_ref changed                     -> pull_request.edited or policy skip
+stack membership/trunk changed       -> pull_request.edited or policy skip
+upper-layer base_sha changed         -> pull_request.edited, even without updated_at changes
 ```
 
 This source is required to detect fork PR commits reliably. A changed `head_sha` should synthesize `pull_request.synchronize` even when repository events did not expose one.
@@ -193,7 +205,7 @@ Polling state should be explicit and restartable:
 ```text
 github_repo_event_cursors(repo, last_event_created_at, cursor_event_ids)
 github_pr_updated_cursors(repo, last_updated_at, pr_node_ids_at_same_ts)
-github_pr_snapshots(repo, pr_number, node_id, state, draft, base_ref, head_ref, head_repo, head_sha, title_hash, body_hash, updated_at)
+github_pr_snapshots(repo, pr_number, node_id, state, draft, base_ref, base_sha, stack_json, head_ref, head_repo, head_sha, title_hash, body_hash, updated_at)
 github_pr_timeline_cursors(repo, pr_number, last_item_created_at, node_ids_at_same_ts)
 github_event_journal(dedupe_key unique, delivery_id, status, payload_json)
 ```
