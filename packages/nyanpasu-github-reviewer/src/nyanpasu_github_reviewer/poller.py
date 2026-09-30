@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from itertools import count
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import quote
 
 import anyio.to_thread as to_thread
 from loguru import logger
@@ -817,11 +818,15 @@ def list_repo_events_with_gh(config: GitHubReviewerConfig, repo: str) -> list[di
 
 def list_pull_requests_with_gh(config: GitHubReviewerConfig, repo: str) -> list[dict[str, Any]]:
     pulls: dict[int, dict[str, Any]] = {}
-    # A direct-base filter hides upper stack layers. Recent PRs cover closures;
-    # all open PRs cover dependency changes outside the updated-at window.
-    for state in ("all", "open"):
+    # Unfiltered scans discover upper stack layers. Keep each configured base's
+    # recent window so unrelated activity cannot crowd out its closed PRs.
+    # All open PRs cover dependency changes outside the updated-at window.
+    queries = [("all", None), *(("all", base) for base in config.repos[repo].base_branches), ("open", None)]
+    for state, base in queries:
         for page in count(1):
             path = f"repos/{repo}/pulls?state={state}&sort=updated&direction=desc&per_page=100&page={page}"
+            if base is not None:
+                path += f"&base={quote(base, safe='')}"
             proc = run_gh(["api", "-X", "GET", path], env=config.gh_env)
             data = json.loads(proc.stdout)
             if not isinstance(data, list):

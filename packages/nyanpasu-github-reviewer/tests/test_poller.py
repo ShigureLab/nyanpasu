@@ -1008,27 +1008,89 @@ def test_event_from_repo_event_parses_review_comment_and_review_mentions() -> No
     assert review.raw["nyanpasu"]["source"] == "events_poll"
 
 
-def test_discovery_includes_upper_layers_and_all_open_pages(tmp_path, monkeypatch):
+@pytest.mark.anyio
+@pytest.mark.parametrize("base_ref", ["main", "release/1.x"])
+async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path, monkeypatch, base_ref):
+    repo = "ExampleOrg/ExampleRepo"
+    config = GitHubReviewerConfig(
+        repos={repo: RepoSettings(local_path=tmp_path, base_branches=(base_ref,))},
+        poll_event_pages=1,
+    )
+    tracked = _pull_request_api_item(base_ref=base_ref)
+    unrelated = [
+        _pull_request_api_item(
+            i, node_id=f"PR_{i}", base_ref="other", state="closed", updated_at="2026-05-30T11:00:00Z"
+        )
+        for i in range(2, 102)
+    ]
+
+    def github(args, **kwargs):
+        query = parse_qs(urlparse(args[-1]).query)
+        assert query["page"] == ["1"]
+        if tracked["state"] == "open":
+            items = [tracked]
+        elif query["state"] == ["open"]:
+            items = []
+        elif query.get("base") == [base_ref]:
+            items = [tracked]
+        else:
+            items = unrelated
+        return SimpleNamespace(stdout=json.dumps(items))
+
+    monkeypatch.setattr("nyanpasu_github_reviewer.poller.run_gh", github)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_request_timeline=lambda *_: [],
+    )
+    assert (await poller.run_once()).submitted == 0
+    tracked.update(state="closed", updated_at="2026-05-30T10:05:00Z")
+
+    assert (await poller.run_once()).submitted == 1
+    assert (await poller.run_once()).submitted == 0
+    assert len(agent.events) == 1
+    assert agent.events[0].action is ReviewAction.CLEANUP
+    assert agent.events[0].pr is not None and agent.events[0].pr.number == 1
+    snapshot = store.get_pr_snapshot(repo, 1)
+    assert snapshot is not None and snapshot.state == "closed"
+
+
+@pytest.mark.parametrize("base_branches", [(), ("main", "release/1.x")])
+def test_discovery_includes_upper_layers_and_all_open_pages(tmp_path, monkeypatch, base_branches):
     recent = [_pull_request_api_item(i, state="closed") for i in range(1, 101)]
     opened = [_pull_request_api_item(i) for i in range(101, 201)]
     upper = _pull_request_api_item(201, base_ref="lower", stack={"number": 7, "base": {"ref": "main"}})
-    pages = {("all", "1"): recent, ("open", "1"): opened, ("open", "2"): [upper]}
+    pages = {
+        ("all", None, "1"): recent,
+        ("all", "main", "1"): recent,
+        ("all", "release/1.x", "1"): [],
+        ("open", None, "1"): opened,
+        ("open", None, "2"): [upper],
+    }
     calls = []
 
     def github(args, **kwargs):
         query = parse_qs(urlparse(args[-1]).query)
-        assert "base" not in query
-        key = (query["state"][0], query["page"][0])
+        key = (query["state"][0], query.get("base", [None])[0], query["page"][0])
         calls.append(key)
         return SimpleNamespace(stdout=json.dumps(pages[key]))
 
     monkeypatch.setattr("nyanpasu_github_reviewer.poller.run_gh", github)
     config = GitHubReviewerConfig(
-        repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path, base_branches=("main",))},
+        repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path, base_branches=base_branches)},
         poll_event_pages=1,
     )
     found = list_pull_requests_with_gh(config, "ExampleOrg/ExampleRepo")
-    assert calls == [("all", "1"), ("open", "1"), ("open", "2")]
+    assert calls == [
+        ("all", None, "1"),
+        *(("all", base, "1") for base in base_branches),
+        ("open", None, "1"),
+        ("open", None, "2"),
+    ]
     assert len(found) == 201 and found[-1] == upper
 
 
