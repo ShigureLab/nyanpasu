@@ -9,7 +9,9 @@
 
 **审查版本：** {{ data.source.head_sha }}
 
-**比较基线：** {{ data.source.base_ref | md_code }} · {{ data.source.merge_base_sha }}
+**目标分支：** {{ data.source.base_ref }}
+
+**差异起点（共同祖先）：** {{ data.source.merge_base_sha }}
 
 {{ data.summary }}
 
