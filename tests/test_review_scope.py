@@ -302,6 +302,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert reference.workspace is not None
         assert reference.workspace.revision == inventory["merge_base_sha"]
         assert "helper.py" not in reference.prompt + reference.developer_instructions
+        await wait_status(agent, child["task_id"], "running")
         grandchild = await agent.create_subtask(child["task_id"], request)
         assert grandchild.spawned_by_task_id == child["task_id"]
     finally:

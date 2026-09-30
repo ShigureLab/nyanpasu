@@ -704,13 +704,14 @@ async def test_pr_state_poll_does_not_open_old_pr_first_seen_after_cursor(tmp_pa
     batches = [
         [_pull_request_api_item(2, node_id="PR_2", updated_at="2026-05-30T10:00:00Z")],
         [
+            _pull_request_api_item(2, node_id="PR_2", updated_at="2026-05-30T10:00:00Z"),
             _pull_request_api_item(
                 3,
                 node_id="PR_3",
                 created_at="2026-05-30T09:00:00Z",
                 updated_at="2026-05-30T10:05:00Z",
                 title="Old PR edited elsewhere",
-            )
+            ),
         ],
     ]
 
@@ -1009,14 +1010,18 @@ def test_event_from_repo_event_parses_review_comment_and_review_mentions() -> No
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("base_ref", ["main", "release/1.x"])
-async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path, monkeypatch, base_ref):
+@pytest.mark.parametrize(
+    ("base_ref", "stack"),
+    [("main", None), ("release/1.x", None), ("lower", {"number": 7, "base": {"ref": "main"}})],
+)
+async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path, monkeypatch, base_ref, stack):
     repo = "ExampleOrg/ExampleRepo"
+    trunk = stack["base"]["ref"] if stack else base_ref
     config = GitHubReviewerConfig(
-        repos={repo: RepoSettings(local_path=tmp_path, base_branches=(base_ref,))},
+        repos={repo: RepoSettings(local_path=tmp_path, base_branches=(trunk,))},
         poll_event_pages=1,
     )
-    tracked = _pull_request_api_item(base_ref=base_ref)
+    tracked = _pull_request_api_item(base_ref=base_ref, stack=stack)
     unrelated = [
         _pull_request_api_item(
             i, node_id=f"PR_{i}", base_ref="other", state="closed", updated_at="2026-05-30T11:00:00Z"
@@ -1024,15 +1029,20 @@ async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path
         for i in range(2, 102)
     ]
 
+    fetched = []
+
     def github(args, **kwargs):
+        if args[-1] == f"repos/{repo}/pulls/1":
+            fetched.append(1)
+            return SimpleNamespace(stdout=json.dumps(tracked))
         query = parse_qs(urlparse(args[-1]).query)
         assert query["page"] == ["1"]
-        if tracked["state"] == "open":
+        if "base" in query:
+            items = [tracked] if query["base"] == [base_ref] else []
+        elif tracked["state"] == "open":
             items = [tracked]
         elif query["state"] == ["open"]:
             items = []
-        elif query.get("base") == [base_ref]:
-            items = [tracked]
         else:
             items = unrelated
         return SimpleNamespace(stdout=json.dumps(items))
@@ -1057,6 +1067,56 @@ async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path
     assert agent.events[0].pr is not None and agent.events[0].pr.number == 1
     snapshot = store.get_pr_snapshot(repo, 1)
     assert snapshot is not None and snapshot.state == "closed"
+    assert fetched == [1]
+
+
+@pytest.mark.anyio
+async def test_pr_state_poll_keeps_missing_snapshot_until_closure_is_confirmed(tmp_path):
+    repo = "ExampleOrg/ExampleRepo"
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    store.upsert_pr_snapshot(_snapshot_from_test_pr().model_copy(update={"repo": "ExampleOrg/OtherRepo", "number": 2}))
+    store.upsert_pr_snapshot(_snapshot_from_test_pr().model_copy(update={"number": 3, "state": "closed"}))
+    agent = FakeAgent()
+    tracked = _pull_request_api_item(base_ref="lower", stack={"number": 7, "base": {"ref": "main"}})
+    listed = [tracked]
+    fetched = []
+
+    def get_pull_request(config, actual_repo, number):
+        assert (actual_repo, number) == (repo, 1)
+        fetched.append(number)
+        if len(fetched) == 1:
+            raise RuntimeError("temporary GitHub failure")
+        return tracked
+
+    poller = GitHubEventsPoller(
+        _config(tmp_path),
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: listed,
+        get_pull_request=get_pull_request,
+        list_pull_request_timeline=lambda *_: [],
+    )
+    assert (await poller.run_once()).baselined == 1
+    before = store.get_pr_snapshot(repo, 1)
+    cursor = store.get_pr_updated_cursor(repo)
+    assert not fetched
+    listed.clear()
+
+    # A failed point fetch leaves the snapshot and cursor available for retry.
+    assert (await poller.run_once()).submitted == 0
+    assert store.get_pr_snapshot(repo, 1) == before
+    assert store.get_pr_updated_cursor(repo) == cursor
+    # A PR missing from a racing scan can still be open; absence is not closure.
+    assert (await poller.run_once()).submitted == 0
+    assert store.get_pr_snapshot(repo, 1) == before
+    tracked.update(state="closed", updated_at="2026-05-30T10:05:00Z")
+    assert (await poller.run_once()).submitted == 1
+    assert (await poller.run_once()).submitted == 0
+    assert fetched == [1, 1, 1]
+    assert len(agent.events) == 1 and agent.events[0].action is ReviewAction.CLEANUP
+    snapshot = store.get_pr_snapshot(repo, 1)
+    assert snapshot is not None and snapshot.state == "closed"
 
 
 @pytest.mark.parametrize("base_branches", [(), ("main", "release/1.x")])
@@ -1066,8 +1126,6 @@ def test_discovery_includes_upper_layers_and_all_open_pages(tmp_path, monkeypatc
     upper = _pull_request_api_item(201, base_ref="lower", stack={"number": 7, "base": {"ref": "main"}})
     pages = {
         ("all", None, "1"): recent,
-        ("all", "main", "1"): recent,
-        ("all", "release/1.x", "1"): [],
         ("open", None, "1"): opened,
         ("open", None, "2"): [upper],
     }
@@ -1087,7 +1145,6 @@ def test_discovery_includes_upper_layers_and_all_open_pages(tmp_path, monkeypatc
     found = list_pull_requests_with_gh(config, "ExampleOrg/ExampleRepo")
     assert calls == [
         ("all", None, "1"),
-        *(("all", base, "1") for base in base_branches),
         ("open", None, "1"),
         ("open", None, "2"),
     ]

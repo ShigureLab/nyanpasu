@@ -10,7 +10,6 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from itertools import count
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import quote
 
 import anyio.to_thread as to_thread
 from loguru import logger
@@ -44,6 +43,7 @@ class PollAgent(Protocol):
 
 GhListRepoEvents = Callable[[GitHubReviewerConfig, str], list[dict[str, Any]]]
 GhListPullRequests = Callable[[GitHubReviewerConfig, str], list[dict[str, Any]]]
+GhGetPullRequest = Callable[[GitHubReviewerConfig, str, int], dict[str, Any]]
 GhListPullRequestTimeline = Callable[[GitHubReviewerConfig, str, int], list[dict[str, Any]]]
 
 
@@ -57,6 +57,7 @@ class GitHubEventsPoller:
         event_status: Callable[[str], str | None] | None = None,
         list_repo_events: GhListRepoEvents | None = None,
         list_pull_requests: GhListPullRequests | None = None,
+        get_pull_request: GhGetPullRequest | None = None,
         list_pull_request_timeline: GhListPullRequestTimeline | None = None,
     ) -> None:
         self.config = config
@@ -69,6 +70,7 @@ class GitHubEventsPoller:
         self.event_status = event_status or (lambda _: None)
         self.list_repo_events = list_repo_events or list_repo_events_with_gh
         self.list_pull_requests = list_pull_requests or list_pull_requests_with_gh
+        self.get_pull_request = get_pull_request or get_pull_request_with_gh
         self.list_pull_request_timeline = list_pull_request_timeline or list_pull_request_timeline_with_gh
 
     async def run_once(
@@ -363,6 +365,13 @@ class GitHubEventsPoller:
         logger.info("pr state poll repo started repo={}", repo)
         raw_prs = await to_thread.run_sync(self.list_pull_requests, self.config, repo)
         snapshots = [_snapshot_from_pr(repo, raw) for raw in raw_prs]
+        # Closed PRs can leave both discovery windows. Reconcile missing open
+        # snapshots by PR number, regardless of their direct base or stack trunk.
+        tracked_open = await to_thread.run_sync(self.store.list_open_pr_numbers, repo)
+        for number in sorted(tracked_open - {snapshot.number for snapshot in snapshots}):
+            logger.info("pr state poll fetching missing open snapshot repo={} pr={}", repo, number)
+            raw = await to_thread.run_sync(self.get_pull_request, self.config, repo, number)
+            snapshots.append(_snapshot_from_pr(repo, raw))
         snapshots = sorted(snapshots, key=lambda item: (item.updated_at, item.node_id))
         newest = _newest_pr_updated_cursor(repo, snapshots)
         cursor = await to_thread.run_sync(self.store.get_pr_updated_cursor, repo)
@@ -818,15 +827,12 @@ def list_repo_events_with_gh(config: GitHubReviewerConfig, repo: str) -> list[di
 
 def list_pull_requests_with_gh(config: GitHubReviewerConfig, repo: str) -> list[dict[str, Any]]:
     pulls: dict[int, dict[str, Any]] = {}
-    # Unfiltered scans discover upper stack layers. Keep each configured base's
-    # recent window so unrelated activity cannot crowd out its closed PRs.
-    # All open PRs cover dependency changes outside the updated-at window.
-    queries = [("all", None), *(("all", base) for base in config.repos[repo].base_branches), ("open", None)]
-    for state, base in queries:
+    # Direct-base filters hide upper stack layers. Recent PRs provide incremental
+    # discovery; all open PRs cover dependency changes outside that window.
+    # The poller rechecks tracked open PRs missing from these scans separately.
+    for state in ("all", "open"):
         for page in count(1):
             path = f"repos/{repo}/pulls?state={state}&sort=updated&direction=desc&per_page=100&page={page}"
-            if base is not None:
-                path += f"&base={quote(base, safe='')}"
             proc = run_gh(["api", "-X", "GET", path], env=config.gh_env)
             data = json.loads(proc.stdout)
             if not isinstance(data, list):
@@ -835,6 +841,14 @@ def list_pull_requests_with_gh(config: GitHubReviewerConfig, repo: str) -> list[
             if len(data) < 100 or (state == "all" and page >= config.poll_event_pages):
                 break
     return list(pulls.values())
+
+
+def get_pull_request_with_gh(config: GitHubReviewerConfig, repo: str, number: int) -> dict[str, Any]:
+    proc = run_gh(["api", "-X", "GET", f"repos/{repo}/pulls/{number}"], env=config.gh_env)
+    data = json.loads(proc.stdout)
+    if not isinstance(data, dict):
+        raise ValueError("gh pull returned non-object JSON")
+    return data
 
 
 def list_pull_request_timeline_with_gh(

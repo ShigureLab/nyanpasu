@@ -215,6 +215,14 @@ class GitHubReviewerStore:
             ).fetchone()
         return _pr_snapshot_from_row(row) if row is not None else None
 
+    def list_open_pr_numbers(self, repo: str) -> set[int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT number FROM github_pr_snapshots WHERE repo = ? AND state = 'open'",
+                (repo,),
+            ).fetchall()
+        return {int(row["number"]) for row in rows}
+
     def upsert_pr_snapshot(self, snapshot: PullRequestSnapshot) -> None:
         now = time.time()
         with self._connect() as conn:
