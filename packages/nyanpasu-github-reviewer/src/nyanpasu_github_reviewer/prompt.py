@@ -7,6 +7,7 @@ from string import Template
 from typing import TYPE_CHECKING
 
 from nyanpasu_github_reviewer.models import ReviewTrigger
+from nyanpasu_github_reviewer.scope import review_source
 
 if TYPE_CHECKING:
     from nyanpasu.config import ProcessConfig
@@ -61,6 +62,7 @@ def build_review_prompt(
     triggers: tuple[ReviewTrigger, ...],
     has_session: bool = False,
     previous_task_head: str | None = None,
+    inventory: dict | None = None,
 ) -> str:
     lines = [
         f"{'Continue reviewing' if has_session else 'Review'} {pr.repo} PR #{pr.number}: {pr.url}",
@@ -73,6 +75,10 @@ def build_review_prompt(
     ]
     if previous_task_head:
         lines.append(f"Previous task head (not proof of completed review): {previous_task_head}")
+    if inventory is not None:
+        lines.append("Pinned dashboard source (JSON): " + json.dumps(review_source(inventory), ensure_ascii=False))
+    if pr.stack is not None:
+        lines.append(f"Stack #{pr.stack.number}; trunk: {pr.stack.base_ref}. Review this PR's direct-base diff.")
     lines.append(f"Explicit request: {'yes' if any(item.explicit_request for item in triggers) else 'no'}")
     lines.extend(
         [

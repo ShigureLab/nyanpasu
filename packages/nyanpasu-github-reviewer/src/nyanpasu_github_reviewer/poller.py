@@ -8,11 +8,13 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from itertools import count
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio.to_thread as to_thread
 from loguru import logger
 from nyanpasu_github.gh import run_gh
+from nyanpasu_github.models import PullRequestRef
 
 from nyanpasu.git_ops import safe_slug
 from nyanpasu_github_reviewer.events import parse_github_event
@@ -414,7 +416,9 @@ class GitHubEventsPoller:
         ignored = 0
         ignored_reasons: Counter[str] = Counter()
         timeline_result = PollCycleResult(submitted=0, duplicates=0, ignored=0, baselined=0, repos=(repo,))
-        for snapshot in window:
+        # Base ref movement and stack membership need not update the PR timestamp.
+        # Compare all observed state, while keeping timeline reads incremental.
+        for snapshot in snapshots:
             previous = await to_thread.run_sync(self.store.get_pr_snapshot, repo, snapshot.number)
             reason = _snapshot_ignore_reason(
                 snapshot,
@@ -427,7 +431,8 @@ class GitHubEventsPoller:
                 agent_login=self.config.github_login,
                 first_seen_after=cursor.last_updated_at,
             )
-            await to_thread.run_sync(self.store.upsert_pr_snapshot, snapshot)
+            if snapshot != previous:
+                await to_thread.run_sync(self.store.upsert_pr_snapshot, snapshot)
             if event is None:
                 ignored += 1
                 ignored_reasons[reason] += 1
@@ -482,8 +487,8 @@ class GitHubEventsPoller:
             source="pr_state_poll",
             repo=repo,
             fetched=len(snapshots),
-            window=len(window),
-            journaled=len(window) - ignored - duplicates,
+            window=len(snapshots),
+            journaled=len(snapshots) - ignored - duplicates,
             duplicates=duplicates,
             ignored=ignored,
             baselined=0,
@@ -510,7 +515,12 @@ class GitHubEventsPoller:
         total_items = 0
         total_window = 0
         ignored_reasons: Counter[str] = Counter()
-        candidates = [snapshot for snapshot in snapshots if snapshot.state == "open" and not snapshot.draft]
+        branches = self.config.repos[repo].base_branches
+        candidates = [
+            snapshot
+            for snapshot in snapshots
+            if snapshot.state == "open" and not snapshot.draft and snapshot.targets_any(branches)
+        ]
         for snapshot in candidates:
             logger.info("pr timeline poll started repo={} pr={}", repo, snapshot.number)
             raw_items = await to_thread.run_sync(
@@ -806,23 +816,20 @@ def list_repo_events_with_gh(config: GitHubReviewerConfig, repo: str) -> list[di
 
 
 def list_pull_requests_with_gh(config: GitHubReviewerConfig, repo: str) -> list[dict[str, Any]]:
-    pulls: list[dict[str, Any]] = []
-    repo_settings = config.repos.get(repo)
-    base_branches = repo_settings.base_branches if repo_settings is not None else ()
-    bases = base_branches or (None,)
-    for base in bases:
-        for page in range(1, config.poll_event_pages + 1):
-            path = f"repos/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page={page}"
-            if base:
-                path += f"&base={base}"
+    pulls: dict[int, dict[str, Any]] = {}
+    # A direct-base filter hides upper stack layers. Recent PRs cover closures;
+    # all open PRs cover dependency changes outside the updated-at window.
+    for state in ("all", "open"):
+        for page in count(1):
+            path = f"repos/{repo}/pulls?state={state}&sort=updated&direction=desc&per_page=100&page={page}"
             proc = run_gh(["api", "-X", "GET", path], env=config.gh_env)
             data = json.loads(proc.stdout)
             if not isinstance(data, list):
                 raise ValueError("gh pulls returned non-list JSON")
-            pulls.extend(item for item in data if isinstance(item, dict))
-            if len(data) < 100:
+            pulls.update((int(item["number"]), item) for item in data if isinstance(item, dict))
+            if len(data) < 100 or (state == "all" and page >= config.poll_event_pages):
                 break
-    return pulls
+    return list(pulls.values())
 
 
 def list_pull_request_timeline_with_gh(
@@ -921,16 +928,7 @@ def _base_pr_payload(snapshot: PullRequestSnapshot, action: str) -> dict[str, An
         "action": action,
         "repository": {"full_name": snapshot.repo},
         "pull_request": {
-            "number": snapshot.number,
-            "html_url": snapshot.url,
-            "state": snapshot.state,
-            "draft": snapshot.draft,
-            "base": {"ref": snapshot.base_ref},
-            "head": {
-                "ref": snapshot.head_ref,
-                "sha": snapshot.head_sha,
-                "repo": {"full_name": snapshot.head_repo},
-            },
+            **snapshot.github_payload(),
             "updated_at": snapshot.updated_at,
         },
     }
@@ -1192,23 +1190,14 @@ def _prs_after_updated_cursor(
 
 
 def _snapshot_from_pr(repo: str, raw: dict[str, Any]) -> PullRequestSnapshot:
-    base = raw.get("base")
     head = raw.get("head")
-    base_data = base if isinstance(base, dict) else {}
     head_data = head if isinstance(head, dict) else {}
     head_repo = head_data.get("repo")
     head_repo_data = head_repo if isinstance(head_repo, dict) else {}
     return PullRequestSnapshot(
-        repo=repo,
-        number=int(raw["number"]),
+        **PullRequestRef.from_github(repo, raw).model_dump(),
         node_id=str(raw.get("node_id") or raw.get("id") or raw["number"]),
-        url=str(raw.get("html_url") or raw.get("url") or ""),
-        state=str(raw.get("state") or "open").lower(),
-        draft=bool(raw.get("draft", False)),
-        base_ref=str(base_data.get("ref") or ""),
-        head_ref=str(head_data.get("ref") or ""),
         head_repo=str(head_repo_data.get("full_name") or ""),
-        head_sha=str(head_data.get("sha") or ""),
         title_hash=_hash_text(str(raw.get("title") or "")),
         body_hash=_hash_text(str(raw.get("body") or "")),
         created_at=_normalize_timestamp(str(raw.get("created_at") or "")),
@@ -1253,6 +1242,12 @@ def _snapshot_action(
         previous.title_hash != snapshot.title_hash
         or previous.body_hash != snapshot.body_hash
         or previous.base_ref != snapshot.base_ref
+        or previous.stack != snapshot.stack
+        or (
+            snapshot.stack is not None
+            and snapshot.base_ref != snapshot.stack.base_ref
+            and previous.base_sha != snapshot.base_sha
+        )
     ) and snapshot.state == "open":
         return "edited"
     return None
@@ -1260,21 +1255,7 @@ def _snapshot_action(
 
 def _payload_from_snapshot(snapshot: PullRequestSnapshot, *, action: str) -> dict[str, Any]:
     return {
-        "action": action,
-        "repository": {"full_name": snapshot.repo},
-        "pull_request": {
-            "number": snapshot.number,
-            "html_url": snapshot.url,
-            "state": snapshot.state,
-            "draft": snapshot.draft,
-            "base": {"ref": snapshot.base_ref},
-            "head": {
-                "ref": snapshot.head_ref,
-                "sha": snapshot.head_sha,
-                "repo": {"full_name": snapshot.head_repo},
-            },
-            "updated_at": snapshot.updated_at,
-        },
+        **_base_pr_payload(snapshot, action),
         "nyanpasu": {
             "source": "pr_state_poll",
             "trigger": f"pull_request_{action}",
@@ -1288,8 +1269,8 @@ def _synthetic_delivery_id(
     action: str,
     previous: PullRequestSnapshot | None,
 ) -> str:
-    old = previous.head_sha if previous else "none"
-    raw = f"{snapshot.repo}#{snapshot.number}:{action}:{old}->{snapshot.head_sha}:{snapshot.updated_at}"
+    old = previous.model_dump(mode="json") if previous else None
+    raw = json.dumps([action, old, snapshot.model_dump(mode="json")], sort_keys=True)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
     return f"synthetic-pr-state-{safe_slug(snapshot.repo)}-{snapshot.number}-{action}-{digest}"
 

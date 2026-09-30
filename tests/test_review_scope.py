@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import subprocess
 from unittest.mock import Mock
@@ -13,9 +14,9 @@ from nyanpasu.agent import AgentService
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
-from nyanpasu_github_reviewer.models import GitHubReviewerConfig
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
-from nyanpasu_github_reviewer.scope import build_inventory, validate_plan
+from nyanpasu_github_reviewer.scope import build_inventory, review_source, scope_report, validate_plan
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, fake_backends
 from tests.test_review_reference import reference_request, repository
 from tests.test_subtask_runtime import wait_status
@@ -98,6 +99,96 @@ def group(files, decision="accept"):
     }
 
 
+@pytest.mark.anyio
+async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path, monkeypatch):
+    task, git, trunk, _ = scoped_task(tmp_path)
+    repo = task.workspace.local_path
+    git("checkout", "-b", "lower", trunk)
+    (repo / "lower.txt").write_text("lower v1\n")
+    git("add", ".")
+    git("commit", "-m", "lower v1")
+    lower = git("rev-parse", "HEAD")
+    git("checkout", "-b", "upper")
+    (repo / "upper.txt").write_text("upper\n")
+    git("add", ".")
+    git("commit", "-m", "upper")
+    head = git("rev-parse", "HEAD")
+    git("update-ref", "refs/pull/1/head", head)
+    pr = PullRequestRef.from_github(
+        "ExampleOrg/ExampleRepo",
+        {
+            "number": 1,
+            "state": "open",
+            "draft": False,
+            "base": {"ref": "lower", "sha": lower},
+            "head": {"ref": "upper", "sha": head},
+            "stack": {"number": 7, "base": {"ref": "main"}},
+        },
+    )
+    task = task.model_copy(
+        update={
+            "workspace": task.workspace.model_copy(update={"revision": head}),
+            "metadata": {**task.metadata, "pull_request": pr.model_dump(mode="json")},
+        }
+    )
+    runtime = _config(tmp_path)
+    inventory = build_inventory(runtime, task)
+    assert [item["path"] for item in inventory["files"]] == ["upper.txt"]
+    plan = validate_plan(inventory, {"inventory_id": inventory["inventory_id"], "groups": [group(["upper.txt"])]})
+    task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
+    plugin = GitHubReviewerPlugin(
+        GitHubReviewerConfig(
+            repos={pr.repo: RepoSettings(local_path=repo, github_remote=str(repo), base_branches=("main",))}
+        )
+    )
+    plugin.runtime = Mock(config=runtime)
+    live = pr
+    monkeypatch.setattr(importlib.import_module("nyanpasu_github_reviewer.plugin"), "_fetch_pr", lambda *args: live)
+    assert (await plugin.scope_control(task, "review-verify", {}))["source"] == review_source(inventory)
+
+    # Advancing the direct base leaves the effective diff and its evidence intact.
+    git("checkout", "lower")
+    (repo / "later.txt").write_text("later lower change\n")
+    git("add", ".")
+    git("commit", "-m", "advance lower")
+    live = pr.model_copy(update={"base_sha": git("rev-parse", "HEAD")})
+    assert (await plugin.scope_control(task, "review-verify", {}))["source"] == review_source(inventory)
+
+    # Rewriting the lower layer changes the upper diff without changing its head.
+    git("checkout", "-B", "lower", trunk)
+    (repo / "lower.txt").write_text("lower v2\n")
+    git("add", ".")
+    git("commit", "-m", "rewrite lower")
+    live = pr.model_copy(update={"base_sha": git("rev-parse", "HEAD")})
+    # The original task remains pinned even after the named branch has moved.
+    assert build_inventory(runtime, task) == inventory
+    changed = build_inventory(
+        runtime, task.model_copy(update={"metadata": {**task.metadata, "pull_request": live.model_dump(mode="json")}})
+    )
+    assert changed["head_sha"] == inventory["head_sha"]
+    assert {item["path"] for item in changed["files"]} == {"lower.txt", "upper.txt"}
+    assert changed["inventory_id"] not in scope_report(inventory, plan)
+    with pytest.raises(ValueError, match="another inventory"):
+        validate_plan(changed, plan.model_dump())
+    with pytest.raises(ValueError, match="review range changed"):
+        await plugin.scope_control(task, "review-verify", {})
+
+    # Retargeting to an equivalent ref must still re-establish eligibility/scope.
+    live = pr.model_copy(update={"base_ref": "other"})
+    with pytest.raises(ValueError, match="review range changed"):
+        await plugin.scope_control(task, "review-verify", {})
+
+    git("checkout", "upper")
+    (repo / "upper.txt").write_text("new upper\n")
+    git("add", ".")
+    git("commit", "-m", "advance upper")
+    new_head = git("rev-parse", "HEAD")
+    git("update-ref", "refs/pull/1/head", new_head)
+    live = pr.model_copy(update={"head_sha": new_head})
+    with pytest.raises(ValueError, match="review range changed"):
+        await plugin.scope_control(task, "review-verify", {})
+
+
 def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_path):
     task, git, _, _ = scoped_task(tmp_path)
     repo = task.workspace.local_path
@@ -169,7 +260,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             "groups": [group(["author-only.txt", "helper.py"]), group(["demos/result.json"], "relocate")],
         }
         report = await agent.control.dispatch(task.task_id, "review-scope", plan)
-        assert report["scope"][inventory["head_sha"]]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
+        assert report["scope"][inventory["inventory_id"]]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
         agent.store = StateStore(config.db_path)
         assert (await agent.control.dispatch(task.task_id, "review-scope", {}))["scope"] == report["scope"]
         for purpose in ["independent-design", "test-audit", "module-review", "custom-expert"]:

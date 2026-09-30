@@ -49,7 +49,7 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
     pr = task.metadata["pull_request"]
     head = git("rev-parse", "--verify", f"{pr['head_sha']}^{{commit}}").strip()
     remote = workspace.remote or "origin"
-    target = git("ls-remote", "--exit-code", remote, f"refs/heads/{pr['base_ref']}").split()[0]
+    target = pr.get("base_sha") or git("ls-remote", "--exit-code", remote, f"refs/heads/{pr['base_ref']}").split()[0]
     git("fetch", "--no-tags", "--no-write-fetch-head", remote, target)
     bases = git("merge-base", "--all", head, target).splitlines()
     if len(bases) != 1:
@@ -84,6 +84,7 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
         counts["deletions"] += deletions
     inventory = {
         "head_sha": head,
+        "base_ref": pr["base_ref"],
         "target_base_sha": target,
         "merge_base_sha": base,
         "source_tree_sha": git("rev-parse", f"{base}^{{tree}}").strip(),
@@ -91,8 +92,14 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
         "files": files,
         "directories": directories,
     }
-    digest = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
+    # Advancing the target without changing the merge-base leaves this diff intact.
+    identity = {key: value for key, value in inventory.items() if key != "target_base_sha"}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     return {"inventory_id": digest, **inventory}
+
+
+def review_source(inventory: dict) -> dict:
+    return {key: inventory[key] for key in ("head_sha", "base_ref", "merge_base_sha", "inventory_id")}
 
 
 def validate_plan(inventory: dict, payload: dict) -> ScopePlan:
@@ -119,7 +126,7 @@ def scope_report(inventory: dict, plan: ScopePlan) -> dict:
     for group in plan.groups:
         counts[group.decision] += len(group.files)
     return {
-        inventory["head_sha"]: {
+        inventory["inventory_id"]: {
             "inventory_id": plan.inventory_id,
             "path_encoding": inventory.get("path_encoding", "utf-8"),
             "counts": dict(counts),

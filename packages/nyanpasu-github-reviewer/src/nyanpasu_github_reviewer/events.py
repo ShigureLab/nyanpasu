@@ -21,16 +21,7 @@ def _pr_ref(payload: dict[str, Any]) -> PullRequestRef:
     base = pr.get("base")
     if not isinstance(head, dict) or not isinstance(base, dict):
         raise ValueError("payload.pull_request.head/base are required")
-    return PullRequestRef(
-        repo=_repo_full_name(payload),
-        number=int(pr["number"]),
-        url=str(pr.get("html_url") or pr.get("url") or ""),
-        base_ref=str(base["ref"]),
-        head_ref=str(head["ref"]),
-        head_sha=str(head["sha"]),
-        state=str(pr.get("state", "open")).lower(),
-        draft=bool(pr.get("draft", False)),
-    )
+    return PullRequestRef.from_github(_repo_full_name(payload), pr)
 
 
 def _issue_pr_ref(payload: dict[str, Any]) -> PullRequestRef:

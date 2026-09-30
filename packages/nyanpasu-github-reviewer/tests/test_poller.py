@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from loguru import logger
@@ -12,7 +15,12 @@ from nyanpasu_github_reviewer.models import (
     ReviewAction,
     ReviewEvent,
 )
-from nyanpasu_github_reviewer.poller import GitHubEventsPoller, event_from_pr_timeline_item, event_from_repo_event
+from nyanpasu_github_reviewer.poller import (
+    GitHubEventsPoller,
+    event_from_pr_timeline_item,
+    event_from_repo_event,
+    list_pull_requests_with_gh,
+)
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -176,6 +184,8 @@ def _pull_request_api_item(
     title: str = "Example PR",
     body: str = "Example body",
     created_at: str = "2026-05-30T09:59:00Z",
+    base_sha: str = "base-a",
+    stack: dict | None = None,
 ) -> dict[str, Any]:
     return {
         "number": number,
@@ -187,7 +197,8 @@ def _pull_request_api_item(
         "body": body,
         "created_at": created_at,
         "updated_at": updated_at,
-        "base": {"ref": base_ref},
+        "base": {"ref": base_ref, "sha": base_sha},
+        "stack": stack,
         "head": {
             "ref": head_ref,
             "sha": sha,
@@ -995,3 +1006,83 @@ def test_event_from_repo_event_parses_review_comment_and_review_mentions() -> No
     assert review.action is ReviewAction.REVIEW
     assert review.github_event == "pull_request_review"
     assert review.raw["nyanpasu"]["source"] == "events_poll"
+
+
+def test_discovery_includes_upper_layers_and_all_open_pages(tmp_path, monkeypatch):
+    recent = [_pull_request_api_item(i, state="closed") for i in range(1, 101)]
+    opened = [_pull_request_api_item(i) for i in range(101, 201)]
+    upper = _pull_request_api_item(201, base_ref="lower", stack={"number": 7, "base": {"ref": "main"}})
+    pages = {("all", "1"): recent, ("open", "1"): opened, ("open", "2"): [upper]}
+    calls = []
+
+    def github(args, **kwargs):
+        query = parse_qs(urlparse(args[-1]).query)
+        assert "base" not in query
+        key = (query["state"][0], query["page"][0])
+        calls.append(key)
+        return SimpleNamespace(stdout=json.dumps(pages[key]))
+
+    monkeypatch.setattr("nyanpasu_github_reviewer.poller.run_gh", github)
+    config = GitHubReviewerConfig(
+        repos={"ExampleOrg/ExampleRepo": RepoSettings(local_path=tmp_path, base_branches=("main",))},
+        poll_event_pages=1,
+    )
+    found = list_pull_requests_with_gh(config, "ExampleOrg/ExampleRepo")
+    assert calls == [("all", "1"), ("open", "1"), ("open", "2")]
+    assert len(found) == 201 and found[-1] == upper
+
+
+@pytest.mark.anyio
+async def test_stack_base_updates_without_pr_timestamp_or_head_change(tmp_path):
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    stack = {"number": 7, "base": {"ref": "main"}}
+    upper = _pull_request_api_item(1, base_ref="lower", base_sha="lower-a", stack=stack)
+    # A newer unrelated PR puts this layer strictly behind the timeline cursor.
+    newer = _pull_request_api_item(2, node_id="PR_2", updated_at="2026-05-30T11:00:00Z")
+    batch = [upper, newer]
+    timelines = []
+    poller = GitHubEventsPoller(
+        _config(tmp_path),
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: batch,
+        list_pull_request_timeline=lambda *args: timelines.append(args[-1]) or [],
+    )
+    await poller.run_once()
+    for sha in ("lower-b", "lower-c"):
+        upper["base"]["sha"] = sha
+        # Moving main alone must not schedule every ordinary PR for review.
+        newer["base"]["sha"] = sha
+        assert (await poller.run_once()).submitted == 1
+        assert (await poller.run_once()).submitted == 0
+
+    assert len({event.delivery_id for event in agent.events}) == 2
+    for event, sha in zip(agent.events, ("lower-b", "lower-c"), strict=True):
+        assert event.pr is not None and event.pr.stack is not None
+        assert event.pr.number == 1 and event.pr.stack.base_ref == "main" and event.pr.base_sha == sha
+    assert all(event.raw["nyanpasu"]["trigger"] == "pull_request_edited" for event in agent.events)
+    assert not timelines
+    snapshot = store.get_pr_snapshot("ExampleOrg/ExampleRepo", 1)
+    assert snapshot is not None and snapshot.base_sha == "lower-c"
+
+
+@pytest.mark.anyio
+async def test_stack_membership_changes_without_pr_timestamp_change(tmp_path):
+    agent = FakeAgent()
+    pr = _pull_request_api_item(base_ref="lower")
+    poller = GitHubEventsPoller(
+        _config(tmp_path),
+        store=GitHubReviewerStore(tmp_path / "state.sqlite3"),
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: [pr],
+        list_pull_request_timeline=lambda *_: [],
+    )
+    await poller.run_once()
+    for stack in ({"number": 7, "base": {"ref": "main"}}, {"number": 7, "base": {"ref": "release"}}, None):
+        pr["stack"] = stack
+        assert (await poller.run_once()).submitted == 1
+    for event, target in zip(agent.events, ("main", "release", "lower"), strict=True):
+        assert event.pr is not None and event.pr.target_branch == target

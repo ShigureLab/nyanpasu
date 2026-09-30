@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from nyanpasu_github.models import PullRequestStackRef
+
 from nyanpasu_github_reviewer.models import (
     GitHubEventJournalRecord,
     GitHubEventJournalStatus,
@@ -60,6 +62,8 @@ def test_pr_updated_cursor_and_snapshot_roundtrip(tmp_path: Path) -> None:
         state="open",
         draft=False,
         base_ref="main",
+        base_sha="base-a",
+        stack=PullRequestStackRef(number=7, base_ref="main"),
         head_ref="feature",
         head_repo="Contributor/ExampleRepo",
         head_sha="abc123",
@@ -73,6 +77,17 @@ def test_pr_updated_cursor_and_snapshot_roundtrip(tmp_path: Path) -> None:
 
     assert store.get_pr_updated_cursor("ExampleOrg/ExampleRepo") == cursor
     assert store.get_pr_snapshot("ExampleOrg/ExampleRepo", 1) == snapshot
+
+    # Reopening a pre-stack database preserves its snapshots and adds empty metadata.
+    with store._connect() as conn:
+        conn.execute("ALTER TABLE github_pr_snapshots DROP COLUMN base_sha")
+        conn.execute("ALTER TABLE github_pr_snapshots DROP COLUMN stack_json")
+    migrated = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    assert migrated.get_pr_snapshot("ExampleOrg/ExampleRepo", 1) == snapshot.model_copy(
+        update={"base_sha": "", "stack": None}
+    )
+    migrated.upsert_pr_snapshot(snapshot)
+    assert migrated.get_pr_snapshot("ExampleOrg/ExampleRepo", 1) == snapshot
 
 
 def test_pr_timeline_cursor_roundtrip(tmp_path: Path) -> None:

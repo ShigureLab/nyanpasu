@@ -33,7 +33,14 @@ from nyanpasu_github_reviewer.prompt import (
     review_trigger,
 )
 from nyanpasu_github_reviewer.reference import prepare_reference
-from nyanpasu_github_reviewer.scope import ScopePlan, admitted_files, build_inventory, scope_report, validate_plan
+from nyanpasu_github_reviewer.scope import (
+    ScopePlan,
+    admitted_files,
+    build_inventory,
+    review_source,
+    scope_report,
+    validate_plan,
+)
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -242,15 +249,44 @@ class GitHubReviewerPlugin:
         )
 
     async def scope_control(self, task: AgentTask, action: str, payload: dict[str, Any]) -> dict:
-        if action != "review-scope" or task.spawned_by_task_id is not None:
-            raise ValueError("review-scope is only available to the root reviewer")
+        if action not in {"review-scope", "review-verify"} or task.spawned_by_task_id is not None:
+            raise ValueError("review-scope and review-verify are only available to the root reviewer")
+        if action == "review-verify":
+            return await asyncio.to_thread(self._verify_review, task)
         return await asyncio.to_thread(self._scope_control, task, payload)
+
+    def _verify_review(self, task: AgentTask) -> dict:
+        assert self.config is not None
+        assert self.runtime is not None
+        inventory = task.metadata.get("review_inventory")
+        if inventory is None:
+            raise ValueError("read review-scope before verifying the review")
+        queued_pr = PullRequestRef.model_validate(task.metadata["pull_request"])
+        pr = _fetch_pr(self.config, queued_pr.repo, queued_pr.number)
+        if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
+            raise ValueError("PR is no longer eligible for review publication")
+        current = build_inventory(
+            self.runtime.config,
+            task.model_copy(
+                update={
+                    "workspace": self._workspace_for_pr(pr),
+                    "metadata": {**task.metadata, "pull_request": pr.model_dump(mode="json")},
+                }
+            ),
+        )
+        if inventory["inventory_id"] != current["inventory_id"]:
+            raise ValueError(
+                "review range changed; do not publish or reuse this run's conclusions; start a new review run"
+            )
+        return {"source": review_source(current)}
 
     def _scope_control(self, task: AgentTask, payload: dict[str, Any]) -> dict:
         assert self.runtime is not None
         store = StateStore(self.runtime.config.db_path)
         # A recovered pre-upgrade root obtains its inventory before continuing.
         inventory = task.metadata.get("review_inventory") or build_inventory(self.runtime.config, task)
+        if "base_ref" not in inventory:
+            raise ValueError("review inventory predates range tracking; start a new review run")
         task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
         if payload:
             plan = validate_plan(inventory, payload)
@@ -261,7 +297,8 @@ class GitHubReviewerPlugin:
         store.update_task_input(task)
         plan_data = task.metadata.get("review_scope")
         report = scope_report(inventory, validate_plan(inventory, plan_data)) if plan_data is not None else None
-        return {"scope": report} if payload else {"inventory": inventory, "scope": report}
+        result = {"source": review_source(inventory), "scope": report}
+        return result if payload else {"inventory": inventory, **result}
 
     async def prepare_task(
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
@@ -316,6 +353,7 @@ class GitHubReviewerPlugin:
                     triggers=triggers,
                     has_session=bool(context and context.thread_id),
                     previous_task_head=context.revision if context else None,
+                    inventory=metadata["review_inventory"],
                 ),
                 "metadata": metadata,
             }
@@ -332,12 +370,12 @@ class GitHubReviewerPlugin:
     def _preflight_event(self, event: ReviewEvent) -> ReviewEvent:
         if self.config is None or event.pr is None or event.action is not ReviewAction.REVIEW:
             return event
+        if event.pr.repo not in self.config.repos:
+            return event.model_copy(update={"action": ReviewAction.IGNORED})
         event = self._hydrate_review_event_pr(event)
         pr = event.pr
         if pr is None:
             return event
-        if pr.repo not in self.config.repos:
-            return event.model_copy(update={"action": ReviewAction.IGNORED})
         if not self._repo_allows_base_branch(pr):
             return event.model_copy(update={"action": ReviewAction.IGNORED})
         if not self._review_thread_event_is_relevant(event):
@@ -347,7 +385,12 @@ class GitHubReviewerPlugin:
     def _hydrate_review_event_pr(self, event: ReviewEvent) -> ReviewEvent:
         if event.pr is None or event.action is not ReviewAction.REVIEW:
             return event
-        if event.pr.head_sha and event.pr.base_ref and event.pr.head_ref:
+        if (
+            event.pr.head_sha
+            and event.pr.base_ref
+            and event.pr.head_ref
+            and (event.pr.stack is not None or self._repo_allows_base_branch(event.pr))
+        ):
             return event
         assert self.config is not None
         hydrated = _fetch_pr(self.config, event.pr.repo, event.pr.number)
@@ -387,7 +430,7 @@ class GitHubReviewerPlugin:
         repo_config = self.config.repo_configs.get(pr.repo)
         if repo_config is None or not repo_config.base_branches:
             return True
-        return pr.base_ref in repo_config.base_branches
+        return pr.targets_any(repo_config.base_branches)
 
 
 def verify_signature(body: bytes, signature: str | None, secret: str | None) -> None:
@@ -426,18 +469,8 @@ def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -
 
 
 def _fetch_pr(config: GitHubReviewerConfig, repo: str, pr_number: int) -> PullRequestRef:
-    fields = "number,state,isDraft,url,baseRefName,headRefName,headRefOid"
-    data = gh_json(["pr", "view", str(pr_number), "--repo", repo, "--json", fields], env=config.gh_env)
-    return PullRequestRef(
-        repo=repo,
-        number=int(data["number"]),
-        url=str(data["url"]),
-        state=str(data["state"]).lower(),
-        draft=bool(data["isDraft"]),
-        base_ref=str(data["baseRefName"]),
-        head_ref=str(data["headRefName"]),
-        head_sha=str(data["headRefOid"]),
-    )
+    data = gh_json(["api", f"repos/{repo}/pulls/{pr_number}"], env=config.gh_env)
+    return PullRequestRef.from_github(repo, data)
 
 
 def plugin() -> GitHubReviewerPlugin:
