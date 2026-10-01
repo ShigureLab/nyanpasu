@@ -6,6 +6,8 @@ Required when `runtime.backend = "codex"`. [Claude Code](claude-code.md) is the 
 
 Follow the [official Codex CLI installation guide](https://learn.chatgpt.com/docs/codex/cli) for your OS, then complete [authentication](https://learn.chatgpt.com/docs/auth) as the account that will run Nyanpasu. You need network access and an account/provider that can use the configured model. A standalone installation does not require Node.js; an npm installation needs Node.js/npm.
 
+On Linux and WSL2, also install [bubblewrap](bubblewrap.md) and verify sandboxed command execution. A successful model response or `codex --version` alone does not establish that shell tools can run.
+
 Verify the executable and complete a small read-only task before enabling the service:
 
 ```bash
