@@ -66,12 +66,55 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
         # A later task transition still counts, and missing history keeps task metadata visible.
         state.mark_task_failed("claude", "interrupted")
         path.unlink()
-        latest = await first_session()
+        latest = (await client.get("/api/sessions?state=failed")).json()["items"][0]
         assert latest["session_id"] == "claude:" + SESSION
         assert latest["state"] == "failed"
         with state._connect() as conn:
             task_time = conn.execute("SELECT updated_at FROM task_runs WHERE task_id='claude'").fetchone()[0]
         assert datetime.fromisoformat(latest["updated_at"]).timestamp() == pytest.approx(task_time, abs=1e-6, rel=0)
+
+
+@pytest.mark.anyio
+async def test_sessions_prioritize_active_execution_before_pagination(tmp_path: Path):
+    config = NyanpasuConfig(state_dir=tmp_path)
+    state = StateStore(config.db_path)
+    for task_id, status, updated_at in [
+        ("completed", "completed", 60),
+        ("running-older", "running", 10),
+        ("failed", "failed", 80),
+        ("queued", "queued", 50),
+        ("running-newer", "running", 20),
+        ("waiting", "waiting", 40),
+        ("cancelled", "cancelled", 70),
+    ]:
+        state.record_task(AgentTask(task_id=task_id, context_key=task_id, action=TaskAction.RUN, prompt=task_id))
+        state.bind_task_execution(task_id, task_id, None)
+        with state._connect() as conn:
+            conn.execute("UPDATE task_runs SET status=?,updated_at=? WHERE task_id=?", (status, updated_at, task_id))
+
+    app = create_app(config, session_sources=lambda _: MemorySessionSource())
+    expected = ["running-newer", "running-older", "waiting", "queued", "failed", "cancelled", "completed"]
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        for offset in range(0, len(expected), 2):
+            response = await client.get("/api/sessions", params={"offset": offset, "limit": 2})
+            assert response.status_code == 200
+            page = response.json()
+            assert [item["session_id"] for item in page["items"]] == expected[offset : offset + 2]
+            assert page["total"] == len(expected)
+            assert page["has_more"] == (offset + 2 < len(expected))
+
+        # A fresh terminal transition must not overtake sessions that are still active.
+        state.mark_task_failed("running-newer", "Backend failed")
+        page = (await client.get("/api/sessions")).json()
+        assert [item["session_id"] for item in page["items"]] == [
+            "running-older",
+            "waiting",
+            "queued",
+            "running-newer",
+            "failed",
+            "cancelled",
+            "completed",
+        ]
 
 
 @pytest.mark.anyio

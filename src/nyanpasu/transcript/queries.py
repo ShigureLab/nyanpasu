@@ -134,7 +134,16 @@ class TranscriptReader:
             and (not state or item["state"] == state)
             and (not context or context in item["context_key"])
         ]
-        items.sort(key=lambda item: (datetime.fromisoformat(item["updated_at"]), item["session_id"]), reverse=True)
+        items.sort(
+            key=lambda item: (
+                item["state"] == "running",
+                item["state"] == "waiting",
+                item["state"] == "queued",
+                datetime.fromisoformat(item["updated_at"]),
+                item["session_id"],
+            ),
+            reverse=True,
+        )
         return {
             "items": items[offset : offset + limit],
             "total": len(items),
