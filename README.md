@@ -4,6 +4,8 @@ Nyanpasu is a plugin-oriented agent service. The core runtime is deliberately ge
 
 GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 
+See the [dependency index](DEPENDENCIES/index.md) for required and optional tools, agent skills, prerequisites, and installation instructions.
+
 ## Core Responsibilities
 
 - Async task execution with per-context serialization and bounded concurrency.
