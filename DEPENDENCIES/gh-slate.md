@@ -4,7 +4,7 @@ Required by the current GitHub reviewer workflow to maintain the `nyanpasu-revie
 
 ## Prerequisites and installation
 
-Requires [Python](python.md), [uv](uv.md) for this installation method, and authenticated [gh](github-cli.md). Use a version meeting the [reviewer template's minimum](../packages/nyanpasu-github-reviewer/README.md#review-dashboard).
+Requires [Python](python.md), [uv](uv.md) for this installation method, and authenticated [gh meeting the reviewer minimum version](github-cli.md#minimum-version). Use a `gh-slate` version meeting the [reviewer template's minimum](../packages/nyanpasu-github-reviewer/README.md#review-dashboard).
 
 Install the [published CLI](https://pypi.org/project/gh-slate/) and verify it:
 
