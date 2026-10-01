@@ -9,7 +9,7 @@
 
 **审查版本：** {{ data.source.head_sha }}
 
-**目标分支：** {{ data.source.base_ref }}
+**目标分支：** {% if meta.repository %}<a href="{{ meta.repository.url }}/tree/{{ data.source.base_ref }}">{{ data.source.base_ref }}</a>{% else %}{{ data.source.base_ref }}{% endif %}
 
 {{ data.summary }}
 
