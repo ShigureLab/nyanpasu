@@ -15,7 +15,7 @@ Package versions and complete transitive dependencies remain authoritative in [p
 | [Git](git.md)                                                 | Required for repository tasks                     | Clones, workspaces, revisions, and diffs                     |
 | [Nyanpasu packages and Python runtime libraries](nyanpasu.md) | Core required; plugins depend on enabled features | Service, GitHub helpers, reviewer, and optional PR maker     |
 | [Codex CLI](codex.md)                                         | Choose one backend                                | Agent execution through Codex                                |
-| [bubblewrap](bubblewrap.md)                                  | Required for the current Codex Linux sandbox       | Sandboxed shell execution on Linux and WSL2                  |
+| [bubblewrap](bubblewrap.md)                                   | Required for the current Codex Linux sandbox      | Sandboxed shell execution on Linux and WSL2                  |
 | [Claude Code](claude-code.md)                                 | Choose one backend                                | Agent execution through Claude Code                          |
 | [GitHub CLI (`gh`)](github-cli.md)                            | Required for either GitHub plugin                 | GitHub authentication and API operations                     |
 | [gh-llm](gh-llm.md)                                           | Required by the current reviewer workflow         | PR context, review locations, threads, and review submission |

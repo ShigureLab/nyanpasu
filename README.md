@@ -239,6 +239,8 @@ pnpm run test
 pnpm run build
 ```
 
+Run `pnpm run fmt` to format the frontend, browser tests, and helper scripts, or `just fmt` to also format Python and Markdown. `just ci-fmt-check` checks the same formatting scope without changing files.
+
 After `uv sync --dev`, `pnpm run types` regenerates the transcript TypeScript contract from the Python models. To run browser interaction tests with an isolated fixture server:
 
 ```bash

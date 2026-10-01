@@ -9,6 +9,7 @@ test:
 
 fmt:
   uv run ruff format .
+  pnpm run fmt
   pnpm exec prettier --write '**/*.md'
 
 lint:
@@ -50,6 +51,7 @@ ci-install:
 
 ci-fmt-check:
   uv run ruff format --check --diff .
+  pnpm run fmt:check
   pnpm exec prettier --check '**/*.md'
 
 ci-lint:

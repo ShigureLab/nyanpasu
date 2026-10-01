@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vp dev",
     "build": "vp build",
+    "fmt": "vp fmt \"frontend/dashboard/**\" \"scripts/**\" \"tests/*.browser.ts\" vite.config.ts tsconfig.json playwright.config.ts",
+    "fmt:check": "pnpm run fmt --check",
     "check": "vp check frontend/dashboard vite.config.ts tsconfig.json && tsc --noEmit",
     "test": "vp test run",
     "types": "node scripts/dashboard-types.mjs",

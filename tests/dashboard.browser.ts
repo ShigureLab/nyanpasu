@@ -84,7 +84,10 @@ test('session list scrolls across pages and refreshes the loaded range without d
   sessions = [updated, ...sessions.slice(0, -1)];
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(rows.first()).toContainText('Session 119');
-  await expect(rows.first().locator('time')).toHaveAttribute('datetime', '2026-09-18T08:30:00.000Z');
+  await expect(rows.first().locator('time')).toHaveAttribute(
+    'datetime',
+    '2026-09-18T08:30:00.000Z',
+  );
   await expect(rows.first().locator('time')).toHaveAttribute('title', /^Updated:/);
   await expect(rows).toHaveCount(121);
   await expect(page).toHaveURL(/session=fixture-thread/);
@@ -150,29 +153,19 @@ test('Claude native messages, tools, edits, search and live results share the da
   request,
 }) => {
   await page.goto('/dashboard?context=demo%3Aclaude');
-  await expect(
-    page.getByRole('heading', { name: 'Claude result', exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Claude result', exact: true })).toBeVisible();
   await expect(page.locator('.session-index')).toContainText('Claude Code');
   await page.getByRole('tab', { name: 'Session details', exact: true }).click();
-  await expect(page.locator('.session-metadata')).toContainText(
-    'claude-test-model',
-  );
+  await expect(page.locator('.session-metadata')).toContainText('claude-test-model');
   await expect(page.locator('.session-metadata')).toContainText('Claude Code');
   await expect(page.locator('.session-metadata')).not.toContainText('Codex');
   await page.getByRole('tab', { name: 'Conversation', exact: true }).click();
-  await expect(page.locator('[data-entry-id="claude-bash"]')).toContainText(
-    'failed',
+  await expect(page.locator('[data-entry-id="claude-bash"]')).toContainText('failed');
+  await expect(page.locator('[data-entry-id="claude-edit-call"]')).toContainText(
+    'verified explanation',
   );
-  await expect(
-    page.locator('[data-entry-id="claude-edit-call"]'),
-  ).toContainText('verified explanation');
-  await expect(
-    page.getByText('Check the evidence before editing.', { exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole('textbox', { name: 'Search complete session' })
-    .fill('CLAUDE-NEEDLE');
+  await expect(page.getByText('Check the evidence before editing.', { exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search complete session' }).fill('CLAUDE-NEEDLE');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await page.locator('.search-results button').first().click();
   await expect(page.locator('.search-focus')).toContainText('CLAUDE-NEEDLE');
@@ -186,18 +179,14 @@ test('Claude native messages, tools, edits, search and live results share the da
   expect(await exported.text()).toContain('verified explanation');
   await request.post('/test/claude-append');
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(
-    page.locator('[data-entry-id="claude-live-tool"]'),
-  ).toContainText('CLAUDE-LIVE-DONE');
-  await expect(
-    page.locator('[data-entry-id="claude-live-tool"]'),
-  ).toContainText('completed');
+  await expect(page.locator('[data-entry-id="claude-live-tool"]')).toContainText(
+    'CLAUDE-LIVE-DONE',
+  );
+  await expect(page.locator('[data-entry-id="claude-live-tool"]')).toContainText('completed');
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
 });
 
 test('messages render and copy in full; tool previews contain only consecutive source text', async ({
@@ -625,7 +614,10 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await expect(page.locator('.session-metadata')).toContainText('demo:transcript');
   await expect(page.locator('.session-metadata')).toContainText('test-model');
   await page.getByRole('button', { name: 'Tasks', exact: true }).click();
-  await expect(page.locator('.task-times time').first()).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
+  await expect(page.locator('.task-times time').first()).toHaveAttribute(
+    'datetime',
+    /^\d{4}-\d{2}-\d{2}T/,
+  );
   await page.getByRole('button', { name: 'Runtime', exact: true }).click();
   await expect(page.locator('.diagnostic')).toHaveCount(2);
   await expect(page.locator('.diagnostic').first()).toContainText(
