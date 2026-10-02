@@ -11,14 +11,12 @@ from nyanpasu_github_pr_maker.models import CreatePullRequestTaskRequest
 from nyanpasu_github_pr_maker.plugin import GitHubPrMakerPlugin
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import AgentContext, TaskRunResult, TaskStatus
+from nyanpasu.models import AgentContext, AgentTask, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from nyanpasu.models import AgentTask
 
 
 class FakeAgent:
@@ -357,6 +355,7 @@ async def test_pr_maker_registers_managed_pr_when_follow_up_enabled(tmp_path: Pa
 @pytest.mark.anyio
 async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, monkeypatch) -> None:
     followup_module = importlib.import_module("nyanpasu_github_pr_maker.followup")
+    instruction_path = tmp_path / "instructions.md"
     first = _pr_view(head_sha="abc123")
     second = _pr_view(head_sha="def456", failing_checks=("unit",))
     seen_env: list[dict[str, str] | None] = []
@@ -374,6 +373,7 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         runtime,
         {
             "follow_up_enabled": False,
+            "instruction_docs": [{"path": str(instruction_path)}],
             "repos": {
                 "ExampleOrg/ExampleRepo": {
                     "local_path": str(tmp_path / "repo"),
@@ -406,23 +406,17 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         submitted = await poller.run_once()
 
         assert submitted == 1
-        follow_up_task = runtime.tasks[0]
+        follow_up_task = AgentTask.model_validate_json(runtime.tasks[0].model_dump_json())
         assert follow_up_task.context_key == "github-pr-maker:ExampleOrg/ExampleRepo:task-2"
-        assert follow_up_task.workspace is not None
-        assert follow_up_task.workspace.ref == "refs/heads/nyanpasu/task-2"
-        assert follow_up_task.workspace.revision == "def456"
         assert follow_up_task.metadata["publish"]["existing_pr_number"] == 1
         assert follow_up_task.metadata["publish"]["git_author_name"] == "Bot"
         assert seen_env == [{"GH_TOKEN": "token", "GITHUB_TOKEN": "token"}]
-        assert "Failing checks: unit" in follow_up_task.prompt
-        assert "NYANPASU_TEST_GH_TOKEN" in follow_up_task.developer_instructions
-        assert "NYANPASU_TEST_GH_TOKEN" not in follow_up_task.prompt
-        assert "Update docs." not in follow_up_task.prompt
         assert "token" not in str(follow_up_task.metadata)
 
         plugin_module = importlib.import_module("nyanpasu_github_pr_maker.plugin")
-        second = _pr_view(head_sha="latest-head", failing_checks=("unit",))
+        second = _pr_view(head_sha="latest-head", failing_checks=("integration",))
         monkeypatch.setattr(plugin_module, "fetch_pull_request_view", fetch_pr)
+        instruction_path.write_text("Use the current repository instructions.", encoding="utf-8")
         context = AgentContext(
             context_key=follow_up_task.context_key,
             thread_id="existing-thread",
@@ -433,10 +427,17 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         resumed = await runtime.preparer(follow_up_task, (), context)
         restored = await runtime.preparer(follow_up_task, (), None)
         assert resumed.workspace is not None and resumed.workspace.revision == "latest-head"
+        assert resumed.workspace.ref == "refs/heads/nyanpasu/task-2"
         assert "Target head: latest-head" in resumed.prompt
+        assert "Failing checks: integration" in resumed.prompt
+        assert resumed.metadata["managed_pr"]["failing_checks"] == ["integration"]
+        assert "NYANPASU_TEST_GH_TOKEN" in resumed.developer_instructions
+        assert "NYANPASU_TEST_GH_TOKEN" not in resumed.prompt
         assert "Update docs." not in resumed.prompt
         assert "Original task (restored" in restored.prompt and "Update docs." in restored.prompt
         assert resumed.developer_instructions == restored.developer_instructions
+        assert resumed.instruction_docs == restored.instruction_docs
+        assert resumed.instruction_docs[0].content == "Use the current repository instructions."
     finally:
         await plugin.shutdown()
 
