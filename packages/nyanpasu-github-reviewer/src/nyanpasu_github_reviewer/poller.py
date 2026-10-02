@@ -163,9 +163,6 @@ class GitHubEventsPoller:
             logger.info("events poller sleeping interval_sec={}", interval)
             await asyncio.sleep(interval)
 
-    async def shutdown(self) -> None:
-        return None
-
     async def _poll_repo(
         self,
         repo: str,

@@ -60,7 +60,6 @@ class GitHubReviewerPlugin:
         self.runtime: PluginRuntime | None = None
         self.store: GitHubReviewerStore | None = None
         self.state_store: StateStore | None = None
-        self.poller: GitHubEventsPoller | None = None
         self.poller_task: asyncio.Task[None] | None = None
         self.github: GitHubIntegrationConfig = GitHubIntegrationConfig()
 
@@ -88,13 +87,13 @@ class GitHubReviewerPlugin:
             require_auth=not bool(config.webhook_secret),
         )
         if config.poll_enabled:
-            self.poller = GitHubEventsPoller(
+            poller = GitHubEventsPoller(
                 config,
                 store=self.store,
                 agent=GitHubPollAgent(self),
                 event_status=self.state_store.task_status,
             )
-            self.poller_task = asyncio.create_task(self.poller.run_forever())
+            self.poller_task = asyncio.create_task(poller.run_forever())
             logger.info(
                 "github reviewer poller started repos={} interval_sec={}",
                 ",".join(config.repos),
@@ -108,8 +107,6 @@ class GitHubReviewerPlugin:
                 await self.poller_task
             except asyncio.CancelledError:
                 pass
-        if self.poller is not None:
-            await self.poller.shutdown()
         logger.info("github reviewer plugin shutdown finished")
 
     def _router(self) -> APIRouter:
