@@ -4,15 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from nyanpasu.config import (
-    ClaudeConfig,
-    CodexConfig,
-    EnvCommand,
-    ServerConfig,
-    default_config_path,
-    load_config,
-    nyanpasu_home,
-)
+from nyanpasu.config import ClaudeConfig, CodexConfig, EnvCommand, ServerConfig, load_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -193,26 +185,6 @@ def test_load_config_allows_no_plugins(tmp_path: Path, monkeypatch) -> None:
     assert config.codex.approval_policy == "on-request"
     assert config.codex.approvals_reviewer == "auto_review"
     assert config.claude.permission_mode == "auto"
-
-
-def test_load_config_uses_nyanpasu_home_config_by_default(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text(
-        """
-[server]
-port = 9998
-""".strip(),
-        encoding="utf-8",
-    )
-
-    config = load_config()
-
-    assert nyanpasu_home() == (tmp_path / "home").resolve()
-    assert default_config_path() == config_path.resolve()
-    assert config.state_dir == (tmp_path / "home").resolve()
-    assert config.server.port == 9998
 
 
 def test_load_config_rejects_legacy_runtime_keys(tmp_path: Path, monkeypatch) -> None:

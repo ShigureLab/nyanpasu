@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING
 
+import pytest
+
 from nyanpasu.config import NyanpasuConfig
 from nyanpasu.git_ops import WorktreeManager
 from nyanpasu.models import AgentTask, TaskAction, WorkspaceRef
@@ -51,7 +53,7 @@ def test_prepare_context_reuses_context_key_path_and_resets_revision(tmp_path: P
     assert (second_context.session_worktree / "README.md").read_text(encoding="utf-8") == "hello again\n"
 
 
-def test_prepare_event_snapshot_can_replace_existing_path_when_opted_in(tmp_path: Path) -> None:
+def test_prepare_event_snapshot_resets_tracked_changes_and_removes_untracked_files(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
     _git(["init", str(repo_path)], tmp_path)
     _git(["config", "user.email", "nyanpasu@example.invalid"], repo_path)
@@ -77,12 +79,16 @@ def test_prepare_event_snapshot_can_replace_existing_path_when_opted_in(tmp_path
     manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
 
     first = manager.prepare_event_snapshot(task)
+    assert first is not None
+    (first / "README.md").write_text("modified\n", encoding="utf-8")
+    (first / "untracked.txt").write_text("leftover\n", encoding="utf-8")
     second = manager.prepare_event_snapshot(task)
 
     assert first == second
     assert second is not None
     assert (second / ".git").is_dir()
     assert (second / "README.md").read_text(encoding="utf-8") == "hello\n"
+    assert not (second / "untracked.txt").exists()
 
 
 def test_prepare_context_replaces_legacy_git_worktree_with_clone(tmp_path: Path) -> None:
@@ -120,19 +126,38 @@ def test_prepare_context_replaces_legacy_git_worktree_with_clone(tmp_path: Path)
 
 
 def test_fetch_revision_uses_configured_remote_name(tmp_path: Path) -> None:
+    upstream_path = tmp_path / "upstream"
+    _git(["init", str(upstream_path)], tmp_path)
+    _git(["config", "user.email", "nyanpasu@example.invalid"], upstream_path)
+    _git(["config", "user.name", "Nyanpasu"], upstream_path)
+    (upstream_path / "README.md").write_text("initial\n", encoding="utf-8")
+    _git(["add", "README.md"], upstream_path)
+    _git(["commit", "-m", "initial"], upstream_path)
+    ref = _git(["symbolic-ref", "HEAD"], upstream_path).stdout.strip()
+    fork_path = tmp_path / "fork"
+    _git(["clone", str(upstream_path), str(fork_path)], tmp_path)
     repo_path = tmp_path / "repo"
-    _git(["init", str(repo_path)], tmp_path)
-    _git(["remote", "add", "origin", "https://github.com/fork/repo.git"], repo_path)
-    _git(["remote", "add", "upstream", "https://github.com/owner/repo.git"], repo_path)
+    _git(["clone", str(fork_path), str(repo_path)], tmp_path)
+    _git(["remote", "add", "upstream", str(upstream_path)], repo_path)
+    (upstream_path / "README.md").write_text("upstream update\n", encoding="utf-8")
+    _git(["commit", "-am", "upstream update"], upstream_path)
+    revision = _git(["rev-parse", "HEAD"], upstream_path).stdout.strip()
+    with pytest.raises(subprocess.CalledProcessError):
+        _git(["cat-file", "-e", f"{revision}^{{commit}}"], repo_path)
     manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
 
     workspace = WorkspaceRef(
         key="owner/repo",
         local_path=repo_path,
-        remote="https://github.com/owner/repo.git",
+        remote=str(upstream_path),
+        ref=ref,
+        revision=revision,
     )
 
-    assert manager._remote_name(workspace) == "upstream"
+    manager.fetch_revision(workspace)
+
+    assert _git(["rev-parse", "FETCH_HEAD"], repo_path).stdout.strip() == revision
+    assert _git(["show", f"{revision}:README.md"], repo_path).stdout == "upstream update\n"
 
 
 def test_remove_worktree_tolerates_stale_directory(tmp_path: Path) -> None:

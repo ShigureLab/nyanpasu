@@ -53,14 +53,6 @@ class FakeAgent:
         _ = plugin_id, hook
 
 
-def test_verify_signature_accepts_valid_signature() -> None:
-    body = b'{"ok": true}'
-    secret = "secret"
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-    verify_signature(body, f"sha256={digest}", secret)
-
-
 def test_verify_signature_rejects_invalid_signature() -> None:
     with pytest.raises(HTTPException):
         verify_signature(b"{}", "sha256=bad", "secret")

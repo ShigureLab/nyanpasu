@@ -8,11 +8,13 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from nyanpasu.config import CodexConfig, NyanpasuConfig, ServerConfig
+from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.plugins import PluginRegistry
+from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
 
 if TYPE_CHECKING:
-    from nyanpasu.models import AgentTask, TaskRunResult
+    from nyanpasu.models import TaskRunResult
 
 
 class FakeAgent:
@@ -150,15 +152,31 @@ async def test_app_health_and_plugin_router(tmp_path) -> None:
 @pytest.mark.anyio
 async def test_app_tasks_and_contexts_endpoints(tmp_path) -> None:
     config = NyanpasuConfig(state_dir=tmp_path / "state")
+    store = StateStore(config.db_path)
+    store.record_task(AgentTask(task_id="task-1", context_key="demo:1", action=TaskAction.RUN, prompt="request"))
+    store.upsert_context(
+        AgentContext(
+            context_key="demo:1",
+            thread_id="thread-1",
+            session_worktree=tmp_path / "worktree",
+            workspace_key="demo",
+            revision="head-a",
+        )
+    )
     app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         tasks = await client.get("/tasks")
         contexts = await client.get("/contexts")
 
     assert tasks.status_code == 200
-    assert tasks.json() == {"tasks": []}
+    assert [(task["task_id"], task["context_key"], task["status"]) for task in tasks.json()["tasks"]] == [
+        ("task-1", "demo:1", "queued")
+    ]
     assert contexts.status_code == 200
-    assert contexts.json() == {"contexts": []}
+    assert [
+        (context["context_key"], context["thread_id"], context["session_worktree"])
+        for context in contexts.json()["contexts"]
+    ] == [("demo:1", "thread-1", str(tmp_path / "worktree"))]
 
 
 @pytest.mark.anyio

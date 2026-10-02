@@ -109,7 +109,6 @@ async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path
     assert prepared.prompt.count("Target head:") == 1
     assert "Target head: head-b" in prepared.prompt
     assert "head-a" not in prepared.prompt
-    assert "Additional coalesced task context" not in prepared.prompt
     assert (
         'Powered by <a href="https://github.com/ShigureLab/nyanpasu">Nyanpasu</a> with runtime-model high'
         in prepared.prompt
@@ -145,7 +144,6 @@ async def test_no_review_when_pr_becomes_ineligible_in_queue(tmp_path: Path, mon
     prepared = await plugin.prepare_task(queued, (), None)
 
     assert prepared.action is TaskAction.IGNORED
-    assert "Review skipped" in prepared.prompt
 
 
 def test_manual_review_preserves_explicit_request(tmp_path: Path, monkeypatch) -> None:

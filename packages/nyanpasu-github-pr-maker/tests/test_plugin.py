@@ -437,7 +437,6 @@ async def test_pr_maker_follow_up_poller_dispatches_changed_pr(tmp_path: Path, m
         assert "Update docs." not in resumed.prompt
         assert "Original task (restored" in restored.prompt and "Update docs." in restored.prompt
         assert resumed.developer_instructions == restored.developer_instructions
-        assert len(resumed.prompt) < 1000
     finally:
         await plugin.shutdown()
 

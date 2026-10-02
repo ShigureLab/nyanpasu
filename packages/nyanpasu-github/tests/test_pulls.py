@@ -57,4 +57,12 @@ def test_fetch_pull_request_view_builds_actionable_digest() -> None:
     assert seen_env == [{"GH_TOKEN": "token"}]
     assert pr.failing_checks == ("lint",)
     assert [activity.kind for activity in pr.activities] == ["comment", "review"]
-    assert pr.follow_up_digest() == pr.model_copy().follow_up_digest()
+    digest = pr.follow_up_digest()
+    assert pr.model_copy(update={"updated_at": "2026-05-31T00:03:00Z"}).follow_up_digest() == digest
+    edited_comment = pr.activities[0].model_copy(update={"body_excerpt": "please also fix lint"})
+    for update in [
+        {"head_sha": "new-head"},
+        {"activities": (edited_comment, *pr.activities[1:])},
+        {"failing_checks": ()},
+    ]:
+        assert pr.model_copy(update=update).follow_up_digest() != digest

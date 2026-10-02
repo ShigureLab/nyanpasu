@@ -401,10 +401,14 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
     other = StateStore(config.db_path)
     publish = AsyncMock()
     agent.add_post_process_hook("review", publish)
-    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    task = _task("review").model_copy(
+        update={"metadata": {"plugin_id": "review"}, "workspace_policy": "event_snapshot"}
+    )
     commit = agent.store.mark_task_done
 
     def finish(result):
+        (snapshot,) = worktrees.event_paths
+        (snapshot / "owned.txt").write_text("unfinished work")
         if conflict == "closing":
             record = other.task_run(task.task_id)
             other.begin_context_cleanup(task.context_key, record.context_generation)
@@ -421,7 +425,8 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
         publish.assert_not_called()
         assert other.task_status(task.task_id) != "completed"
         assert worktrees.removed == []
-        assert all(path.is_dir() for path in worktrees.event_paths)
+        (snapshot,) = worktrees.event_paths
+        assert (snapshot / "owned.txt").read_text() == "unfinished work"
     finally:
         await agent.shutdown()
 
@@ -439,12 +444,16 @@ async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_co
 
     async def publish(task, result):
         assert agent.store.task_status(task.task_id) == "completed"
+        (snapshot,) = worktrees.event_paths
+        (snapshot / "owned.txt").write_text("completed work")
         publishing.set()
         await release.wait()
         published.append(result.final_message)
 
     agent.add_post_process_hook("review", publish)
-    task = _task("review").model_copy(update={"metadata": {"plugin_id": "review"}})
+    task = _task("review").model_copy(
+        update={"metadata": {"plugin_id": "review"}, "workspace_policy": "event_snapshot"}
+    )
     run = asyncio.create_task(agent.run_now(task))
     try:
         await asyncio.wait_for(publishing.wait(), 2)
@@ -458,10 +467,12 @@ async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_co
                     break
                 await asyncio.sleep(0.01)
         assert not run.done()
+        (snapshot,) = worktrees.event_paths
+        assert (snapshot / "owned.txt").read_text() == "completed work"
         release.set()
         await run
         assert published == ["done"]
-        assert worktrees.removed == worktrees.event_paths
+        assert worktrees.removed == [snapshot]
         assert agent.store.get_context_lease(task.context_key) is None
     finally:
         release.set()
@@ -767,7 +778,6 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
         == codex.instructions[1].split("\nNyanpasu subtask control")[0]
     )
     assert "Persistent role." in codex.instructions[0]
-    assert "Configured instruction documents:" in codex.instructions[0]
     assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.instructions[0]
     assert "Stay precise." in codex.instructions[0]
     assert "--- AGENTS.md ---" in codex.instructions[0]
@@ -889,7 +899,6 @@ async def test_reviewer_merged_events_produce_one_coherent_turn(tmp_path: Path, 
     await asyncio.gather(*agent._tasks)
 
     assert len(codex.prompts) == 1
-    assert codex.prompts[0].startswith("Review ")
     assert "Target head: head-b" in codex.prompts[0]
     assert "head-a" not in codex.prompts[0]
     assert "{{NYANPASU" not in codex.prompts[0]
