@@ -1533,24 +1533,15 @@ def _timeline_item_is_from_agent(item: dict[str, Any], agent_login: str | None) 
 
 
 def _normalize_timestamp(value: str) -> str:
-    parsed = _parse_github_timestamp(value)
-    if parsed is None:
+    try:
+        parsed = datetime.fromisoformat(value).astimezone(UTC)
+    except ValueError:
         return value
     return parsed.isoformat().replace("+00:00", "Z")
 
 
 def _event_id(event: dict[str, Any]) -> str:
     return str(event.get("id") or "")
-
-
-def _parse_github_timestamp(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value).astimezone(UTC)
-    except ValueError:
-        try:
-            return datetime.fromisoformat(value.removesuffix("Z") + "+00:00").astimezone(UTC)
-        except ValueError:
-            return None
 
 
 def _event_limit(config: GitHubReviewerConfig) -> int | None:
