@@ -890,10 +890,7 @@ def event_from_repo_event(
     github_event = _github_event_name(event_type)
     if github_event is None:
         return None
-    event = parse_github_event(github_event, delivery_id, payload, agent_login=agent_login)
-    if event.action is ReviewAction.IGNORED:
-        return event
-    return event
+    return parse_github_event(github_event, delivery_id, payload, agent_login=agent_login)
 
 
 def event_from_pr_timeline_item(
@@ -1071,12 +1068,9 @@ def _delivery_id_from_repo_event(repo: str, raw_event: dict[str, Any]) -> str:
 
 
 def _delivery_id_from_timeline_item(repo: str, pr_number: int, raw_item: dict[str, Any]) -> str:
-    item_id = _timeline_item_id(raw_item)
-    if item_id:
-        return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{safe_slug(item_id)}-{safe_slug(_timeline_item_updated_at(raw_item))}"
-    event = safe_slug(str(raw_item.get("event") or "item"))
+    item_id = safe_slug(_timeline_item_id(raw_item))
     updated_at = safe_slug(_timeline_item_updated_at(raw_item))
-    return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{event}-{updated_at}"
+    return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{item_id}-{updated_at}"
 
 
 def _sorted_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
