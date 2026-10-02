@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   SearchResults,
+  SessionDetail,
   SessionTaskTree,
   TranscriptChanges,
   TranscriptEntry,
   TranscriptWindow,
 } from './api-types';
-import { useApi, backendLabel, query, useResource, type Navigate, type SessionDetail } from './api';
+import { useApi, backendLabel, query, useResource, type Navigate } from './api';
 import { ContentBlock, Copy, Entry, Status } from './Entry';
 import { Download } from './Download';
 import { openTask, SessionTasks } from './SessionTasks';

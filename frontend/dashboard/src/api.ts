@@ -1,6 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createApi } from './api-client';
-import type { Coverage } from './api-types';
 
 export interface Page<T> {
   items: T[];
@@ -10,48 +9,6 @@ export interface Page<T> {
 
 export function backendLabel(backend: string): string {
   return ({ codex: 'Codex', claude: 'Claude Code' } as Record<string, string>)[backend] ?? backend;
-}
-export interface Session {
-  session_id: string;
-  context_key: string;
-  title: string;
-  thread_id: string | null;
-  state: string;
-  backend: string;
-  created_at: string;
-  updated_at: string;
-  task_count: number;
-  spawned_by_task_id: string | null;
-  execution_uncertain: boolean;
-  coverage: Coverage;
-  origin: string;
-  previous_session_id: string | null;
-}
-export interface Turn {
-  task_id: string;
-  turn_id: string | null;
-  title: string;
-  state: string;
-  cwd: string | null;
-  revision: string | null;
-  created_at: string;
-  ended_at: string | null;
-}
-export interface SessionDetail extends Session {
-  tasks: Turn[];
-  task_count: number;
-  has_more_tasks: boolean;
-  runtime: {
-    id: string;
-    cwd: string | null;
-    model: string | null;
-    provider: string | null;
-    reasoning_effort: string | null;
-    cli_version: string | null;
-    created_at: string | null;
-    updated_at: string | null;
-  } | null;
-  history_error?: string;
 }
 export interface Task {
   task_id: string;

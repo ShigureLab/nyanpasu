@@ -46,6 +46,64 @@ class Coverage(ContractModel):
     redacted: bool = False
 
 
+class SessionMetadata(ContractModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    backend: str
+    cwd: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    reasoning_effort: str | None = None
+    cli_version: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class Session(ContractModel):
+    session_id: str
+    context_key: str
+    title: str
+    thread_id: str | None
+    state: str
+    backend: str
+    created_at: str
+    updated_at: str
+    task_count: int
+    spawned_by_task_id: str | None
+    execution_uncertain: bool
+    coverage: Coverage
+    origin: str
+    previous_session_id: str | None
+
+
+class SessionPage(ContractModel):
+    items: list[Session]
+    total: int
+    offset: int
+    has_more: bool
+
+
+class Turn(ContractModel):
+    task_id: str
+    turn_id: str | None
+    title: str
+    state: str
+    cwd: str | None
+    revision: str | None
+    created_at: str
+    ended_at: str | None
+
+
+class SessionDetail(Session):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=False)
+
+    tasks: list[Turn]
+    has_more_tasks: bool
+    runtime: SessionMetadata | None
+    history_error: str | None = None
+
+
 class Source(ContractModel):
     backend: str
     version: str | None = None
@@ -171,6 +229,8 @@ class ContentPage(ContractModel):
 
 
 class TranscriptContract(ContractModel):
+    sessions: SessionPage
+    session: SessionDetail
     window: TranscriptWindow
     changes: TranscriptChanges
     task_tree: SessionTaskTree

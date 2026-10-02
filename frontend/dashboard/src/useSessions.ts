@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useApi, type Page, type Session } from './api';
+import type { Session, SessionPage } from './api-types';
+import { useApi } from './api';
 
 const PAGE_SIZE = 50;
 
@@ -10,7 +11,7 @@ export function useSessions(path: string, live: boolean, refresh: number) {
   const [state, setState] = useState<{
     path: string;
     pages: number;
-    data?: Page<Session>;
+    data?: SessionPage;
     error?: string;
     loading: boolean;
   }>({ path, pages, loading: true });
@@ -37,10 +38,10 @@ export function useSessions(path: string, live: boolean, refresh: number) {
       }));
       try {
         const items = new Map<string, Session>();
-        let page: Page<Session>;
+        let page: SessionPage;
         // Refresh the loaded range together: live updates can move sessions across page boundaries.
         for (let index = 0; index < pages; index++) {
-          page = await get<Page<Session>>(
+          page = await get<SessionPage>(
             `${path}&offset=${index * PAGE_SIZE}&limit=${PAGE_SIZE}`,
             controller.signal,
           );

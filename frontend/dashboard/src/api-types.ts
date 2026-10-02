@@ -6,11 +6,86 @@
  */
 
 export interface TranscriptContract {
+  sessions: SessionPage;
+  session: SessionDetail;
   window: TranscriptWindow;
   changes: TranscriptChanges;
   task_tree: SessionTaskTree;
   search: SearchResults;
   content: ContentPage;
+  [k: string]: unknown;
+}
+export interface SessionPage {
+  items: Session[];
+  total: number;
+  offset: number;
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface Session {
+  session_id: string;
+  context_key: string;
+  title: string;
+  thread_id: string | null;
+  state: string;
+  backend: string;
+  created_at: string;
+  updated_at: string;
+  task_count: number;
+  spawned_by_task_id: string | null;
+  execution_uncertain: boolean;
+  coverage: Coverage;
+  origin: string;
+  previous_session_id: string | null;
+  [k: string]: unknown;
+}
+export interface Coverage {
+  source_truncated: boolean;
+  redacted: boolean;
+  [k: string]: unknown;
+}
+export interface SessionDetail {
+  session_id: string;
+  context_key: string;
+  title: string;
+  thread_id: string | null;
+  state: string;
+  backend: string;
+  created_at: string;
+  updated_at: string;
+  task_count: number;
+  spawned_by_task_id: string | null;
+  execution_uncertain: boolean;
+  coverage: Coverage;
+  origin: string;
+  previous_session_id: string | null;
+  tasks: Turn[];
+  has_more_tasks: boolean;
+  runtime: SessionMetadata | null;
+  history_error?: string | null;
+  [k: string]: unknown;
+}
+export interface Turn {
+  task_id: string;
+  turn_id: string | null;
+  title: string;
+  state: string;
+  cwd: string | null;
+  revision: string | null;
+  created_at: string;
+  ended_at: string | null;
+  [k: string]: unknown;
+}
+export interface SessionMetadata {
+  id: string;
+  backend: string;
+  cwd: string | null;
+  model: string | null;
+  provider: string | null;
+  reasoning_effort: string | null;
+  cli_version: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   [k: string]: unknown;
 }
 export interface TranscriptWindow {
@@ -69,11 +144,6 @@ export interface TranscriptBlock {
   preview_truncated: boolean;
   content_ref: string;
   recorded_bytes: number;
-  [k: string]: unknown;
-}
-export interface Coverage {
-  source_truncated: boolean;
-  redacted: boolean;
   [k: string]: unknown;
 }
 export interface TranscriptChanges {

@@ -42,6 +42,8 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
             assert response.status_code == 200
             page = response.json()
             assert page["total"] == 2 and page["has_more"]
+            assert page["offset"] == 0
+            assert "runtime" not in page["items"][0]
             return page["items"][0]
 
         assert (await first_session())["session_id"] == SESSION
@@ -55,6 +57,8 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
         assert latest["updated_at"] == "2026-09-14T00:00:08+00:00"
         detail = (await client.get("/api/sessions/" + latest["session_id"])).json()
         assert detail["updated_at"] == latest["updated_at"]
+        assert detail["runtime"]["backend"] == "claude"
+        assert "history_error" not in detail
         assert (await client.get("/api/sessions?offset=1&limit=1")).json()["items"][0]["session_id"] == SESSION
 
         codex.metadata["updatedAt"] = codex_time + 1
@@ -99,6 +103,7 @@ async def test_sessions_prioritize_active_execution_before_pagination(tmp_path: 
             response = await client.get("/api/sessions", params={"offset": offset, "limit": 2})
             assert response.status_code == 200
             page = response.json()
+            assert page["offset"] == offset
             assert [item["session_id"] for item in page["items"]] == expected[offset : offset + 2]
             assert page["total"] == len(expected)
             assert page["has_more"] == (offset + 2 < len(expected))
@@ -230,6 +235,11 @@ async def test_unavailable_codex_does_not_hide_task_metadata_or_expose_other_thr
         assert (await client.get("/api/sessions/thread/transcript")).status_code == 503
         assert (await client.get("/api/sessions/unrelated/transcript")).status_code == 404
         assert (await client.get("/api/sessions")).json()["items"][0]["state"] == "failed"
+        detail = (await client.get("/api/sessions/thread")).json()
+        assert detail["runtime"] is None
+        assert detail["history_error"] == "Codex offline"
+        assert detail["tasks"][0]["turn_id"] == "turn"
+        assert detail["tasks"][0]["cwd"] is None
         assert (await client.get("/api/tasks/failed")).json()["error"] == "backend process failed"
 
 

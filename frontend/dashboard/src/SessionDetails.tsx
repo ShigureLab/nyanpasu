@@ -1,4 +1,5 @@
-import { backendLabel, type Navigate, type SessionDetail } from './api';
+import type { SessionDetail } from './api-types';
+import { backendLabel, type Navigate } from './api';
 import { Copy } from './Entry';
 import { Time } from './Time';
 

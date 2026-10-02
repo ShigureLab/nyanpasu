@@ -13,6 +13,8 @@ from nyanpasu.redaction import redact
 from nyanpasu.transcript.models import (
     ContentPage,
     SearchResults,
+    SessionDetail,
+    SessionPage,
     SessionTaskTree,
     TranscriptChanges,
     TranscriptEntry,
@@ -49,7 +51,7 @@ def dashboard_router(
             "session_source": "native",
         }
 
-    @router.get("/sessions")
+    @router.get("/sessions", response_model=SessionPage)
     async def sessions(
         q: Search = "",
         state: str = "",
@@ -60,7 +62,7 @@ def dashboard_router(
     ):
         return await reader.sessions(q, state, context, offset, limit, include_subtasks=include_subtasks)
 
-    @router.get("/sessions/{session_id}")
+    @router.get("/sessions/{session_id}", response_model=SessionDetail, response_model_exclude_unset=True)
     async def session(session_id: str, offset: Offset = 0, limit: PageSize = 100):
         return await reader.session(session_id, offset, limit)
 
