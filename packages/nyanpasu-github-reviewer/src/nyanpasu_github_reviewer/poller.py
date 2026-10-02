@@ -1113,13 +1113,25 @@ def _timeline_items_strictly_after(items: list[dict[str, Any]], last_updated_at:
     return [item for item in items if _timeline_item_updated_at(item) > last_updated_at]
 
 
-def _newest_cursor(events: list[dict[str, Any]]) -> PollEventCursor | None:
-    if not events:
+def _newest_position(positions: Iterable[tuple[str, str | None]]) -> tuple[str, tuple[str, ...]] | None:
+    newest_timestamp: str | None = None
+    ids: list[str] = []
+    for timestamp, item_id in positions:
+        if newest_timestamp is None or timestamp > newest_timestamp:
+            newest_timestamp = timestamp
+            ids = []
+        if timestamp == newest_timestamp and item_id is not None:
+            ids.append(item_id)
+    if newest_timestamp is None:
         return None
-    newest_created_at = max(_event_created_at(event) for event in events)
-    ids = tuple(
-        _event_id(event) for event in events if _event_created_at(event) == newest_created_at and _event_id(event)
-    )
+    return newest_timestamp, tuple(ids)
+
+
+def _newest_cursor(events: list[dict[str, Any]]) -> PollEventCursor | None:
+    position = _newest_position((_event_created_at(event), _event_id(event) or None) for event in events)
+    if position is None:
+        return None
+    newest_created_at, ids = position
     return PollEventCursor(
         repo="",
         last_event_created_at=newest_created_at,
@@ -1134,14 +1146,10 @@ def _newest_timeline_cursor(
     pr_number: int,
     items: list[dict[str, Any]],
 ) -> PullRequestTimelineCursor | None:
-    if not items:
+    position = _newest_position((_timeline_item_updated_at(item), _timeline_item_id(item)) for item in items)
+    if position is None:
         return None
-    newest_updated_at = max(_timeline_item_updated_at(item) for item in items)
-    ids = tuple(
-        _timeline_item_id(item)
-        for item in items
-        if _timeline_item_updated_at(item) == newest_updated_at and _timeline_item_id(item)
-    )
+    newest_updated_at, ids = position
     return PullRequestTimelineCursor(
         repo=repo,
         pr_number=pr_number,
@@ -1168,10 +1176,10 @@ def _timeline_cursor_item_ids(
 
 
 def _newest_pr_updated_cursor(repo: str, snapshots: list[PullRequestSnapshot]) -> PullRequestUpdatedCursor | None:
-    if not snapshots:
+    position = _newest_position((snapshot.updated_at, snapshot.node_id) for snapshot in snapshots)
+    if position is None:
         return None
-    newest_updated_at = max(snapshot.updated_at for snapshot in snapshots)
-    ids = tuple(snapshot.node_id for snapshot in snapshots if snapshot.updated_at == newest_updated_at)
+    newest_updated_at, ids = position
     return PullRequestUpdatedCursor(
         repo=repo,
         last_updated_at=newest_updated_at,
