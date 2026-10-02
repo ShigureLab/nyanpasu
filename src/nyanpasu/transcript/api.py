@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from nyanpasu.presentation import task_title
 from nyanpasu.redaction import redact
 from nyanpasu.transcript.models import (
     ContentPage,
@@ -161,7 +162,7 @@ def dashboard_router(
                 SELECT r.task_id,r.context_key,r.action,r.status,r.updated_at,r.created_at,
                        substr(r.error,1,1000) AS error,r.session_id,r.session_backend AS backend,
                        coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),json_extract(r.task_json,'$.metadata.source_plugin_id'),'core') AS plugin_id,
-                       coalesce(json_extract(r.task_json,'$.metadata.request.title'),substr(json_extract(r.task_json,'$.prompt'),1,160),r.task_id) AS title,
+                       r.task_json,
                        r.coalesced_into,r.spawned_by_task_id,r.context_generation
                 FROM ({TASKS}) r
                 WHERE {" AND ".join(where)}
@@ -170,7 +171,12 @@ def dashboard_router(
             """,
                 (*args, limit, offset),
             ).fetchall()
-        return {"items": redact([dict(row) for row in rows]), "total": total, "has_more": offset + len(rows) < total}
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["title"] = task_title(json.loads(item.pop("task_json")))
+            items.append(item)
+        return {"items": redact(items), "total": total, "has_more": offset + len(rows) < total}
 
     @router.get("/tasks/{task_id}", response_model=TaskDetail, response_model_exclude_unset=True)
     async def task(task_id: str):

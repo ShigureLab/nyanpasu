@@ -20,6 +20,58 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "metadata,prompt,expected",
+    [
+        (
+            {
+                "request": {"title": "\n Named\t task \nOther", "task": "Other"},
+                "pull_request": {"repo": "owner/repo", "number": 12},
+            },
+            "Prompt",
+            "Named task",
+        ),
+        ({"request": {"title": " \n", "task": "\n Implement\t view\nDetails"}}, "Prompt", "Implement view"),
+        (
+            {
+                "pull_request": {"repo": "owner/repo", "number": 12},
+                "github_event": "issue_comment",
+                "review_mode": "followup_review",
+            },
+            "Review a long prompt",
+            "owner/repo #12 issue_comment followup_review",
+        ),
+        ({}, "\n First\t line\nOther", "First line"),
+        ({}, "", "task"),
+        ({"request": {"title": "x" * 160}}, "Prompt", "x" * 137 + "..."),
+        ({}, "ghp_" + "s" * 200, "[REDACTED]"),
+    ],
+)
+async def test_task_titles_agree_across_dashboard_tasks_sessions_and_tree(tmp_path: Path, metadata, prompt, expected):
+    config = NyanpasuConfig(state_dir=tmp_path)
+    state = StateStore(config.db_path)
+    task = AgentTask(task_id="task", context_key="demo", action=TaskAction.RUN, prompt=prompt, metadata=metadata)
+    state.record_task(task)
+    state.mark_task_running(task.task_id, None)
+    state.bind_task_execution(task.task_id, "thread", "turn")
+    state.create_subtask(task.task_id, SubtaskRequest(request_key="child", prompt="Child"))
+    app = create_app(config, session_sources=lambda _: MemorySessionSource())
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        dashboard = (await client.get("/api/dashboard")).json()
+        assert next(item for item in dashboard["recent"] if item["task_id"] == task.task_id)["title"] == expected
+        tasks = (await client.get("/api/tasks?limit=1")).json()
+        assert tasks["items"][0]["title"] == expected
+        assert tasks["has_more"]
+        assert "task_json" not in tasks["items"][0]
+        sessions = (await client.get("/api/sessions")).json()
+        assert sessions["items"][0]["title"] == expected
+        detail = (await client.get("/api/sessions/thread")).json()
+        assert detail["title"] == detail["tasks"][0]["title"] == expected
+        tree = (await client.get("/api/sessions/thread/task-tree")).json()
+        assert tree["groups"][0]["title"] == expected
+
+
+@pytest.mark.anyio
 async def test_sessions_sort_and_show_latest_native_activity_before_pagination(tmp_path: Path):
     config = NyanpasuConfig(state_dir=tmp_path / "state")
     state = StateStore(config.db_path)

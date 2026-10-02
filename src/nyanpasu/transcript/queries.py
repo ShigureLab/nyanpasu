@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from nyanpasu.presentation import task_title
 from nyanpasu.redaction import redact
 from nyanpasu.store import TASK_RUNS
 from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint
@@ -54,14 +55,12 @@ def position(value: str, session_id: str, purpose: str) -> Any:
     return data[2]
 
 
-def title(task: dict[str, Any]) -> str:
-    metadata = task.get("metadata", {})
-    request = metadata.get("request", {})
-    return str(request.get("title") or task.get("prompt") or task["task_id"]).splitlines()[0][:160]
-
-
 def task_link(row: sqlite3.Row) -> dict[str, Any]:
-    return {"task_id": row["task_id"], "session_id": row["session_id"], "title": title(json.loads(row["task_json"]))}
+    return {
+        "task_id": row["task_id"],
+        "session_id": row["session_id"],
+        "title": task_title(json.loads(row["task_json"])),
+    }
 
 
 def take(
@@ -169,7 +168,7 @@ class TranscriptReader:
             "session_id": session_id,
             "thread_id": latest["session_thread_id"],
             "context_key": latest["context_key"],
-            "title": title(json.loads(latest["task_json"])),
+            "title": task_title(json.loads(latest["task_json"])),
             "backend": latest["session_backend"],
             "origin": "native",
             "created_at": iso_time(tasks[0]["created_at"]),
@@ -194,7 +193,7 @@ class TranscriptReader:
                 {
                     "task_id": row["task_id"],
                     "turn_id": row["turn_id"],
-                    "title": title(task),
+                    "title": task_title(task),
                     "state": row["status"],
                     "cwd": row["event_worktree"],
                     "revision": workspace.get("revision"),

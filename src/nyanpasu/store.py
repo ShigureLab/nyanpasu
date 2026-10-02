@@ -24,6 +24,7 @@ from nyanpasu.models import (
     TaskStatus,
     json_dumps,
 )
+from nyanpasu.presentation import task_title
 
 # A coalesced task is executed by its parent; do not maintain a second backend binding.
 TASK_RUNS = """
@@ -1040,7 +1041,7 @@ def _dashboard_task_from_row(row: sqlite3.Row, *, now: float) -> DashboardTaskIt
         action=str(row["action"]),
         status=str(row["status"]),
         context_key=str(row["context_key"]),
-        title=_dashboard_title(task, metadata),
+        title=task_title(task),
         source=_dashboard_source(metadata),
         thread_id=str(row["thread_id"]) if row["thread_id"] is not None else None,
         turn_id=str(row["turn_id"]) if row["turn_id"] is not None else None,
@@ -1068,31 +1069,6 @@ def _dashboard_plugin_id(metadata: dict[str, Any]) -> str:
     return "core"
 
 
-def _dashboard_title(task: dict[str, Any], metadata: dict[str, Any]) -> str:
-    request = metadata.get("request")
-    if isinstance(request, dict):
-        title = request.get("title")
-        if isinstance(title, str) and title.strip():
-            return title.strip()
-        task_text = request.get("task")
-        if isinstance(task_text, str) and task_text.strip():
-            return _first_line(task_text)
-    pull_request = metadata.get("pull_request")
-    if isinstance(pull_request, dict):
-        repo = pull_request.get("repo")
-        number = pull_request.get("number")
-        event = metadata.get("github_event")
-        mode = metadata.get("review_mode")
-        parts = [str(repo) if repo else "GitHub PR", f"#{number}" if number else ""]
-        suffix = " ".join(str(value) for value in (event, mode) if isinstance(value, str) and value)
-        return f"{' '.join(part for part in parts if part).strip()} {suffix}".strip()
-    prompt = task.get("prompt")
-    if isinstance(prompt, str) and prompt.strip():
-        return _first_line(prompt)
-    task_id = task.get("task_id")
-    return str(task_id) if task_id else "Task"
-
-
 def _dashboard_source(metadata: dict[str, Any]) -> str | None:
     request = metadata.get("request")
     if isinstance(request, dict):
@@ -1108,13 +1084,6 @@ def _dashboard_source(metadata: dict[str, Any]) -> str | None:
         if repo:
             return str(repo)
     return None
-
-
-def _first_line(value: str) -> str:
-    line = " ".join(value.strip().splitlines()[0].split())
-    if len(line) > 140:
-        return line[:137] + "..."
-    return line or "Task"
 
 
 def _task_to_json(task: AgentTask) -> dict[str, Any]:
