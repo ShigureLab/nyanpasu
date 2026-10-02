@@ -25,8 +25,6 @@ from nyanpasu_github_reviewer.models import (
     PollCycleResult,
     PollEventCursor,
     PullRequestSnapshot,
-    PullRequestTimelineCursor,
-    PullRequestUpdatedCursor,
     ReviewAction,
     ReviewEvent,
 )
@@ -197,24 +195,25 @@ class GitHubEventsPoller:
         raw_events = await to_thread.run_sync(self.list_repo_events, self.config, repo)
         raw_events = _sorted_events(raw_events)
         cursor = await to_thread.run_sync(self.store.get_poll_event_cursor, repo)
-        newest = _newest_cursor(raw_events)
+        newest = _newest_position((_event_created_at(event), _event_id(event) or None) for event in raw_events)
         if newest is None:
             logger.info("events poll repo empty repo={}", repo)
             return PollCycleResult(submitted=0, duplicates=0, ignored=0, baselined=0, repos=(repo,))
+        newest_timestamp, newest_ids = newest
         if force_baseline or cursor is None:
             await to_thread.run_sync(
                 functools.partial(
                     self.store.upsert_poll_event_cursor,
                     repo,
-                    last_event_created_at=newest.last_event_created_at,
-                    cursor_event_ids=newest.cursor_event_ids,
+                    last_event_created_at=newest_timestamp,
+                    cursor_event_ids=newest_ids,
                 )
             )
             logger.info(
                 "events poll repo baseline refreshed repo={} newest_created_at={} newest_event_count={} force_baseline={}",
                 repo,
-                newest.last_event_created_at,
-                len(newest.cursor_event_ids),
+                newest_timestamp,
+                len(newest_ids),
                 force_baseline,
             )
             _log_source_summary(
@@ -250,8 +249,8 @@ class GitHubEventsPoller:
                 functools.partial(
                     self.store.upsert_poll_event_cursor,
                     repo,
-                    last_event_created_at=newest.last_event_created_at,
-                    cursor_event_ids=newest.cursor_event_ids,
+                    last_event_created_at=newest_timestamp,
+                    cursor_event_ids=newest_ids,
                 )
             )
             _log_source_summary(
@@ -343,8 +342,8 @@ class GitHubEventsPoller:
             functools.partial(
                 self.store.upsert_poll_event_cursor,
                 repo,
-                last_event_created_at=newest.last_event_created_at,
-                cursor_event_ids=newest.cursor_event_ids,
+                last_event_created_at=newest_timestamp,
+                cursor_event_ids=newest_ids,
             )
         )
         _log_source_summary(
@@ -373,11 +372,12 @@ class GitHubEventsPoller:
             raw = await to_thread.run_sync(self.get_pull_request, self.config, repo, number)
             snapshots.append(_snapshot_from_pr(repo, raw))
         snapshots = sorted(snapshots, key=lambda item: (item.updated_at, item.node_id))
-        newest = _newest_pr_updated_cursor(repo, snapshots)
+        newest = _newest_position((snapshot.updated_at, snapshot.node_id) for snapshot in snapshots)
         cursor = await to_thread.run_sync(self.store.get_pr_updated_cursor, repo)
         if newest is None:
             logger.info("pr state poll repo empty repo={}", repo)
             return PollCycleResult(submitted=0, duplicates=0, ignored=0, baselined=0, repos=(repo,))
+        newest_timestamp, newest_ids = newest
         if force_baseline or cursor is None:
             for snapshot in snapshots:
                 await to_thread.run_sync(self.store.upsert_pr_snapshot, snapshot)
@@ -385,14 +385,14 @@ class GitHubEventsPoller:
                 functools.partial(
                     self.store.upsert_pr_updated_cursor,
                     repo,
-                    last_updated_at=newest.last_updated_at,
-                    pr_node_ids=newest.pr_node_ids,
+                    last_updated_at=newest_timestamp,
+                    pr_node_ids=newest_ids,
                 )
             )
             logger.info(
                 "pr state poll baseline refreshed repo={} newest_updated_at={} prs={}",
                 repo,
-                newest.last_updated_at,
+                newest_timestamp,
                 len(snapshots),
             )
             _log_source_summary(
@@ -489,8 +489,8 @@ class GitHubEventsPoller:
             functools.partial(
                 self.store.upsert_pr_updated_cursor,
                 repo,
-                last_updated_at=newest.last_updated_at,
-                pr_node_ids=newest.pr_node_ids,
+                last_updated_at=newest_timestamp,
+                pr_node_ids=newest_ids,
             )
         )
         _log_source_summary(
@@ -541,10 +541,11 @@ class GitHubEventsPoller:
             )
             items = _sorted_timeline_items(raw_items)
             total_items += len(items)
-            newest = _newest_timeline_cursor(repo, snapshot.number, items)
+            newest = _newest_position((_timeline_item_updated_at(item), _timeline_item_id(item)) for item in items)
             if newest is None:
                 logger.info("pr timeline poll empty repo={} pr={}", repo, snapshot.number)
                 continue
+            newest_timestamp, newest_ids = newest
             cursor = await to_thread.run_sync(self.store.get_pr_timeline_cursor, repo, snapshot.number)
             if cursor is None:
                 window = _timeline_items_strictly_after(items, first_seen_after)
@@ -655,17 +656,15 @@ class GitHubEventsPoller:
                     baselined=0,
                     ignored_reasons=pr_ignored_reasons,
                 )
+            if cursor is None and newest_timestamp < first_seen_after:
+                newest_timestamp, newest_ids = first_seen_after, ()
             await to_thread.run_sync(
                 functools.partial(
                     self.store.upsert_pr_timeline_cursor,
                     repo,
                     snapshot.number,
-                    last_item_updated_at=_timeline_cursor_timestamp(newest, first_seen_after)
-                    if cursor is None
-                    else newest.last_item_updated_at,
-                    item_ids=_timeline_cursor_item_ids(newest, items, first_seen_after)
-                    if cursor is None
-                    else newest.item_ids,
+                    last_item_updated_at=newest_timestamp,
+                    item_ids=newest_ids,
                 )
             )
         _log_source_summary(
@@ -1125,68 +1124,6 @@ def _newest_position(positions: Iterable[tuple[str, str | None]]) -> tuple[str, 
     if newest_timestamp is None:
         return None
     return newest_timestamp, tuple(ids)
-
-
-def _newest_cursor(events: list[dict[str, Any]]) -> PollEventCursor | None:
-    position = _newest_position((_event_created_at(event), _event_id(event) or None) for event in events)
-    if position is None:
-        return None
-    newest_created_at, ids = position
-    return PollEventCursor(
-        repo="",
-        last_event_created_at=newest_created_at,
-        cursor_event_ids=ids,
-        initialized_at=time.time(),
-        updated_at=time.time(),
-    )
-
-
-def _newest_timeline_cursor(
-    repo: str,
-    pr_number: int,
-    items: list[dict[str, Any]],
-) -> PullRequestTimelineCursor | None:
-    position = _newest_position((_timeline_item_updated_at(item), _timeline_item_id(item)) for item in items)
-    if position is None:
-        return None
-    newest_updated_at, ids = position
-    return PullRequestTimelineCursor(
-        repo=repo,
-        pr_number=pr_number,
-        last_item_updated_at=newest_updated_at,
-        item_ids=ids,
-        initialized_at=time.time(),
-        updated_at=time.time(),
-    )
-
-
-def _timeline_cursor_timestamp(cursor: PullRequestTimelineCursor, baseline: str) -> str:
-    if cursor.last_item_updated_at < baseline:
-        return baseline
-    return cursor.last_item_updated_at
-
-
-def _timeline_cursor_item_ids(
-    cursor: PullRequestTimelineCursor,
-    items: list[dict[str, Any]],
-    baseline: str,
-) -> tuple[str, ...]:
-    timestamp = _timeline_cursor_timestamp(cursor, baseline)
-    return tuple(_timeline_item_id(item) for item in items if _timeline_item_updated_at(item) == timestamp)
-
-
-def _newest_pr_updated_cursor(repo: str, snapshots: list[PullRequestSnapshot]) -> PullRequestUpdatedCursor | None:
-    position = _newest_position((snapshot.updated_at, snapshot.node_id) for snapshot in snapshots)
-    if position is None:
-        return None
-    newest_updated_at, ids = position
-    return PullRequestUpdatedCursor(
-        repo=repo,
-        last_updated_at=newest_updated_at,
-        pr_node_ids=ids,
-        initialized_at=time.time(),
-        updated_at=time.time(),
-    )
 
 
 def _prs_after_updated_cursor(
