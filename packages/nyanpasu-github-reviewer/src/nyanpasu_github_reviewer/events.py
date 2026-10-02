@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -378,3 +380,34 @@ def parse_github_event(
         after_sha=None,
         raw=payload,
     )
+
+
+def event_dedupe_key(event: ReviewEvent) -> str:
+    """Identify a logical event across webhook and polling deliveries."""
+    context = event.raw.get("nyanpasu")
+    if event.github_event == "pull_request" and event.pr is not None:
+        action = str(event.raw.get("action") or event.github_event)
+        if action == "synchronize":
+            return f"pull_request:synchronize:{event.pr.key}:{event.after_sha}"
+        if action == "opened":
+            return f"pull_request:{action}:{event.pr.key}:{event.after_sha or event.pr.head_sha}"
+        # Separate deliveries can be deliberate requests on the same PR head.
+        return f"pull_request:{action}:{event.pr.key}:{event.delivery_id}"
+    if isinstance(context, dict):
+        for field, item_field in (("comment_id", "comment"), ("pull_request_review_id", "review")):
+            value = context.get(field)
+            item = event.raw.get(item_field)
+            if value and isinstance(item, dict):
+                version = json.dumps(
+                    [
+                        item.get("updated_at") or item.get("submitted_at") or item.get("created_at") or "",
+                        item.get("body") or "",
+                    ],
+                    ensure_ascii=False,
+                )
+                digest = hashlib.sha256(version.encode("utf-8")).hexdigest()
+                return f"{event.github_event}:{value}:{digest}"
+        repo_event_id = context.get("repo_event_id")
+        if repo_event_id:
+            return f"{event.github_event}:{repo_event_id}"
+    return event.delivery_id

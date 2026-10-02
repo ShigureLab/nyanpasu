@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
     PullRequestSnapshot,
@@ -1130,3 +1131,59 @@ async def test_stack_membership_changes_without_pr_timestamp_change(tmp_path):
         assert (await poller.run_once()).submitted == 1
     for event, target in zip(agent.events, ("main", "release", "lower"), strict=True):
         assert event.pr is not None and event.pr.target_branch == target
+
+
+@pytest.mark.anyio
+async def test_timeline_poll_admits_later_edits_of_same_comment(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    pull = _pull_request_api_item()
+    timeline: list[dict[str, Any]] = []
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: [pull],
+        list_pull_request_timeline=lambda *_: timeline,
+    )
+    await poller.run_once()
+    for updated_at in ("2026-05-30T10:05:00Z", "2026-05-30T10:10:00Z"):
+        timeline[:] = [_timeline_issue_comment_item("/review", updated_at=updated_at)]
+        pull["updated_at"] = updated_at
+        assert (await poller.run_once()).submitted == 1
+        assert (await poller.run_once()).submitted == 0
+    assert len(agent.events) == 2
+    assert agent.events[0].delivery_id != agent.events[1].delivery_id
+    assert all(event.raw["nyanpasu"]["comment_id"] == 100 for event in agent.events)
+
+
+@pytest.mark.parametrize(
+    "github_event,payload,item",
+    [
+        ("issue_comment", _issue_comment_payload("/review", comment_id=100), _timeline_issue_comment_item("/review")),
+        (
+            "pull_request_review_comment",
+            _review_comment_payload("/review", comment_id=200),
+            _timeline_review_comment_item("/review"),
+        ),
+        (
+            "pull_request_review",
+            _review_payload("/review"),
+            {"event": "reviewed", "created_at": "2026-05-30T10:05:00Z", **_review_payload("/review")["review"]},
+        ),
+    ],
+)
+def test_timeline_and_webhook_identify_same_comment_version(github_event, payload, item):
+    payload = payload | {"repository": {"full_name": "ExampleOrg/ExampleRepo"}}
+    webhook = parse_github_event(github_event, "webhook-delivery", payload, agent_login="review-bot")
+    timeline = event_from_pr_timeline_item(
+        item,
+        _snapshot_from_test_pr(),
+        delivery_id="timeline-delivery",
+        agent_login="review-bot",
+    )
+    assert timeline is not None
+    assert timeline.action is ReviewAction.REVIEW
+    assert event_dedupe_key(timeline) == event_dedupe_key(webhook)

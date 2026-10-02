@@ -17,7 +17,7 @@ from nyanpasu_github.gh import run_gh
 from nyanpasu_github.models import PullRequestRef
 
 from nyanpasu.git_ops import safe_slug
-from nyanpasu_github_reviewer.events import parse_github_event
+from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubEventJournalRecord,
     GitHubEventJournalStatus,
@@ -1073,7 +1073,7 @@ def _delivery_id_from_repo_event(repo: str, raw_event: dict[str, Any]) -> str:
 def _delivery_id_from_timeline_item(repo: str, pr_number: int, raw_item: dict[str, Any]) -> str:
     item_id = _timeline_item_id(raw_item)
     if item_id:
-        return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{safe_slug(item_id)}"
+        return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{safe_slug(item_id)}-{safe_slug(_timeline_item_updated_at(raw_item))}"
     event = safe_slug(str(raw_item.get("event") or "item"))
     updated_at = safe_slug(_timeline_item_updated_at(raw_item))
     return f"timeline-poll-{safe_slug(repo)}-{pr_number}-{event}-{updated_at}"
@@ -1309,7 +1309,7 @@ def _journal_record_from_event(
     now = time.time()
     return GitHubEventJournalRecord(
         delivery_id=event.delivery_id,
-        dedupe_key=_dedupe_key(event),
+        dedupe_key=event_dedupe_key(event),
         source=source,
         repo=repo,
         pr_number=pr_number,
@@ -1555,35 +1555,6 @@ def _raw_updated_at(raw: dict[str, Any] | None) -> str:
     if raw is None:
         return ""
     return _event_created_at(raw) or _timeline_item_updated_at(raw)
-
-
-def _dedupe_key(event: ReviewEvent) -> str:
-    context = event.raw.get("nyanpasu")
-    if event.github_event == "pull_request" and event.pr is not None:
-        action = _pull_request_action(event)
-        if action == "synchronize":
-            return f"pull_request:synchronize:{event.pr.key}:{event.after_sha}"
-        if action == "opened":
-            return f"pull_request:{action}:{event.pr.key}:{event.after_sha or event.pr.head_sha}"
-        return f"pull_request:{action}:{event.pr.key}:{event.delivery_id}"
-    if isinstance(context, dict):
-        for field, prefix in (
-            ("comment_id", event.github_event),
-            ("pull_request_review_id", event.github_event),
-            ("repo_event_id", event.github_event),
-        ):
-            value = context.get(field)
-            if value:
-                return f"{prefix}:{value}"
-    return event.delivery_id
-
-
-def _pull_request_action(event: ReviewEvent) -> str:
-    context = event.raw.get("nyanpasu")
-    trigger = str(context.get("trigger") or "") if isinstance(context, dict) else ""
-    if trigger.startswith("pull_request_"):
-        return trigger.removeprefix("pull_request_")
-    return str(event.raw.get("action") or event.github_event)
 
 
 def _event_created_at(event: dict[str, Any]) -> str:

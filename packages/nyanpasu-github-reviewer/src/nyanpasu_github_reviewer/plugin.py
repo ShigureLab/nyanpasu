@@ -16,7 +16,7 @@ from nyanpasu_github.workspace import pull_request_workspace_ref
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
-from nyanpasu_github_reviewer.events import parse_github_event
+from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
     PullRequestRef,
@@ -155,7 +155,7 @@ class GitHubReviewerPlugin:
             prompt=prompt,
             coalesce_key=context_key if task_action is TaskAction.RUN else None,
             workspace=workspace,
-            dedupe_key=event.delivery_id,
+            dedupe_key=event_dedupe_key(event),
             metadata={
                 "plugin_id": self.id,
                 "pull_request": pr.model_dump(mode="json") if pr else None,

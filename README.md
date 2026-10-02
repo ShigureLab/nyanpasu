@@ -260,7 +260,7 @@ The GitHub reviewer plugin mounts its webhook at:
 POST /plugins/github-reviewer/webhook
 ```
 
-The plugin can also start its poller during plugin setup. GitHub reviewer polling combines repository events, PR state polling, and PR timeline polling into one event journal: the first poll records current cursors and PR snapshots without handling older work, later polls process matching events after those cursors, and already processed delivery ids are skipped. `poll_max_events_per_cycle = 0` means dispatch every matching journal event in the poll window; set it to a positive number only when you intentionally want a per-cycle cap.
+The plugin can also start its poller during plugin setup. GitHub reviewer polling combines repository events, PR state polling, and PR timeline polling into one event journal: the first poll records current cursors and PR snapshots without handling older work, later polls process matching events after those cursors, and already admitted logical events are skipped across webhooks and polling. `poll_max_events_per_cycle = 0` means dispatch every matching journal event in the poll window; set it to a positive number only when you intentionally want a per-cycle cap.
 
 The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain a named PR dashboard comment with review status, conclusions, and links to finding threads. See the [review dashboard workflow](packages/nyanpasu-github-reviewer/README.md#review-dashboard) for setup and update rules.
 

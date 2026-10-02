@@ -5,10 +5,11 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
-from test_github_events import issue_comment_payload, pull_request_review_payload, review_comment_payload
+from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.config import CodexConfig, NyanpasuConfig
 from nyanpasu.models import AgentContext, TaskAction
+from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_task
@@ -246,3 +247,50 @@ async def test_publication_verification_rechecks_eligibility(tmp_path, monkeypat
     _stub_github(monkeypatch, **updates)
     with pytest.raises(ValueError, match="no longer eligible"):
         await plugin.scope_control(task, "review-verify", {})
+
+
+@pytest.mark.parametrize(
+    "github_event,payload,item_field",
+    [
+        ("issue_comment", issue_comment_payload("/review"), "comment"),
+        ("pull_request_review_comment", review_comment_payload(body="/review"), "comment"),
+        ("pull_request_review", pull_request_review_payload("/review"), "review"),
+    ],
+)
+def test_distinct_comment_requests_remain_admissible(tmp_path, monkeypatch, github_event, payload, item_field):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch)
+    store = StateStore(tmp_path / "state.sqlite3")
+
+    def submit(delivery, raw):
+        event = parse_github_event(github_event, delivery, raw, agent_login="review-bot")
+        return store.record_task(plugin.event_to_task(event))
+
+    assert submit("original", payload)
+    assert not submit("redelivery", payload)
+    edited = payload | {"action": "edited", item_field: payload[item_field] | {"body": "/review again"}}
+    assert submit("edited", edited)
+    assert not submit("edited-redelivery", edited)
+    another = payload | {item_field: payload[item_field] | {"id": 900}}
+    assert submit("another-comment", another)
+    if item_field == "comment":
+        # A later edit may repeat the original body and still request a new turn.
+        updated = payload | {
+            "action": "edited",
+            item_field: payload[item_field] | {"updated_at": "2026-05-30T10:10:00Z"},
+        }
+        assert submit("later-edit", updated)
+
+
+def test_explicit_review_requests_on_same_head_remain_admissible(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch)
+    store = StateStore(tmp_path / "state.sqlite3")
+    payload = pr_payload("review_requested") | {"requested_reviewer": {"login": "review-bot"}}
+    for delivery in ("request-1", "request-2"):
+        event = parse_github_event("pull_request", delivery, payload, agent_login="review-bot")
+        assert store.record_task(plugin.event_to_task(event))
+        assert not store.record_task(plugin.event_to_task(event))
+    assert plugin.config is not None
+    for _ in range(2):
+        assert store.record_task(manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 123))
