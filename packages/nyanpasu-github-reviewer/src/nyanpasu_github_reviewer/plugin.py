@@ -59,6 +59,7 @@ class GitHubReviewerPlugin:
         self.config = config
         self.runtime: PluginRuntime | None = None
         self.store: GitHubReviewerStore | None = None
+        self.state_store: StateStore | None = None
         self.poller: GitHubEventsPoller | None = None
         self.poller_task: asyncio.Task[None] | None = None
         self.github: GitHubIntegrationConfig = GitHubIntegrationConfig()
@@ -73,6 +74,7 @@ class GitHubReviewerPlugin:
         self.config = config
         self.runtime = runtime
         self.store = GitHubReviewerStore(runtime.config.db_path)
+        self.state_store = StateStore(runtime.config.db_path)
         runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_subtask_preparer(self.id, self.prepare_subtask)
         runtime.add_task_control_handler(self.id, self.scope_control)
@@ -90,7 +92,7 @@ class GitHubReviewerPlugin:
                 config,
                 store=self.store,
                 agent=GitHubPollAgent(self),
-                event_status=lambda delivery_id: StateStore(runtime.config.db_path).task_status(delivery_id),
+                event_status=self.state_store.task_status,
             )
             self.poller_task = asyncio.create_task(self.poller.run_forever())
             logger.info(
@@ -185,8 +187,8 @@ class GitHubReviewerPlugin:
         return inventory, plan, allowed
 
     def _validate_recovered_subtasks(self) -> None:
-        assert self.runtime is not None
-        store = StateStore(self.runtime.config.db_path)
+        assert self.state_store is not None
+        store = self.state_store
         for child in store.unfinished_tasks():
             if child.spawned_by_task_id is None or child.metadata.get("source_plugin_id") != self.id:
                 continue
@@ -213,7 +215,8 @@ class GitHubReviewerPlugin:
 
     def _prepare_scoped_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
         assert self.runtime is not None
-        inventory, plan, allowed = self._scope_for_parent(StateStore(self.runtime.config.db_path), parent)
+        assert self.state_store is not None
+        inventory, plan, allowed = self._scope_for_parent(self.state_store, parent)
         inputs = dict(request.inputs)
         files = inputs.pop("review_files", None)
         if not isinstance(files, list) or not files or not all(isinstance(path, str) for path in files):
@@ -281,7 +284,8 @@ class GitHubReviewerPlugin:
 
     def _scope_control(self, task: AgentTask, payload: dict[str, Any]) -> dict:
         assert self.runtime is not None
-        store = StateStore(self.runtime.config.db_path)
+        assert self.state_store is not None
+        store = self.state_store
         # A recovered pre-upgrade root obtains its inventory before continuing.
         inventory = task.metadata.get("review_inventory") or build_inventory(self.runtime.config, task)
         if "base_ref" not in inventory:

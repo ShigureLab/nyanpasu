@@ -242,6 +242,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
     )
     plugin = GitHubReviewerPlugin()
     plugin.runtime = Mock(config=config)
+    plugin.state_store = agent.store
     agent.add_task_control_handler(plugin.id, plugin.scope_control)
     agent.add_subtask_preparer(plugin.id, plugin.prepare_subtask)
     try:
