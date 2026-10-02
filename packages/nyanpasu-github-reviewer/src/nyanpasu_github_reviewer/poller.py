@@ -272,20 +272,7 @@ class GitHubEventsPoller:
         for raw in window:
             delivery_id = _delivery_id_from_repo_event(repo, raw)
             event = event_from_repo_event(raw, delivery_id=delivery_id, agent_login=self.config.github_login)
-            if event is None:
-                ignored += 1
-                reason = _repo_event_ignore_reason(raw, event)
-                ignored_reasons[reason] += 1
-                _log_poll_decision(
-                    source="repo_events_poll",
-                    decision="ignored",
-                    reason=reason,
-                    repo=repo,
-                    raw=raw,
-                    delivery_id=delivery_id,
-                )
-                continue
-            if event.action is not ReviewAction.REVIEW and event.action is not ReviewAction.CLEANUP:
+            if event is None or event.action not in (ReviewAction.REVIEW, ReviewAction.CLEANUP):
                 ignored += 1
                 reason = _repo_event_ignore_reason(raw, event)
                 ignored_reasons[reason] += 1
