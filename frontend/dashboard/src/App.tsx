@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { TaskDetail, TaskPage } from './api-types';
 import {
   backendLabel,
   query,
@@ -6,8 +7,6 @@ import {
   useResource,
   type Navigate,
   type Page,
-  type Task,
-  type TaskDetail,
   type Diagnostic,
 } from './api';
 import { Copy, Status } from './Entry';
@@ -279,7 +278,7 @@ function Tasks({
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [offset, setOffset] = useState(0);
-  const data = useResource<Page<Task>>(
+  const data = useResource<TaskPage>(
     query('/api/tasks', { q, state, plugin: selection.get('plugin'), offset }),
     live,
     refresh,

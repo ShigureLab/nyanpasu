@@ -188,6 +188,67 @@ class TaskArtifact(ContractModel):
     bytes: int
 
 
+class TaskResultArtifact(TaskArtifact):
+    path: str
+
+
+class TaskEvidence(ContractModel):
+    summary: str
+    artifacts: list[TaskResultArtifact]
+    data: dict[str, object]
+
+
+class TaskRecord(ContractModel):
+    task_id: str
+    context_key: str
+    status: str
+    action: str
+    backend: str
+    session_id: str | None
+    coalesced_into: str | None
+    spawned_by_task_id: str | None
+    context_generation: int
+    error: str | None
+    created_at: float
+    updated_at: float
+
+
+class Task(TaskRecord):
+    title: str
+    plugin_id: str
+
+
+class TaskPage(ContractModel):
+    items: list[Task]
+    total: int
+    has_more: bool
+
+
+class TaskChild(ContractModel):
+    task_id: str
+    status: str
+    context_key: str
+
+
+class TaskDetail(TaskRecord):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=False)
+
+    dedupe_key: str | None
+    entry_id: str | None
+    turn_id: str | None
+    thread_id: str | None
+    event_worktree: str | None
+    task: dict[str, object]
+    session_thread_id: str | None
+    session_backend: str
+    lease_expires_at: float | None
+    lifecycle: str
+    waiting_for: list[str]
+    children: list[TaskChild]
+    subtask_result: TaskEvidence | None
+    history_error: str | None = None
+
+
 class TaskTreeNode(TaskLink):
     purpose: str | None
     status: str
@@ -231,6 +292,8 @@ class ContentPage(ContractModel):
 class TranscriptContract(ContractModel):
     sessions: SessionPage
     session: SessionDetail
+    tasks: TaskPage
+    task: TaskDetail
     window: TranscriptWindow
     changes: TranscriptChanges
     task_tree: SessionTaskTree

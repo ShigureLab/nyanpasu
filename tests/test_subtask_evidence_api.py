@@ -53,6 +53,7 @@ async def test_tree_and_frozen_evidence_remain_readable_after_context_cleanup(tm
         client.headers["Authorization"] = "Bearer test-token"
         tasks = (await client.get("/api/tasks?plugin=reviewer")).json()["items"]
         assert {task["task_id"] for task in tasks} == {"parent", child.task_id}
+        assert all(task["backend"] == "codex" for task in tasks)
         detail = (await client.get("/api/tasks/parent")).json()
         assert detail["children"][0]["task_id"] == child.task_id
         assert detail["waiting_for"] == [child.task_id]
@@ -64,6 +65,9 @@ async def test_tree_and_frozen_evidence_remain_readable_after_context_cleanup(tm
         assert detail["spawned_by_task_id"] == parent.task_id
         assert detail["coalesced_into"] is None
         assert detail["lifecycle"] == "closed"
+        assert detail["task"]["task_id"] == child.task_id
+        assert detail["subtask_result"] == store.subtask_result(child.task_id)
+        assert "history_error" not in detail
         response = await client.get(url)
         assert response.content == content
         assert response.headers["Cache-Control"] == "no-store"

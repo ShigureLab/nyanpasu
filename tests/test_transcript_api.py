@@ -174,6 +174,12 @@ async def test_session_state_comes_from_execution_not_coalesced_events(tmp_path:
             assert session["execution_uncertain"] == (status == "running" and not lease_active)
             assert session["task_count"] == 3
         assert [task["task_id"] for task in detail["tasks"]] == ["previous", "parent", "child"]
+        coalesced = (await client.get("/api/tasks/child")).json()
+        assert coalesced["backend"] == backend
+        assert coalesced["thread_id"] is None
+        assert coalesced["session_thread_id"] == SESSION
+        assert coalesced["turn_id"] == "current-turn"
+        assert coalesced["session_id"] == session_id
         if status != "completed":
             assert (await client.get("/api/sessions?state=completed")).json()["total"] == 0
 

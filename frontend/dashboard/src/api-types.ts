@@ -8,6 +8,8 @@
 export interface TranscriptContract {
   sessions: SessionPage;
   session: SessionDetail;
+  tasks: TaskPage;
+  task: TaskDetail;
   window: TranscriptWindow;
   changes: TranscriptChanges;
   task_tree: SessionTaskTree;
@@ -86,6 +88,81 @@ export interface SessionMetadata {
   cli_version: string | null;
   created_at: string | null;
   updated_at: string | null;
+  [k: string]: unknown;
+}
+export interface TaskPage {
+  items: Task[];
+  total: number;
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface Task {
+  task_id: string;
+  context_key: string;
+  status: string;
+  action: string;
+  backend: string;
+  session_id: string | null;
+  coalesced_into: string | null;
+  spawned_by_task_id: string | null;
+  context_generation: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  title: string;
+  plugin_id: string;
+  [k: string]: unknown;
+}
+export interface TaskDetail {
+  task_id: string;
+  context_key: string;
+  status: string;
+  action: string;
+  backend: string;
+  session_id: string | null;
+  coalesced_into: string | null;
+  spawned_by_task_id: string | null;
+  context_generation: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  dedupe_key: string | null;
+  entry_id: string | null;
+  turn_id: string | null;
+  thread_id: string | null;
+  event_worktree: string | null;
+  task: {
+    [k: string]: unknown;
+  };
+  session_thread_id: string | null;
+  session_backend: string;
+  lease_expires_at: number | null;
+  lifecycle: string;
+  waiting_for: string[];
+  children: TaskChild[];
+  subtask_result: TaskEvidence | null;
+  history_error?: string | null;
+  [k: string]: unknown;
+}
+export interface TaskChild {
+  task_id: string;
+  status: string;
+  context_key: string;
+  [k: string]: unknown;
+}
+export interface TaskEvidence {
+  summary: string;
+  artifacts: TaskResultArtifact[];
+  data: {
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+export interface TaskResultArtifact {
+  name: string;
+  sha256: string;
+  bytes: number;
+  path: string;
   [k: string]: unknown;
 }
 export interface TranscriptWindow {

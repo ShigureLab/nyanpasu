@@ -16,6 +16,8 @@ from nyanpasu.transcript.models import (
     SessionDetail,
     SessionPage,
     SessionTaskTree,
+    TaskDetail,
+    TaskPage,
     TranscriptChanges,
     TranscriptEntry,
     TranscriptWindow,
@@ -138,7 +140,7 @@ def dashboard_router(
             },
         )
 
-    @router.get("/tasks")
+    @router.get("/tasks", response_model=TaskPage)
     def tasks(q: Search = "", state: str = "", plugin: str = "", offset: Offset = 0, limit: PageSize = 50):
         where, args = ["1=1"], []
         if q:
@@ -170,7 +172,7 @@ def dashboard_router(
             ).fetchall()
         return {"items": redact([dict(row) for row in rows]), "total": total, "has_more": offset + len(rows) < total}
 
-    @router.get("/tasks/{task_id}")
+    @router.get("/tasks/{task_id}", response_model=TaskDetail, response_model_exclude_unset=True)
     async def task(task_id: str):
         with reader.connect() as conn:
             row = conn.execute(f"SELECT * FROM ({TASKS}) WHERE task_id=?", (task_id,)).fetchone()
