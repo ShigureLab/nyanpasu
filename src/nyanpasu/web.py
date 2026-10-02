@@ -158,18 +158,15 @@ def create_app(
 
     @protected.get("/tasks")
     async def tasks(limit: int = 20) -> dict[str, Any]:
-        store = StateStore(resolved_config.db_path)
-        return {"tasks": [task.model_dump(mode="json") for task in store.recent_tasks(limit)]}
+        return {"tasks": [task.model_dump(mode="json") for task in state_store.recent_tasks(limit)]}
 
     @protected.get("/contexts")
     async def contexts() -> dict[str, Any]:
-        store = StateStore(resolved_config.db_path)
-        return {"contexts": [context.model_dump(mode="json") for context in store.list_contexts()]}
+        return {"contexts": [context.model_dump(mode="json") for context in state_store.list_contexts()]}
 
     @protected.get("/api/dashboard")
     async def dashboard_api(recent_limit: int = 50, backlog_limit: int = 100) -> dict[str, Any]:
-        store = StateStore(resolved_config.db_path)
-        snapshot = store.dashboard_snapshot(
+        snapshot = state_store.dashboard_snapshot(
             recent_limit=max(1, min(recent_limit, 200)),
             backlog_limit=max(1, min(backlog_limit, 500)),
         )
