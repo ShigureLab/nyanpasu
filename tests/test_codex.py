@@ -69,9 +69,8 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
         backend._pending[1] = waiter
         backend._agent_messages[("thread-1", "turn-1")] = ["stale"]
 
-        alive = loop.run_until_complete(backend._process_alive())
+        loop.run_until_complete(backend._reset_dead_process())
 
-        assert alive is False
         assert backend._proc is None
         assert backend._reader_task is None
         assert backend._pending == {}

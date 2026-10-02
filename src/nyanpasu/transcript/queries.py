@@ -9,8 +9,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from nyanpasu.redaction import redact
 from nyanpasu.store import TASK_RUNS
-from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint, redact
+from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint
 from nyanpasu.transcript.models import Coverage, TranscriptEntry
 from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
 

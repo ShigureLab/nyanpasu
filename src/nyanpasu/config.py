@@ -171,6 +171,10 @@ class NyanpasuConfig(BaseModel):
     plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)
     enabled_plugins: tuple[str, ...] = ()
 
+    @property
+    def enabled_plugin_ids(self) -> tuple[str, ...]:
+        return self.enabled_plugins or tuple(self.plugins)
+
     def process_config(self, backend: str | None = None) -> ProcessConfig:
         name = backend or self.runtime.backend
         if name == "codex":

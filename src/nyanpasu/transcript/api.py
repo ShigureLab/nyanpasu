@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
-from nyanpasu.transcript.content import redact
+from nyanpasu.redaction import redact
 from nyanpasu.transcript.models import SessionTaskTree, TranscriptChanges, TranscriptEntry, TranscriptWindow
 from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
@@ -236,7 +236,7 @@ def dashboard_router(
                        status,action,count(*) AS count,max(updated_at) AS last_updated_at
                 FROM task_runs GROUP BY plugin_id,status,action
             """).fetchall()
-        enabled = set(config.enabled_plugins or config.plugins)
+        enabled = set(config.enabled_plugin_ids)
         ids = sorted(enabled | {row["plugin_id"] for row in rows})
         return {
             "items": [

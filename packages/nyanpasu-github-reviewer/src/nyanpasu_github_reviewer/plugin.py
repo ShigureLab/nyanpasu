@@ -161,7 +161,6 @@ class GitHubReviewerPlugin:
                 "pull_request": pr.model_dump(mode="json") if pr else None,
                 "triggers": [review_trigger(event).model_dump(mode="json")],
             },
-            cleanup_policy="context" if task_action is TaskAction.CLEANUP else "none",
         )
 
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:

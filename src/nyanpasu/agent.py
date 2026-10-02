@@ -80,7 +80,7 @@ class AgentService:
                 ):
                     continue
                 plugin_id = task.metadata.get("plugin_id")
-                if plugin_id and plugin_id not in (self.config.enabled_plugins or self.config.plugins):
+                if plugin_id and plugin_id not in self.config.enabled_plugin_ids:
                     logger.warning(
                         "task recovery deferred: plugin disabled task_id={} plugin={}", task.task_id, plugin_id
                     )

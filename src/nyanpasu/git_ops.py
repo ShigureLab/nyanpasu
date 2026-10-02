@@ -203,9 +203,6 @@ class WorktreeManager:
             self.config.worktrees_dir / "_events" / safe_slug(task.context_key) / f"{safe_slug(task.task_id)}{suffix}"
         )
 
-    def event_worktree_path(self, task: AgentTask) -> Path:
-        return self.event_snapshot_path(task)
-
     def _reset_worktree(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
         if self._is_managed_clone(path):
             self._sync_clone(workspace, path, ref)

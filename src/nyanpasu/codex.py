@@ -214,14 +214,6 @@ class CodexAppServerBackend:
         finally:
             self._pending.pop(request_id, None)
 
-    async def _process_alive(self) -> bool:
-        if self._proc is None:
-            return False
-        if self._proc.returncode is None:
-            return True
-        await self._reset_dead_process()
-        return False
-
     async def _reset_dead_process(self) -> None:
         if self._proc is None:
             return

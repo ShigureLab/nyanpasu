@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread as to_thread
 
+from nyanpasu.redaction import redact
 from nyanpasu.transcript.adapters import item_snapshot
-from nyanpasu.transcript.content import redact
 from nyanpasu.transcript.history import HistoryItem, HistoryTurn, SessionHistory, SessionMetadata
 from nyanpasu.transcript.source import iso_time
 

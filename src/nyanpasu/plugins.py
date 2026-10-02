@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -72,7 +71,7 @@ class PluginManager:
         self.enabled: list[NyanpasuPlugin] = []
 
     async def setup(self) -> None:
-        for plugin_id in self._enabled_plugin_ids():
+        for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
             raw_config = self.config.plugins.get(plugin_id, {})
             plugin_config: BaseModel | dict[str, Any]
@@ -87,11 +86,6 @@ class PluginManager:
         for plugin in reversed(self.enabled):
             await plugin.shutdown()
 
-    def _enabled_plugin_ids(self) -> tuple[str, ...]:
-        if self.config.enabled_plugins:
-            return self.config.enabled_plugins
-        return tuple(self.config.plugins)
-
 
 def discover_plugins() -> PluginRegistry:
     registry = PluginRegistry()
@@ -103,9 +97,3 @@ def discover_plugins() -> PluginRegistry:
             raise TypeError(f"entry point {entry_point.name} did not return a NyanpasuPlugin")
         registry.register(plugin)
     return registry
-
-
-async def maybe_await(value: Any) -> Any:
-    if asyncio.iscoroutine(value):
-        return await value
-    return value

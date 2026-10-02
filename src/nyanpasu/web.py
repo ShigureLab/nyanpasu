@@ -153,7 +153,7 @@ def create_app(
         return {
             "ok": True,
             "backend": resolved_config.runtime.backend,
-            "enabled_plugins": list(resolved_config.enabled_plugins or resolved_config.plugins),
+            "enabled_plugins": list(resolved_config.enabled_plugin_ids),
         }
 
     @protected.get("/tasks")

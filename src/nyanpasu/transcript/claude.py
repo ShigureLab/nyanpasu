@@ -8,7 +8,8 @@ from uuid import UUID
 
 import anyio.to_thread as to_thread
 
-from nyanpasu.transcript.content import content, redact
+from nyanpasu.redaction import redact
+from nyanpasu.transcript.content import content
 from nyanpasu.transcript.history import HistoryItem, HistoryTurn, SessionHistory, SessionMetadata
 from nyanpasu.transcript.models import EntryUpdate
 

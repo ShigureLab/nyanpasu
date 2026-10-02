@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 from nyanpasu.diagnostics import Diagnostic, diagnostic
-from nyanpasu.transcript.content import redact
+from nyanpasu.redaction import redact
 
 if TYPE_CHECKING:
     from pathlib import Path

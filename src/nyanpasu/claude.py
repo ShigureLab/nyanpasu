@@ -10,7 +10,7 @@ from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, JsonProcessRunner
 from nyanpasu.models import RunResult
-from nyanpasu.transcript.content import redact
+from nyanpasu.redaction import redact
 
 if TYPE_CHECKING:
     from pathlib import Path
