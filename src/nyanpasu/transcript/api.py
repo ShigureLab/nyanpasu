@@ -10,7 +10,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from nyanpasu.redaction import redact
-from nyanpasu.transcript.models import SessionTaskTree, TranscriptChanges, TranscriptEntry, TranscriptWindow
+from nyanpasu.transcript.models import (
+    ContentPage,
+    SearchResults,
+    SessionTaskTree,
+    TranscriptChanges,
+    TranscriptEntry,
+    TranscriptWindow,
+)
 from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
 
@@ -83,7 +90,7 @@ def dashboard_router(
     async def entry(session_id: str, entry_id: str):
         return await reader.entry(session_id, entry_id)
 
-    @router.get("/sessions/{session_id}/search")
+    @router.get("/sessions/{session_id}/search", response_model=SearchResults)
     async def search(
         session_id: str,
         q: Search = "",
@@ -97,7 +104,7 @@ def dashboard_router(
             raise HTTPException(400, "Provide search text or select errors")
         return await reader.search(session_id, q, task_id=task, kind=kind, errors=errors, offset=offset, limit=limit)
 
-    @router.get("/sessions/{session_id}/content/{ref}")
+    @router.get("/sessions/{session_id}/content/{ref}", response_model=ContentPage)
     async def content(
         session_id: str,
         ref: str,

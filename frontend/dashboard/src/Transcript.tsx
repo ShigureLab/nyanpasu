@@ -1,20 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
+  SearchResults,
   SessionTaskTree,
   TranscriptChanges,
   TranscriptEntry,
   TranscriptWindow,
 } from './api-types';
-import {
-  useApi,
-  backendLabel,
-  query,
-  useResource,
-  type Navigate,
-  type Page,
-  type SearchHit,
-  type SessionDetail,
-} from './api';
+import { useApi, backendLabel, query, useResource, type Navigate, type SessionDetail } from './api';
 import { ContentBlock, Copy, Entry, Status } from './Entry';
 import { Download } from './Download';
 import { openTask, SessionTasks } from './SessionTasks';
@@ -90,7 +82,7 @@ export function Transcript({
   const historyRequest = useRef(0);
   const active = useRef(true);
   const selected = selection.get('entry');
-  const searchResults = useResource<Page<SearchHit>>(
+  const searchResults = useResource<SearchResults>(
     searchQuery ? query(`${base}/search`, { q: searchQuery, offset: searchOffset, kind }) : null,
     false,
     refresh,
@@ -443,7 +435,7 @@ export function Transcript({
           </button>
           <button
             onClick={() =>
-              void get<Page<SearchHit>>(query(`${base}/search`, { errors: true, limit: 1 }))
+              void get<SearchResults>(query(`${base}/search`, { errors: true, limit: 1 }))
                 .then((result) => {
                   const hit = result.items[0];
                   if (hit) {

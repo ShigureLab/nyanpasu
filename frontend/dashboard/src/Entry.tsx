@@ -2,8 +2,8 @@ import { Time, duration } from './Time';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { TranscriptBlock, TranscriptEntry } from './api-types';
-import { useApi, query, type ContentPage, type Navigate } from './api';
+import type { ContentPage, TranscriptBlock, TranscriptEntry } from './api-types';
+import { useApi, query, type Navigate } from './api';
 import { Download } from './Download';
 import { hasTextSelection } from './transcript-model';
 

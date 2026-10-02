@@ -9,6 +9,8 @@ export interface TranscriptContract {
   window: TranscriptWindow;
   changes: TranscriptChanges;
   task_tree: SessionTaskTree;
+  search: SearchResults;
+  content: ContentPage;
   [k: string]: unknown;
 }
 export interface TranscriptWindow {
@@ -118,5 +120,28 @@ export interface TaskArtifact {
   name: string;
   sha256: string;
   bytes: number;
+  [k: string]: unknown;
+}
+export interface SearchResults {
+  items: SearchHit[];
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface SearchHit {
+  entry_id: string;
+  task_id: string | null;
+  title: string;
+  snippet: string;
+  block_id: string;
+  content_ref: string;
+  offset: number;
+  [k: string]: unknown;
+}
+export interface ContentPage {
+  text: string;
+  content_ref: string;
+  offset: number;
+  next_offset: number | null;
+  recorded_bytes: number;
   [k: string]: unknown;
 }

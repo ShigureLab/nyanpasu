@@ -147,7 +147,32 @@ class SessionTaskTree(ContractModel):
     has_more: bool
 
 
+class SearchHit(ContractModel):
+    entry_id: str
+    task_id: str | None
+    title: str
+    snippet: str
+    block_id: str
+    content_ref: str
+    offset: int
+
+
+class SearchResults(ContractModel):
+    items: list[SearchHit]
+    has_more: bool
+
+
+class ContentPage(ContractModel):
+    text: str
+    content_ref: str
+    offset: int
+    next_offset: int | None
+    recorded_bytes: int
+
+
 class TranscriptContract(ContractModel):
     window: TranscriptWindow
     changes: TranscriptChanges
     task_tree: SessionTaskTree
+    search: SearchResults
+    content: ContentPage

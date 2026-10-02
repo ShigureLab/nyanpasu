@@ -174,14 +174,15 @@ async def test_session_state_comes_from_execution_not_coalesced_events(tmp_path:
 
 
 @pytest.mark.anyio
-async def test_search_download_export_and_validation_use_native_content(tmp_path: Path):
+@pytest.mark.parametrize("turn_id", ["turn", "untracked-turn"])
+async def test_search_download_export_and_validation_use_native_content(tmp_path: Path, turn_id: str):
     config = NyanpasuConfig(state_dir=tmp_path)
     state = StateStore(config.db_path)
     task = AgentTask(task_id="task", context_key="demo", action=TaskAction.RUN, prompt="original")
     state.record_task(task)
     state.bind_task_execution("task", "thread", "turn")
     text = ("开始🙂\n" * 10000) + "a unique NEEDLE" + ("\nend" * 10000)
-    source = MemorySessionSource([turn("turn", tool("tool", text))])
+    source = MemorySessionSource([turn(turn_id, tool("tool", text))])
     app = create_app(config, session_sources=lambda _: source)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         base = "/api/sessions/thread"
@@ -189,14 +190,20 @@ async def test_search_download_export_and_validation_use_native_content(tmp_path
         assert search.status_code == 200
         hit = search.json()["items"][0]
         assert hit["entry_id"] == "tool"
+        assert hit["task_id"] == ("task" if turn_id == "turn" else None)
+        assert search.json()["has_more"] is False
         content = await client.get(f"{base}/content/{hit['content_ref']}", params={"offset": hit["offset"]})
+        assert content.status_code == 200
         assert content.json()["text"].startswith("NEEDLE")
+        assert content.json()["recorded_bytes"] == len(text.encode())
+        assert content.json()["next_offset"] is None
         downloaded = await client.get(f"{base}/content/{hit['content_ref']}?download=true")
+        assert downloaded.headers["content-type"].startswith("text/plain")
         assert downloaded.text == text
         exported = await client.get(f"{base}/export?format=jsonl")
         records = [json.loads(line) for line in exported.text.splitlines()]
-        assert records[0] == {"turnId": "turn", "item": source.turns[0]["items"][0]}
-        assert (await client.get("/api/tasks/task")).json()["entry_id"] == "tool"
+        assert records[0] == {"turnId": turn_id, "item": source.turns[0]["items"][0]}
+        assert (await client.get("/api/tasks/task")).json()["entry_id"] == ("tool" if turn_id == "turn" else None)
         assert (await client.get("/api/sessions/missing")).status_code == 404
         assert (await client.get(f"{base}/transcript", params={"limit": 10000})).status_code == 422
         assert (await client.get(f"{base}/events")).status_code == 404

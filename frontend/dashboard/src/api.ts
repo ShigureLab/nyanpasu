@@ -89,23 +89,6 @@ export interface Diagnostic {
   target: string | null;
   message: string;
 }
-export interface SearchHit {
-  entry_id: string;
-  task_id: string;
-  title: string;
-  snippet: string;
-  block_id: string;
-  content_ref: string;
-  offset: number;
-}
-export interface ContentPage {
-  text: string;
-  content_ref: string;
-  offset: number;
-  next_offset: number | null;
-  recorded_bytes: number;
-}
-
 export const ApiContext = createContext(createApi(''));
 export const useApi = () => useContext(ApiContext);
 
