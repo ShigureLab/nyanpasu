@@ -1080,17 +1080,17 @@ def _sorted_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _is_after_cursor(timestamp: str, item_id: str, cursor_timestamp: str, cursor_ids: set[str]) -> bool:
+    return timestamp > cursor_timestamp or (timestamp == cursor_timestamp and item_id not in cursor_ids)
+
+
 def _events_after_cursor(events: list[dict[str, Any]], cursor: PollEventCursor) -> list[dict[str, Any]]:
     cursor_ids = set(cursor.cursor_event_ids)
-    selected: list[dict[str, Any]] = []
-    for event in events:
-        created_at = _event_created_at(event)
-        if created_at > cursor.last_event_created_at:
-            selected.append(event)
-            continue
-        if created_at == cursor.last_event_created_at and _event_id(event) not in cursor_ids:
-            selected.append(event)
-    return selected
+    return [
+        event
+        for event in events
+        if _is_after_cursor(_event_created_at(event), _event_id(event), cursor.last_event_created_at, cursor_ids)
+    ]
 
 
 def _sorted_timeline_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1102,17 +1102,11 @@ def _timeline_items_after(
     last_updated_at: str,
     cursor_ids: set[str],
 ) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    for item in items:
-        updated_at = _timeline_item_updated_at(item)
-        if updated_at > last_updated_at:
-            selected.append(item)
-            continue
-        if updated_at == last_updated_at:
-            item_id = _timeline_item_id(item)
-            if item_id not in cursor_ids:
-                selected.append(item)
-    return selected
+    return [
+        item
+        for item in items
+        if _is_after_cursor(_timeline_item_updated_at(item), _timeline_item_id(item), last_updated_at, cursor_ids)
+    ]
 
 
 def _timeline_items_strictly_after(items: list[dict[str, Any]], last_updated_at: str) -> list[dict[str, Any]]:
@@ -1192,14 +1186,11 @@ def _prs_after_updated_cursor(
     last_updated_at: str,
     cursor_ids: set[str],
 ) -> list[PullRequestSnapshot]:
-    selected: list[PullRequestSnapshot] = []
-    for snapshot in snapshots:
-        if snapshot.updated_at > last_updated_at:
-            selected.append(snapshot)
-            continue
-        if snapshot.updated_at == last_updated_at and snapshot.node_id not in cursor_ids:
-            selected.append(snapshot)
-    return selected
+    return [
+        snapshot
+        for snapshot in snapshots
+        if _is_after_cursor(snapshot.updated_at, snapshot.node_id, last_updated_at, cursor_ids)
+    ]
 
 
 def _snapshot_from_pr(repo: str, raw: dict[str, Any]) -> PullRequestSnapshot:
