@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+_SYSTEM_DIRECTORIES = (Path("/usr"), Path("/bin"), Path("/sbin"), Path("/lib"), Path("/lib64"))
+_SYSTEM_CONFIGURATION = (
+    Path("/etc/ld.so.cache"),
+    Path("/etc/alternatives"),
+    Path("/etc/nsswitch.conf"),
+    Path("/etc/passwd"),
+    Path("/etc/group"),
+    Path("/etc/hosts"),
+    Path("/etc/resolv.conf"),
+    Path("/etc/ssl/certs"),
+    Path("/etc/ssl/openssl.cnf"),
+    Path("/etc/pki/tls/certs"),
+    Path("/etc/localtime"),
+    Path("/etc/timezone"),
+)
+_BROAD_PATHS = frozenset(
+    Path(path) for path in ("/", "/home", "/root", "/data", "/tmp", "/run", "/proc", "/sys", "/dev")
+)
+
+
+def _absolute(path: Path) -> Path:
+    # Collapse '..' while preserving executable/virtualenv symlink paths.
+    return Path(os.path.abspath(Path(path).expanduser()))  # noqa: PTH100
+
+
+def _native_home(home: Path, driver: str) -> Path:
+    if driver not in {"codex", "claude-code"}:
+        raise ValueError(f"unsupported isolation driver: {driver}")
+    return home / (".codex" if driver == "codex" else ".claude")
+
+
+def seed_home(home: Path, driver: str, source_env: Mapping[str, str]) -> Path:
+    """Seed authentication/configuration, never personal memories or histories.
+
+    Existing per-context files are retained, including refreshed credentials.
+    Call this while the context has no running backend. Operator changes to the
+    template require an explicit reseed/new context, not an implicit home copy.
+    """
+    home = _absolute(home)
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    native = _native_home(home, driver)
+    if native.is_symlink():
+        raise ValueError("native home must be a directory within the isolated home")
+    native.mkdir(exist_ok=True, mode=0o700)
+    source_home = Path(source_env.get("HOME", str(Path.home())))
+    if driver == "codex":
+        source = Path(source_env.get("CODEX_HOME", str(source_home / ".codex")))
+        names = ("config.toml", "auth.json")
+    else:
+        source = Path(source_env.get("CLAUDE_CONFIG_DIR", str(source_home / ".claude")))
+        names = ("settings.json", ".credentials.json")
+    for name in names:
+        target = native / name
+        if target.is_symlink():
+            raise ValueError("seeded configuration must not be a symlink")
+        if target.exists() or not (source / name).is_file():
+            continue
+        # Replace from a private temporary file rather than opening a backend-
+        # writable destination: a symlink must never redirect a service write.
+        with tempfile.NamedTemporaryFile(dir=native, prefix=".seed-", delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write((source / name).read_bytes())
+                stream.flush()
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+    return native
+
+
+@dataclass(frozen=True)
+class ExecutionIsolation:
+    """The entire per-turn filesystem capability granted by the service.
+
+    Run every model process with this boundary, including history helper servers.
+    An unisolated sibling with the same host UID would defeat file isolation.
+    readonly_paths are operator grants for executable code and tools, not model
+    input. They must not contain service state, another context, or user homes.
+
+    Networking remains available. The service must require authentication and
+    keep its administrative token out of backend credentials/configuration.
+    """
+
+    home: Path
+    control_file: Path | None = None
+    control_socket: Path | None = None
+    readonly_paths: tuple[Path, ...] = ()
+    bwrap: str = "/usr/bin/bwrap"
+
+    def wrap(self, argv: Sequence[str], *, cwd: Path, env: Mapping[str, str]) -> tuple[list[str], dict[str, str]]:
+        if not argv:
+            raise ValueError("an isolated process requires a command")
+        if (self.control_file is None) != (self.control_socket is None):
+            raise ValueError("control_file and control_socket must be supplied together")
+        if shutil.which(self.bwrap) is None:
+            raise RuntimeError("bubblewrap is required for isolated execution")
+        home = _absolute(self.home)
+        cwd = _absolute(cwd)
+        if home in _BROAD_PATHS or cwd in _BROAD_PATHS or home.is_relative_to(cwd):
+            raise ValueError("isolated home and workspace must be separate, specific directories")
+        home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not cwd.is_dir():
+            raise ValueError("isolated workspace does not exist")
+        controls = ()
+        if self.control_file is not None and self.control_socket is not None:
+            control_file, control_socket = _absolute(self.control_file), _absolute(self.control_socket)
+            if not control_file.is_file() or not stat.S_ISSOCK(control_socket.stat().st_mode):
+                raise ValueError("isolated task control requires a file and a Unix socket")
+            controls = (control_file, control_socket)
+        original_home = _absolute(Path(env.get("HOME", str(Path.home()))))
+        native_homes = {
+            _absolute(Path(env.get("CODEX_HOME", str(original_home / ".codex")))),
+            _absolute(Path(env.get("CLAUDE_CONFIG_DIR", str(original_home / ".claude")))),
+        }
+        extra_paths = []
+        for path in self.readonly_paths:
+            path = _absolute(path)
+            resolved = path.resolve()
+            if resolved in {item.resolve() for item in _BROAD_PATHS | native_homes | {original_home}}:
+                raise ValueError("readonly_paths cannot expose a whole host home, native home, or system state tree")
+            if any(protected.resolve().is_relative_to(resolved) for protected in (home, cwd, *controls)):
+                raise ValueError(
+                    "readonly_paths cannot expose a parent of the current home, workspace, or task control"
+                )
+            if not path.exists():
+                raise ValueError(f"readonly path does not exist: {path}")
+            extra_paths.append(path)
+        command = [
+            self.bwrap,
+            "--unshare-all",
+            "--share-net",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+        ]
+        for path in _SYSTEM_DIRECTORIES:
+            if path.is_symlink():
+                command.extend(("--symlink", str(path.readlink()), str(path)))
+            elif path.exists():
+                command.extend(("--ro-bind", str(path), str(path)))
+        for path in _SYSTEM_CONFIGURATION:
+            if path.exists():
+                command.extend(("--ro-bind", str(path), str(path)))
+        command.extend(
+            (
+                "--proc",
+                "/proc",
+                "--remount-ro",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+                "--tmpfs",
+                "/run",
+                "--bind",
+                str(home),
+                str(home),
+                "--bind",
+                str(cwd),
+                str(cwd),
+            )
+        )
+        for path in (*extra_paths, *controls):
+            command.extend(("--ro-bind", str(path), str(path)))
+        command.extend(("--chdir", str(cwd), "--", *argv))
+        isolated_env = {key: value for key, value in env.items() if not key.startswith("NYANPASU_")}
+        isolated_env.update(
+            HOME=str(home),
+            CODEX_HOME=str(home / ".codex"),
+            CLAUDE_CONFIG_DIR=str(home / ".claude"),
+            XDG_CONFIG_HOME=str(home / ".config"),
+            XDG_CACHE_HOME=str(home / ".cache"),
+            XDG_DATA_HOME=str(home / ".local" / "share"),
+            XDG_STATE_HOME=str(home / ".local" / "state"),
+            XDG_RUNTIME_DIR="/tmp/runtime",
+            TMPDIR="/tmp",
+        )
+        return command, isolated_env
