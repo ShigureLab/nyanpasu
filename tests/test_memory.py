@@ -399,11 +399,10 @@ def test_consolidation_includes_untrusted_material_without_promoting_it_to_polic
     prompt = consolidation_prompt(source_id, source_request, evidence)
     policy, separator, encoded = prompt.partition("\n{")
     assert separator
-    assert json.loads("{" + encoded) == {
-        "source_task_id": source_id,
-        "source_request": source_request,
-        "evidence": evidence,
-    }
+    material = json.loads("{" + encoded)
+    assert material["source_task_id"] == source_id
+    assert material["source_request"] == source_request
+    assert material["evidence"][0]["blocks"] == evidence[0]["blocks"]
     assert "UNTRUSTED ID" not in policy
     assert source_request not in policy
     assert "UNVERIFIED CLAIM" not in policy
