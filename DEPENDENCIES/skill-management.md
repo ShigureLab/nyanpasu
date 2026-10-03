@@ -14,8 +14,8 @@ Choose an installation method supported by your agent:
 | Claude Code skills/plugins | [Claude Code](claude-code.md)                            | Follow [Claude's skill documentation](https://code.claude.com/docs/en/skills) and the skill publisher's installer           |
 | `gh skill`                 | A [gh](github-cli.md) version supporting that command    | Follow the skill publisher's instructions, such as [gh-slate](gh-slate-skill.md)                                            |
 
-Use user/global scope for the service account, rather than installing only into the Nyanpasu source checkout: the agent executes in managed task workspaces. Consult the selected CLI's current documentation for its discovery directories. If switching backends, install for the new backend too, or use a shared directory through supported symlinks.
+Agent tasks execute in managed workspaces with isolated homes. Install the required skills into each backend’s curated `home.template`, using its native discovery layout and real files rather than symbolic links. Alternatively, explicitly grant a shared skill directory and configure the native CLI to discover it. Installing only into the Nyanpasu source checkout or the service account’s personal home does not make the skills available to workers.
 
-Start the selected CLI as the service account and confirm the required skill names are discoverable. A skill directory on disk does not establish that the running backend loads it.
+Confirm the required skill names are discoverable in an actual Nyanpasu task. Workers use isolated native homes, so discovery in the service account’s normal interactive CLI is insufficient. Configure explicit tool/skill directories with [execution isolation](../docs/configuration.md#linux-execution-isolation) and the native CLI’s discovery settings. A read-only path grant alone does not register a skill.
 
 The [Skills directory](https://www.skills.sh/docs) is one public discovery option. Follow each skill publisher's installation instructions for its prerequisites.

@@ -14,6 +14,11 @@ driver = "codex"
 command = ["codex"]
 pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
+[backends.codex.home]
+native_directory = ".codex"
+# Optional minimal HOME tree with config/auth/skills, never a personal HOME.
+# template = "/opt/nyanpasu-home-templates/codex"
+
 [backends.codex.defaults]
 # model = "your-codex-model"
 # reasoning = "high"
@@ -31,6 +36,11 @@ driver = "claude-code"
 command = ["claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off"]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 
+[backends.claude.home]
+native_directory = ".claude"
+# Wrappers may require another relative native path and matching template layout.
+# template = "/opt/nyanpasu-home-templates/claude"
+
 [backends.claude.defaults]
 # model = "your-claude-model"
 # reasoning = "high"
@@ -47,17 +57,42 @@ backend = "codex"
 [tasks.defaults.limits]
 turn_timeout_seconds = 3600
 
-# Route task kinds independently; request overrides take precedence.
-# Model/reasoning settings never carry over to a different backend name.
-# [tasks.kinds."github_reviewer.review".execution]
-# backend = "claude"
+# Each kind resolves backend/model/reasoning independently at admission.
+# Requests may override these fields; already queued work keeps its target.
+[tasks.kinds."github_reviewer.review".execution]
+backend = "claude"
 # model = "your-review-model"
 # reasoning = "high"
+
+[tasks.kinds."github_reviewer.independent-design".execution]
+backend = "codex"
+# This child always has shared memory disabled.
+
+[tasks.kinds."github_pr_maker.create".execution]
+backend = "codex"
+
+[tasks.kinds."github_pr_maker.followup".execution]
+backend = "codex"
+
+# Consolidation is a normal queued task with the source task's memory audience.
+[tasks.kinds.memory_consolidation.execution]
+backend = "claude"
+# model = "your-memory-model"
+# reasoning = "medium"
+
+[tasks.kinds.memory_consolidation.limits]
+turn_timeout_seconds = 900
+
+[isolation]
+# Every backend requires Linux and /usr/bin/bwrap. Grant only required tool/skill
+# directories outside the standard system directories. Never grant all of HOME.
+# readonly_paths = ["/opt/nyanpasu-tools", "/opt/nyanpasu-skills"]
+readonly_paths = []
 
 [memory]
 enabled = true
 consolidate = true
-max_notes_per_search = 10
+max_notes_per_search = 10 # Default and maximum result count (1-100).
 # Memory is stored below NYANPASU_HOME/memory and shared across backend drivers.
 # Native Codex and Claude auto-memory is disabled only for Nyanpasu subprocesses.
 
@@ -93,6 +128,9 @@ path = "/path/to/SOUL.md"
 local_path = "/path/to/repo"
 github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
+# Default access reads public + shared:github:owner/repo, writes only that shared
+# audience. Set memory = { read_domains = [] } here to disable memory for this repo.
+# Private audiences require server.token; see docs/memory.md before widening access.
 
 [[plugins.settings.github_reviewer.repos."owner/repo".instruction_docs]]
 name = "AGENTS.md"

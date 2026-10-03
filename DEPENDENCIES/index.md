@@ -15,7 +15,7 @@ Package versions and complete transitive dependencies remain authoritative in [p
 | [Git](git.md)                                                 | Required for repository tasks                     | Clones, workspaces, revisions, and diffs                     |
 | [Nyanpasu packages and Python runtime libraries](nyanpasu.md) | Core required; plugins depend on enabled features | Service, GitHub helpers, reviewer, and optional PR maker     |
 | [Codex CLI](codex.md)                                         | Choose one backend                                | Agent execution through Codex                                |
-| [bubblewrap](bubblewrap.md)                                   | Required for the current Codex Linux sandbox      | Sandboxed shell execution on Linux and WSL2                  |
+| [bubblewrap](bubblewrap.md)                                   | Required for every execution backend on Linux     | Context filesystem and process isolation                     |
 | [Claude Code](claude-code.md)                                 | Choose one backend                                | Agent execution through Claude Code                          |
 | [GitHub CLI (`gh`)](github-cli.md)                            | Required for either GitHub plugin                 | GitHub authentication and API operations                     |
 | [gh-llm](gh-llm.md)                                           | Required by the current reviewer workflow         | PR context, review locations, threads, and review submission |
@@ -24,7 +24,7 @@ Package versions and complete transitive dependencies remain authoritative in [p
 
 ## Agent skills
 
-Skills contain instructions; their command-line tools are separate installations. Install skills for the selected backend under the OS account that runs Nyanpasu. See [skill installation and discovery](skill-management.md) for user scope and backend differences.
+Skills contain instructions; their command-line tools are separate installations. Provision skills for each selected backend’s isolated home. See [skill installation and discovery](skill-management.md) for home templates, discovery, and backend differences.
 
 | Skill                                                                        | Required?                                 | Tool prerequisites                       |
 | ---------------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------- |
@@ -64,7 +64,7 @@ A source checkout needs a Dashboard build before serving `/dashboard`. A distrib
 ## Installation order
 
 1. Install [uv](uv.md), [Python](python.md), and [Git](git.md), then install the [Nyanpasu workspace](nyanpasu.md).
-2. Install and authenticate [Codex](codex.md) or [Claude Code](claude-code.md).
+2. Install [bubblewrap](bubblewrap.md), then install and authenticate each configured [Codex](codex.md) or [Claude Code](claude-code.md) backend.
 3. Install [Node.js](nodejs.md) if building the Dashboard or using npm/npx installers. For the Dashboard, also install [pnpm](pnpm.md) and [build the frontend](frontend.md).
 4. For GitHub review, install [gh](github-cli.md), [gh-llm](gh-llm.md), [gh-slate](gh-slate.md), and both required [reviewer skills](#agent-skills).
 5. Create the service configuration from [examples/config.toml](../examples/config.toml), replacing placeholder paths and identities. Follow [configuration](../README.md#configuration) and [runtime configuration](../README.md#runtime-configuration) for credentials, backend selection, and enabled plugins, then [start the service](../README.md#run).
