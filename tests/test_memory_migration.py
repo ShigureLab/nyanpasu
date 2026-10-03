@@ -13,13 +13,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def legacy_note(root: Path, domain: str, note_id: str, body: str) -> Path:
+def legacy_note(root: Path, domain: str, note_id: str, body: str, *, title: str = "Earlier memory") -> Path:
     directory = root / hashlib.sha256(domain.encode()).hexdigest()
     (directory / "objects").mkdir(parents=True, exist_ok=True)
     metadata = {
         "id": note_id,
         "key": "legacy-fact",
-        "title": "Earlier memory",
+        "title": title,
         "topics": ["runtime"],
         "applies_to": ["repository:Example", "version:1"],
         "sources": ["task:original"],
@@ -68,6 +68,24 @@ def test_import_preserves_audiences_provenance_and_large_content(tmp_path):
     assert "not independently reverified" in restored
     assert all("task:original" in source.sources and source.complete for source in private)
     assert service.list_navigation(MemoryAccess(("public", "private:alice"))) == []
+
+
+def test_import_normalizes_display_title_without_changing_legacy_evidence(tmp_path):
+    original, destination = tmp_path / "old", tmp_path / "new"
+    body = "Original legacy body.\nSecond line."
+    legacy_note(original, "public", "1" * 32, body, title="Alpha\rBeta")
+    before = {str(path.relative_to(original)): path.read_bytes() for path in original.rglob("*") if path.is_file()}
+
+    migrate_memory(original, destination)
+
+    [source] = MemoryService(destination).list_sources(MemoryAccess(("public",)))
+    assert source.title == "Alpha Beta"
+    metadata = json.loads(source.body.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert metadata["title"] == "Alpha\rBeta"
+    assert f"Original content:\n{body}\n" in source.body
+    assert before == {
+        str(path.relative_to(original)): path.read_bytes() for path in original.rglob("*") if path.is_file()
+    }
 
 
 def test_invalid_import_never_publishes_partial_destination(tmp_path):

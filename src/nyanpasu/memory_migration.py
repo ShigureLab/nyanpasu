@@ -63,7 +63,7 @@ def migrate_memory(source: Path, destination: Path) -> dict[str, int]:
                         input_digest=hashlib.sha256(raw + str(index).encode()).hexdigest(),
                         cursor=1,
                         complete=True,
-                        title=metadata["title"],
+                        title=metadata["title"].replace("\r", " "),
                         body=(
                             f"Imported legacy memory {note_id}, part {index}/{len(chunks)}.\n\n"
                             f"{chunk}<!-- End of imported part -->"
