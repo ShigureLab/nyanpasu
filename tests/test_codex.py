@@ -299,6 +299,7 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
         target = _task("parent")
         if stop == "cancel":
             # The parent controls a real app-server child without starting a second native turn.
+            target = first._admit(target)
             first.store.record_task(target)
             first.store.mark_task_running(target.task_id, None)
             first._admitted_roots.add(target.task_id)

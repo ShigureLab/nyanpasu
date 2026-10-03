@@ -49,7 +49,7 @@ turn_timeout_seconds = 3600
 
 # Route task kinds independently; request overrides take precedence.
 # Model/reasoning settings never carry over to a different backend name.
-# [tasks.kinds."github.review".execution]
+# [tasks.kinds."github_reviewer.review".execution]
 # backend = "claude"
 # model = "your-review-model"
 # reasoning = "high"

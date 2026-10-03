@@ -341,7 +341,9 @@ async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Pat
 
     agent = AgentService(configured, worktrees=FakeWorktrees(tmp_path / "worktrees"))
     task = AgentTask(task_id="old", context_key="switch", action=TaskAction.RUN, prompt="inspect")
-    agent.store.record_task(task)
+    agent.store.record_task(
+        task.model_copy(update={"execution": configured.resolve_execution(override=ExecutionOverride(backend="codex"))})
+    )
     agent.store.bind_task_execution("old", "old-codex", "old-turn", "codex")
     old_context = AgentContext(
         context_key="switch",
@@ -489,7 +491,15 @@ async def test_claude_dashboard_renders_native_tools_and_keeps_backend_namespace
     )
     state = StateStore(config.db_path)
     for backend in ("codex", "claude"):
-        state.record_task(AgentTask(task_id=backend, context_key=backend, action=TaskAction.RUN, prompt="inspect"))
+        state.record_task(
+            AgentTask(
+                task_id=backend,
+                context_key=backend,
+                action=TaskAction.RUN,
+                prompt="inspect",
+                execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+            )
+        )
         state.bind_task_execution(backend, SESSION, "claude-input" if backend == "claude" else "turn", backend)
     codex = MemorySessionSource([turn("turn", tool("codex-tool", "Codex content"))])
     claude = ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(home)})
@@ -596,17 +606,16 @@ async def test_partial_transcript_append_and_invalid_paths(tmp_path: Path):
         await source.read_session(SESSION)
 
 
-def test_existing_database_migrates_to_codex(tmp_path: Path):
+def test_existing_database_requires_explicit_migration(tmp_path: Path):
     path = tmp_path / "old.db"
-    StateStore(path)
     with sqlite3.connect(path) as conn:
-        conn.execute("ALTER TABLE agent_contexts DROP COLUMN backend")
-        conn.execute("ALTER TABLE task_runs DROP COLUMN backend")
-        conn.execute("INSERT INTO agent_contexts VALUES ('old', 'thread', NULL, NULL, NULL, 1, 1)")
-    state = StateStore(path)
-    context = state.get_context("old")
-    assert context and context.backend == "codex"
-    assert context.thread_id == "thread"
+        conn.execute("CREATE TABLE task_runs (task_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO task_runs VALUES ('historical-task')")
+    with pytest.raises(ValueError, match="State schema requires migration"):
+        StateStore(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT task_id FROM task_runs").fetchone()[0] == "historical-task"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
 
 
 @pytest.mark.anyio
