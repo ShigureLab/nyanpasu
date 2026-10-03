@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from nyanpasu.memory_consolidation import MEMORY_TASK_KINDS
 from nyanpasu.targets import ExecutionOverride, ExecutionTarget
 
 DEFAULT_HOME = Path("~/.nyanpasu")
@@ -246,6 +247,14 @@ class NyanpasuConfig(BaseModel):
 
     @model_validator(mode="after")
     def _execution_policies(self) -> NyanpasuConfig:
+        if self.memory.enabled and self.memory.consolidate:
+            memory_kinds = self.tasks.kinds.keys() & MEMORY_TASK_KINDS
+            if memory_kinds and memory_kinds != MEMORY_TASK_KINDS:
+                missing = next(iter(MEMORY_TASK_KINDS - memory_kinds))
+                raise ValueError(
+                    "background memory requires policies for both memory_extraction and memory_consolidation; "
+                    f"migrate the configuration by explicitly adding tasks.kinds.{missing}"
+                )
         for name in self.backends:
             if not name.strip():
                 raise ValueError("backend names must be nonempty")

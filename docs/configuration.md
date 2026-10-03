@@ -88,7 +88,7 @@ Model and reasoning resolve independently. Each task-policy layer belongs to the
 
 For example, with global `backend = "codex"`, global `model = "general-model"`, and review-kind `backend = "claude"`, the review uses Claude's model default rather than `general-model`. A request that selects `codex` again can use `general-model`. To override only reasoning, supply `{"reasoning":"high"}`.
 
-`tasks.kinds.<kind>.limits.turn_timeout_seconds` overrides `tasks.defaults.limits.turn_timeout_seconds`. Execution overrides accept only backend, model, and reasoning; they do not modify timeouts. The [complete example](../examples/config.toml) shows separate routing for review, independent design, PR creation, and memory consolidation.
+`tasks.kinds.<kind>.limits.turn_timeout_seconds` overrides `tasks.defaults.limits.turn_timeout_seconds`. Execution overrides accept only backend, model, and reasoning; they do not modify timeouts. The [complete example](../examples/config.toml) shows separate routing for review, independent design, PR creation, and both background memory stages.
 
 Task kinds used by bundled plugins include:
 
@@ -101,7 +101,10 @@ Task kinds used by bundled plugins include:
 | `github_reviewer.<purpose>`          | Other reviewer children when the caller leaves `kind = "subtask"` |
 | `github_pr_maker.create`             | PR creation                                                       |
 | `github_pr_maker.followup`           | Work on an existing managed PR                                    |
-| `memory_consolidation`               | Evidence-based memory maintenance after a completed root task     |
+| `memory_extraction`                  | Background source summary from a completed root task              |
+| `memory_consolidation`               | Background navigation from sources in one audience                |
+
+The two memory stages resolve their policies independently. While background memory is enabled, configure both kinds or neither; a configuration defining only one is rejected instead of sending the other stage to the ordinary worker defaults. The targets may differ when both are explicitly configured. See the [memory configuration upgrade](memory.md#upgrading-existing-memory-configuration) for renamed settings and required migration steps.
 
 A child resolves its own kind and explicit execution override. It does not implicitly inherit the parent's execution target. The control request uses `execution`; an `AgentTask` JSON file uses `execution_override`. Both accept a structured object or compact `backend[/model][:reasoning]`, such as `codex`, `claude:high`, or `codex/your-model:high`. Use an object for model IDs containing `/` or `:`.
 

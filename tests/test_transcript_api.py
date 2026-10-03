@@ -471,7 +471,12 @@ async def test_task_execution_is_frozen_and_missing_native_model_stays_unknown(t
             "codex": {"driver": "codex", "defaults": {"model": "admitted-model", "reasoning": "high"}},
             "cheap": {"driver": "claude-code", "defaults": {"model": "small-model", "reasoning": "low"}},
         },
-        tasks={"kinds": {"memory_consolidation": {"execution": {"backend": "cheap"}}}},
+        tasks={
+            "kinds": {
+                "memory_extraction": {"execution": {"backend": "cheap"}},
+                "memory_consolidation": {"execution": {"backend": "cheap"}},
+            }
+        },
     )
     store = StateStore(config.db_path)
     parent = AgentTask(

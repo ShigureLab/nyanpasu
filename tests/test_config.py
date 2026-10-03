@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from nyanpasu.config import (
@@ -13,6 +15,103 @@ from nyanpasu.config import (
     load_config,
 )
 from nyanpasu.targets import ExecutionOverride
+
+
+def test_example_configuration_loads_and_routes_both_memory_stages(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    example = Path(__file__).parents[1] / "examples" / "config.toml"
+    (tmp_path / "config.toml").write_bytes(example.read_bytes())
+
+    config = load_config()
+
+    assert config.memory.max_results_per_search == 10
+    for kind in ("memory_extraction", "memory_consolidation"):
+        target = config.resolve_execution(kind)
+        assert (target.backend, target.model, target.reasoning, target.turn_timeout_seconds) == (
+            "memory",
+            "gpt-6-luna",
+            "medium",
+            900,
+        )
+        assert target.sources["backend"] == f"tasks.kinds.{kind}.execution"
+        assert target.sources["turn_timeout_seconds"] == f"tasks.kinds.{kind}.limits"
+
+
+@pytest.mark.parametrize("kind", ["memory_extraction", "memory_consolidation"])
+def test_background_memory_rejects_only_one_configured_stage(kind):
+    with pytest.raises(ValueError, match="migrate the configuration by explicitly adding tasks.kinds"):
+        NyanpasuConfig.model_validate(
+            {"tasks": {"kinds": {kind: {"execution": {"backend": "claude", "model": "small-model"}}}}}
+        )
+
+
+@pytest.mark.parametrize("kind", ["memory_extraction", "memory_consolidation"])
+@pytest.mark.parametrize("disabled", ["enabled", "consolidate"])
+def test_disabled_background_memory_allows_one_stage(kind, disabled):
+    config = NyanpasuConfig.model_validate(
+        {
+            "memory": {disabled: False},
+            "tasks": {"kinds": {kind: {"execution": {"backend": "claude", "model": "small-model"}}}},
+        }
+    )
+    assert config.resolve_execution(kind).model == "small-model"
+
+
+def test_background_memory_without_kind_policies_keeps_normal_defaults():
+    config = NyanpasuConfig.model_validate(
+        {"tasks": {"defaults": {"execution": {"model": "default-model"}, "limits": {"turn_timeout_seconds": 321}}}}
+    )
+    for kind in ("memory_extraction", "memory_consolidation"):
+        assert config.resolve_execution(kind) == config.resolve_execution()
+
+
+def test_explicit_background_policies_keep_independent_targets():
+    config = NyanpasuConfig.model_validate(
+        {
+            "tasks": {
+                "kinds": {
+                    "memory_extraction": {
+                        "execution": {"backend": "codex", "model": "extraction-model", "reasoning": "low"},
+                        "limits": {"turn_timeout_seconds": 300},
+                    },
+                    "memory_consolidation": {
+                        "execution": {"backend": "claude", "model": "navigation-model", "reasoning": "medium"},
+                        "limits": {"turn_timeout_seconds": 900},
+                    },
+                }
+            }
+        }
+    )
+    extraction = config.resolve_execution("memory_extraction")
+    navigation = config.resolve_execution("memory_consolidation")
+    assert (extraction.backend, extraction.model, extraction.reasoning, extraction.turn_timeout_seconds) == (
+        "codex",
+        "extraction-model",
+        "low",
+        300,
+    )
+    assert (navigation.backend, navigation.model, navigation.reasoning, navigation.turn_timeout_seconds) == (
+        "claude",
+        "navigation-model",
+        "medium",
+        900,
+    )
+
+
+def test_memory_search_configuration_requires_explicit_key_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
+    path.write_text("[memory]\nmax_notes_per_search = 3\n")
+    with pytest.raises(ValueError, match="max_notes_per_search"):
+        load_config()
+    path.write_text("[memory]\nmax_results_per_search = 3\n")
+    assert load_config().memory.max_results_per_search == 3
+    monkeypatch.setenv("NYANPASU__MEMORY__MAX_NOTES_PER_SEARCH", "7")
+    with pytest.raises(ValueError, match="max_notes_per_search"):
+        load_config()
+    monkeypatch.delenv("NYANPASU__MEMORY__MAX_NOTES_PER_SEARCH")
+    monkeypatch.setenv("NYANPASU__MEMORY__MAX_RESULTS_PER_SEARCH", "7")
+    assert load_config().memory.max_results_per_search == 7
 
 
 def test_server_token_from_config_and_environment(tmp_path, monkeypatch):

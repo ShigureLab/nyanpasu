@@ -74,11 +74,30 @@ backend = "codex"
 [tasks.kinds."github_pr_maker.followup".execution]
 backend = "codex"
 
-# Consolidation is a normal queued task with the source task's memory audience.
+# Both background stages are queued tasks within the source's contribution audience.
+# Background memory has model credentials only, without reviewer GitHub tokens.
+[backends.memory]
+driver = "codex"
+
+[backends.memory.process]
+command = ["codex", "-c", "features.multi_agent=false"]
+
+[backends.memory.defaults]
+model = "gpt-6-luna"
+reasoning = "medium"
+
+[backends.memory.options]
+sandbox = "read-only"
+approval_policy = "never"
+
+[tasks.kinds.memory_extraction.execution]
+backend = "memory"
+
+[tasks.kinds.memory_extraction.limits]
+turn_timeout_seconds = 900
+
 [tasks.kinds.memory_consolidation.execution]
-backend = "claude"
-# model = "your-memory-model"
-# reasoning = "medium"
+backend = "memory"
 
 [tasks.kinds.memory_consolidation.limits]
 turn_timeout_seconds = 900
@@ -86,7 +105,7 @@ turn_timeout_seconds = 900
 [memory]
 enabled = true
 consolidate = true
-max_notes_per_search = 10 # Default and maximum result count (1-100).
+max_results_per_search = 10 # Default and maximum result count (1-100).
 # Memory is stored below NYANPASU_HOME/memory and shared across backend drivers.
 # Native Codex and Claude auto-memory is disabled only for Nyanpasu subprocesses.
 

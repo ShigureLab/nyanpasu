@@ -48,8 +48,14 @@ backend = "codex"
 [tasks.kinds."github_reviewer.review".execution]
 backend = "claude"
 
+[tasks.kinds.memory_extraction.execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "medium"
+
 [tasks.kinds.memory_consolidation.execution]
 backend = "codex"
+model = "gpt-6-luna"
 reasoning = "medium"
 
 [plugins]
@@ -83,7 +89,7 @@ uv run nyanpasu run-task task.json --target codex/your-model:high
 
 The Runtime page shows configured backends, task-kind routing, and the source of each selected field. A native default remains unspecified; configured intent is not proof of the model actually used after provider fallback. See [execution target resolution](docs/configuration.md#per-field-resolution) and [Claude fallback settings](docs/configuration.md#backend-processes).
 
-Both backends use [shared topic memory](docs/memory.md). Markdown notes are the authoritative knowledge, with generated indexes, revision-checked updates, and atomic deduplication/merge. Topic labels and applicability support reuse across projects; task capabilities control the readable and writable audience. Generic tasks default to no memory, reviewer independent-design children disable it, and private audiences require an authenticated service. `memory_consolidation` uses the same task queue and backend routing as ordinary work.
+Both backends use [background memory](docs/memory.md). Normal tasks search and read source summaries; background extraction and consolidation produce Markdown accounts and navigation. The service validates and commits model output, so a task need not call a memory write tool. Task capabilities control the readable and contribution audiences, independently of topics. Generic tasks default to no memory, reviewer independent-design children disable it, and private audiences require an authenticated service. Both memory stages use the normal task queue and backend routing.
 
 ## Run
 

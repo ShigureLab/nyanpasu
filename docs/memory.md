@@ -1,105 +1,113 @@
-# Shared topic memory
+# Background memory
 
-Codex and Claude tasks use the same Nyanpasu memory service. A note represents one reusable conclusion, with a stable key, topic labels, applicability conditions, and evidence references. Repository names and paths can appear in applicability and sources; they do not define the note's topic or require a separate copy of the same knowledge.
+Nyanpasu keeps source-oriented Markdown summaries and derives a bounded navigation document for each audience. Normal tasks can search and read memory. They do not write it: after eligible work completes, the service runs extraction and consolidation tasks, validates their structured output, and publishes it.
 
-Memory is fallible background evidence. A task must check a note's applicability and sources before relying on it. Native Codex memory and Claude auto-memory are disabled for Nyanpasu workers, while the operator's normal CLI settings remain unchanged.
+Session transcripts and tool results remain the evidence for what happened. A summary is a fallible account of that evidence, not proof of current repository, service, or PR state.
 
-## Authority and deduplication
+## Production and publication
 
-The authoritative note content is Markdown below `$NYANPASU_HOME/memory`. Each audience has a hashed storage directory containing immutable note revisions under `objects/`. `manifest.json` selects the active revisions and records idempotent write receipts. The manifest replacement is the atomic commit boundary. `index.md` is a generated navigation view and can be rebuilt; it is not another editable copy of the knowledge. Nyanpasu does not maintain a second memory body in SQLite or a vector database.
+A successful root `run` with a configured contribution audience starts this pipeline:
 
-Online changes go through the memory service, which serializes writers across processes. Updates require the note ID and current `expected_revision`. An outdated revision is rejected instead of overwriting another writer's changes. A `request_key` can replay exactly the same write or merge; reusing it for different input is rejected.
+1. `memory_extraction` reads only the native turns bound to the completed source task. It processes evidence in source order, in bounded chunks, supplying the previous account with each chunk. The model returns a structured source summary; it does not call a memory write tool.
+2. The service validates each result and saves a checkpoint. The source task has a stable identity within its audience. Retrying resumes the committed input digest and cursor instead of adding another source. A partial replacement does not displace the last published account; an empty completed account records a no-content result without creating a searchable entry.
+3. After extraction completes, `memory_consolidation` reads source accounts from that contribution audience and updates its navigation. Large inputs are folded in bounded batches. The published document remains unchanged until all batches pass validation.
+4. The service validates the final navigation's size, source identities, and source revisions, then publishes it atomically. A model's statement that it saved something is never the commit boundary.
 
-The service deduplicates normalized body text with the same applicability inside a writable audience. A repeated conclusion retains one note and combines evidence references. A stable key that already names different content requires an explicit update. Equivalent wording still needs judgment: versions, environments, and conditions can make superficially similar notes different knowledge.
+Both stages are ordinary tasks with frozen backend/model/reasoning settings, native history, status, and errors in the Dashboard. Completion and follow-up admission use the existing durable task queue. A failed navigation task retains the successfully extracted source. Interrupted extraction resumes its checkpoint; a failed task is visible for operator retry rather than silently marked successful. Waiting tasks, children, and memory tasks do not recursively initiate another extraction pipeline.
 
-For semantic duplicates, read all candidates and use `memory.merge` with every input's current revision. The atomic merge preserves one canonical note, combines topics and evidence, and records merged IDs. Do not implement a merge as separate write/delete calls. A new timestamp alone does not resolve a contradiction; leave uncertain claims unchanged and report the conflict.
+Background models receive service-selected evidence and no task-control capability. The service validates and publishes their structured proposals. Structured output checks protect the format and references; they do not establish that every model interpretation is correct. Extraction instructions require confirmed decisions or actual tool evidence, retain applicability and uncertainty, and reject unsupported assistant claims.
+
+## Storage and retrieval
+
+Each audience contains published source Markdown, an optional navigation Markdown document, and a manifest referencing current objects and extraction checkpoints. Markdown holds the content; the manifest does not maintain a second copy of it. In-progress extraction accounts are drafts and are excluded from normal reads and searches.
+
+Different source accounts can describe the same event or repeated experience. They retain independent provenance. Consolidation groups related experience in navigation instead of creating a separate registry of canonical facts with model-generated keys. The navigation is derived and bounded to 8,000 characters.
+
+Normal tasks receive a bounded navigation excerpt for authorized audiences and use progressive reads for details:
+
+| Action            | Input                                                       |
+| ----------------- | ----------------------------------------------------------- |
+| `memory.describe` | No parameters; visible audiences, topics, and source counts |
+| `memory.search`   | `query`, optional `topics`, optional `limit`                |
+| `memory.read`     | `source_id`                                                 |
+
+```json
+{
+   "action": "memory.search",
+   "input": { "query": "context lease recovery", "topics": ["runtime"], "limit": 5 }
+}
+```
+
+Search returns previews from published sources; read the relevant source before relying on its account. `memory.max_results_per_search` sets both the default and upper result count, from 1 to 100. Retrieval currently uses weighted lexical matching, without embeddings or query expansion. Topics organize sources across projects; they are not access permissions.
+
+There are no model-facing `memory.write`, `memory.merge`, or `memory.delete` actions.
 
 ## Audience and access
 
-Topic and applicability metadata describe knowledge. The task's `MemoryAccess` capability determines who can read and write it:
+The service assigns each task a `MemoryAccess` capability. `read_domains` selects readable audiences. `write_domain` identifies the audience to which the service may contribute a background account; it grants no model write permission.
 
-| Capability                                                   | Effect                                                        |
-| ------------------------------------------------------------ | ------------------------------------------------------------- |
-| `read_domains = []`, no `write_domain`                       | No memory access                                              |
-| `read_domains = ["public"]`, no `write_domain`               | Read public notes; no writes                                  |
-| Read public plus a shared domain; write that shared domain   | Use public knowledge and maintain knowledge for that audience |
-| Read public plus a private domain; write that private domain | Keep newly learned knowledge within the private audience      |
+| Capability                                                     | Effect                                                                 |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| No read domains or contribution audience                       | Memory disabled for the task                                           |
+| Read domains, no `write_domain`                                | Read existing memory without contributing                              |
+| Read public plus a private audience; `write_domain` is private | Read both; contribute and consolidate only inside the private audience |
 
-The service assigns this capability before execution. Model requests cannot choose another domain, user identity, or parent. Reading public notes does not grant public write access. Ordinary subtasks inherit their parent's capability or disable memory; they cannot widen it. Reviewer independent-design children always disable memory so prior conclusions do not contaminate that input.
+A consolidator never combines the task's entire readable set into its contribution audience. It receives only sources from that one audience. Model requests cannot select another audience, impersonate a user, or widen a child's capability. Topics and backend/model changes do not change access. Reviewer independent-design children disable memory.
 
-Generic `AgentTask` objects default to no memory. Bundled GitHub tasks normally read `public` plus `shared:github:<owner/repo>` and write only the latter. This is an audience default, not a claim that the repository is publicly accessible. Configure repository capabilities to match the actual readership. Different repositories can share a common audience when that access is explicitly intended.
-
-```toml
-[plugins.settings.github_reviewer.repos."owner/repo"]
-local_path = "/path/to/repo"
-
-[plugins.settings.github_reviewer.repos."owner/repo".memory]
-read_domains = ["public", "shared:engineering"]
-write_domain = "shared:engineering"
-```
-
-For private work, use a private audience and configure `server.token`:
+Generic tasks default to no memory. Bundled GitHub tasks normally read `public` plus `shared:github:<owner/repo>` and contribute to the latter. This is an audience convention, not a claim that the repository is public. Administrators can assign a common audience to repositories whose readership is actually shared.
 
 ```toml
 [server]
 token = "replace-with-a-random-token"
-
-[plugins.settings.github_reviewer.repos."owner/private-repo"]
-local_path = "/path/to/private-repo"
 
 [plugins.settings.github_reviewer.repos."owner/private-repo".memory]
 read_domains = ["public", "private:engineering"]
 write_domain = "private:engineering"
 ```
 
-To disable memory for a repository, supply its `.memory` table with `read_domains = []` and omit `write_domain`. To disable it service-wide, set `memory.enabled = false`. Setting `memory.consolidate = false` disables automatic maintenance tasks while retaining permitted interactive reads and writes.
+Private audiences require authenticated service endpoints. Audience permissions apply to service APIs and task-control requests. Native session homes keep histories separate; backend processes retain the service user's filesystem access, subject to their native CLI permissions. Administrative service credentials must not be passed to a worker.
 
-Audience capabilities are enforced at the service boundary, and native sessions are separated when the audience changes. These checks apply to service APIs and task-control requests; backend processes retain the service user's filesystem access. Administrative service credentials must not be exposed to a worker.
+## Execution configuration
 
-## Task operations
-
-The per-turn control command supports these actions:
-
-| Action            | Input                                                                                                                                     |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `memory.describe` | No parameters; lists visible audiences, topics, and counts                                                                                |
-| `memory.search`   | `query`, optional `topics`, optional `limit`                                                                                              |
-| `memory.read`     | `note_id`                                                                                                                                 |
-| `memory.write`    | `key`, `title`, `body`, optional `topics`, `applies_to`, `sources`, `request_key`; updates also require `note_id` and `expected_revision` |
-| `memory.merge`    | `target_id`, `source_ids`, canonical content, and `expected_revisions` for every input                                                    |
-| `memory.delete`   | `note_id`, `expected_revision`                                                                                                            |
-
-For example, pipe this JSON into the task-control command supplied for the current turn:
-
-```json
-{
-   "action": "memory.search",
-   "input": {
-      "query": "context lease recovery",
-      "topics": ["runtime"],
-      "limit": 5
-   }
-}
-```
-
-Search returns short previews; use `memory.read` before editing. `memory.max_notes_per_search` is both the default result count and the upper bound, with a configuration range of 1–100. The default is 10. Topic filters apply only to the notes already visible to the task. Writes and merges add the source task reference through the service; caller-supplied evidence references supplement it. The control capability expires with the turn.
-
-## Consolidation is an ordinary task
-
-When enabled, a completed root execution with memory write access creates a `memory_consolidation` task. Waiting work, child tasks, and consolidation tasks do not recursively create one. The completion and follow-up admission are recorded together, so a service restart can recover pending maintenance through the normal queue.
-
-A consolidation task has its own resolved backend, model, reasoning, timeout, native session, and Dashboard record. It reads bounded evidence from the source task's native turns and receives exactly the source task's memory audience. It must search existing notes, retain sources and applicability, and write only supported reusable knowledge. Assistant suggestions or unverified success summaries are not enough. A successful consolidation may make no changes.
-
-Route it like any other task kind:
+Both stages use normal task-kind routing. A separate backend name lets the background model use its own defaults and model credentials without reviewer GitHub credentials:
 
 ```toml
-[tasks.kinds.memory_consolidation.execution]
-backend = "claude"
-model = "your-memory-model"
+[backends.memory]
+driver = "codex"
+
+[backends.memory.process]
+command = ["codex", "-c", "features.multi_agent=false"]
+
+[backends.memory.defaults]
+model = "gpt-6-luna"
 reasoning = "medium"
 
-[tasks.kinds.memory_consolidation.limits]
-turn_timeout_seconds = 900
+[backends.memory.options]
+sandbox = "read-only"
+approval_policy = "never"
+
+[tasks.kinds.memory_extraction.execution]
+backend = "memory"
+
+[tasks.kinds.memory_consolidation.execution]
+backend = "memory"
 ```
 
-This uses the existing Claude adapter and task controls; no separate model client or memory-specific provider configuration is needed. Its configured target is frozen when admitted, just like review and implementation tasks.
+Configure the backend's native home template and credentials as for other workers. No separate provider SDK or memory-specific model configuration is used.
+
+`memory.enabled = false` disables memory use and production. `memory.consolidate = false` disables background production while retaining authorized reads. The per-kind timeout and inherited execution defaults follow the [standard configuration rules](configuration.md#per-field-resolution).
+
+## Upgrading existing memory configuration
+
+This is an explicit configuration and storage-format upgrade; runtime loading does not translate older settings or note stores. Drain active work, stop the service, and back up the configuration, SQLite state, and memory directory before upgrading.
+
+1. Rename `memory.max_notes_per_search` to `memory.max_results_per_search`. If supplied through the environment, rename `NYANPASU__MEMORY__MAX_NOTES_PER_SEARCH` to `NYANPASU__MEMORY__MAX_RESULTS_PER_SEARCH` too. The old name is rejected.
+2. Configure both `tasks.kinds.memory_extraction` and `tasks.kinds.memory_consolidation`. Give each stage its intended backend, model, reasoning, and timeout; the example routes both to the same maintenance backend. The stages resolve independently and never inherit one another's policy. While background production is enabled, defining only one stage is rejected. Defining neither leaves both on the normal task defaults.
+3. Check both resolved targets before restarting:
+
+   ```bash
+   uv run nyanpasu explain-target --kind memory_extraction
+   uv run nyanpasu explain-target --kind memory_consolidation
+   ```
+
+Old knowledge-note manifests cannot be used as source stores. Keep the original memory directory and backups intact until an explicit offline conversion and deployment have been verified; do not start this version against the old-format directory.

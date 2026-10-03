@@ -195,7 +195,12 @@ async def test_runtime_exposes_configured_model_and_effort(tmp_path) -> None:
             "codex": {"driver": "codex", "defaults": {"model": "configured-model", "reasoning": "medium"}},
             "cheap": {"driver": "claude-code", "defaults": {"model": "small-model", "reasoning": "low"}},
         },
-        tasks={"kinds": {"memory_consolidation": {"execution": {"backend": "cheap"}}}},
+        tasks={
+            "kinds": {
+                "memory_extraction": {"execution": {"backend": "cheap"}},
+                "memory_consolidation": {"execution": {"backend": "cheap"}},
+            }
+        },
     )
     app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
     async with app.router.lifespan_context(app):
