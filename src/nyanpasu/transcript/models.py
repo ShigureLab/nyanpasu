@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nyanpasu.memory import MemoryNavigation, MemorySource
+from nyanpasu.targets import ExecutionTarget
+
 
 class ContractModel(BaseModel):
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+
+class TaskExecution(ContractModel):
+    kind: str
+    execution: ExecutionTarget | None
 
 
 class ContentUpdate(BaseModel):
@@ -60,7 +68,7 @@ class SessionMetadata(ContractModel):
     updated_at: str | None = None
 
 
-class Session(ContractModel):
+class Session(TaskExecution):
     session_id: str
     context_key: str
     title: str
@@ -84,7 +92,7 @@ class SessionPage(ContractModel):
     has_more: bool
 
 
-class Turn(ContractModel):
+class Turn(TaskExecution):
     task_id: str
     turn_id: str | None
     title: str
@@ -198,7 +206,7 @@ class TaskEvidence(ContractModel):
     data: dict[str, object]
 
 
-class TaskRecord(ContractModel):
+class TaskRecord(TaskExecution):
     task_id: str
     context_key: str
     status: str
@@ -224,10 +232,11 @@ class TaskPage(ContractModel):
     has_more: bool
 
 
-class TaskChild(ContractModel):
+class TaskChild(TaskExecution):
     task_id: str
     status: str
     context_key: str
+    backend: str
 
 
 class TaskDetail(TaskRecord):
@@ -249,7 +258,8 @@ class TaskDetail(TaskRecord):
     history_error: str | None = None
 
 
-class TaskTreeNode(TaskLink):
+class TaskTreeNode(TaskLink, TaskExecution):
+    backend: str
     purpose: str | None
     status: str
     created_at: str
@@ -289,6 +299,39 @@ class ContentPage(ContractModel):
     recorded_bytes: int
 
 
+class MemorySourceSummary(ContractModel):
+    id: str
+    domain: str
+    task_id: str
+    title: str
+    topics: list[str]
+    sources: list[str]
+    revision: str
+    updated_at: str
+    complete: bool
+
+
+class MemoryDomain(ContractModel):
+    id: str
+    count: int
+
+
+class MemoryTopic(ContractModel):
+    name: str
+    count: int
+
+
+class MemoryPage(ContractModel):
+    enabled: bool
+    count: int
+    domains: list[MemoryDomain]
+    topics: list[MemoryTopic]
+    items: list[MemorySourceSummary]
+    navigation_count: int
+    navigation: list[MemoryNavigation]
+    has_more: bool
+
+
 class TranscriptContract(ContractModel):
     sessions: SessionPage
     session: SessionDetail
@@ -299,3 +342,5 @@ class TranscriptContract(ContractModel):
     task_tree: SessionTaskTree
     search: SearchResults
     content: ContentPage
+    memory: MemoryPage
+    memory_source: MemorySource

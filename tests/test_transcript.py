@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nyanpasu.config import NyanpasuConfig
 from nyanpasu.models import AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.models import TranscriptChanges, TranscriptWindow
@@ -20,7 +21,13 @@ if TYPE_CHECKING:
 def history(tmp_path: Path):
     state = StateStore(tmp_path / "state.db")
     state.record_task(
-        AgentTask(task_id="task", context_key="test:1", action=TaskAction.RUN, prompt="scheduler request")
+        AgentTask(
+            task_id="task",
+            context_key="test:1",
+            action=TaskAction.RUN,
+            prompt="scheduler request",
+            execution=NyanpasuConfig().resolve_execution(),
+        )
     )
     state.bind_task_execution("task", "thread", "turn-1")
     source = MemorySessionSource([turn("turn-1", tool("a", "original"))])
@@ -32,7 +39,15 @@ async def test_sessions_group_native_threads_and_read_every_source_page(history)
     state, source, reader = history
     for index in range(2, 5):
         task_id = f"task-{index}"
-        state.record_task(AgentTask(task_id=task_id, context_key="test:1", action=TaskAction.RUN, prompt="next"))
+        state.record_task(
+            AgentTask(
+                task_id=task_id,
+                context_key="test:1",
+                action=TaskAction.RUN,
+                prompt="next",
+                execution=NyanpasuConfig().resolve_execution(),
+            )
+        )
         state.bind_task_execution(task_id, "thread", f"turn-{index}")
         source.turns.append(turn(f"turn-{index}", tool(f"item-{index}", str(index))))
     assert (await reader.sessions())["total"] == 1

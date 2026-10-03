@@ -22,6 +22,6 @@ uv sync --locked --all-extras --dev --python 3.14
 uv run nyanpasu --help
 ```
 
-The development group includes all three GitHub workspace packages. Installing them does not enable them: select plugins using `enabled_plugins` in [configuration](../README.md#configuration).
+The development group includes all three GitHub workspace packages. Installing them does not enable them: select plugins using `plugins.enabled` in [configuration](../README.md#configuration).
 
 Build [Dashboard assets](frontend.md) if serving the UI from this checkout. Set up the selected [agent backend](index.md#runtime-and-github-plugins), GitHub credentials, and [config.toml](../examples/config.toml) before following the [run instructions](../README.md#run). External CLIs and skills are separate installations.

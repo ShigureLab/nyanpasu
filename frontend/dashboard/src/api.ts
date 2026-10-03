@@ -8,7 +8,14 @@ export interface Page<T> {
 }
 
 export function backendLabel(backend: string): string {
-  return ({ codex: 'Codex', claude: 'Claude Code' } as Record<string, string>)[backend] ?? backend;
+  return (
+    (
+      { codex: 'Codex', claude: 'Claude Code', 'claude-code': 'Claude Code' } as Record<
+        string,
+        string
+      >
+    )[backend] ?? backend
+  );
 }
 export interface Diagnostic {
   timestamp: string;

@@ -1,17 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from nyanpasu.agent import AgentService
 from nyanpasu.backends import Backend, Backends
-from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig
+from nyanpasu.config import (
+    ClaudeBackendConfig,
+    MemoryConfig,
+    ModelSettings,
+    NyanpasuConfig,
+    PluginsConfig,
+    RuntimeConfig,
+    TaskPolicy,
+    TasksConfig,
+)
 from nyanpasu.models import AgentContext, AgentTask, InstructionDocument, RunResult, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride, ExecutionTarget
 from nyanpasu.transcript.codex import CodexHistorySource
 
 if TYPE_CHECKING:
@@ -21,10 +33,12 @@ if TYPE_CHECKING:
 class FakeCodex:
     def __init__(self, *, new_session_id: str = "thread-1") -> None:
         self.new_session_id = new_session_id
+        self.sessions: dict[Path, str] = {}
         self.calls: list[tuple[Path, str | None]] = []
         self.prompts: list[str] = []
         self.instructions: list[str] = []
         self.archived: list[str] = []
+        self.executions: list[ExecutionTarget] = []
 
     async def run_turn(
         self,
@@ -32,16 +46,23 @@ class FakeCodex:
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
+        self.executions.append(execution)
         self.prompts.append(prompt)
         self.instructions.append(developer_instructions)
         self.calls.append((cwd, thread_id))
+        if thread_id is None:
+            thread_id = self.sessions.setdefault(
+                cwd, self.new_session_id if not self.sessions else f"{self.new_session_id}-{len(self.sessions) + 1}"
+            )
         if on_started:
-            await on_started(thread_id or self.new_session_id, "turn-1")
+            await on_started(thread_id, "turn-1")
         return RunResult(
-            thread_id=thread_id or self.new_session_id,
+            thread_id=thread_id,
             turn_id="turn-1",
             final_message="done",
         )
@@ -106,8 +127,10 @@ class SlowCodex(FakeCodex):
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         if not self.calls:
             self.started.set()
@@ -118,8 +141,10 @@ class SlowCodex(FakeCodex):
             cwd=cwd,
             prompt=prompt,
             thread_id=thread_id,
+            execution=execution,
             developer_instructions=developer_instructions,
             on_started=on_started,
+            output_schema=output_schema,
         )
 
 
@@ -134,8 +159,10 @@ class CancellableCodex(FakeCodex):
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         _ = cwd, prompt, thread_id
         self.started.set()
@@ -143,9 +170,21 @@ class CancellableCodex(FakeCodex):
         raise AssertionError("unreachable")
 
 
+def _native_binding(config: NyanpasuConfig, task: AgentTask) -> dict:
+    assert task.execution is not None
+    key = hashlib.sha256(json.dumps([task.context_key, task.execution.backend, _memory_key(task)]).encode()).hexdigest()
+    home = config.state_dir / "native" / key
+    return {
+        "native_home": home / config.backends[task.execution.backend].home.native_directory,
+        "isolated_home": home,
+        "driver": task.execution.driver,
+    }
+
+
 def _config(tmp_path: Path, *, concurrency: int = 4) -> NyanpasuConfig:
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
+        memory=MemoryConfig(enabled=False, consolidate=False),
         runtime=RuntimeConfig(
             concurrency=concurrency,
             coalesce_window_seconds=600,
@@ -154,6 +193,16 @@ def _config(tmp_path: Path, *, concurrency: int = 4) -> NyanpasuConfig:
             context_lease_wait_seconds=0.01,
         ),
     )
+
+
+def _with_backend(config: NyanpasuConfig, backend: str) -> NyanpasuConfig:
+    return config.model_copy(
+        update={"tasks": TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend=backend)))}
+    )
+
+
+def _memory_key(task: AgentTask) -> str:
+    return hashlib.sha256(json.dumps(task.memory.to_dict(), sort_keys=True).encode()).hexdigest()
 
 
 def _task(task_id: str, *, context_key: str = "demo:1", revision: str = "abc") -> AgentTask:
@@ -252,7 +301,7 @@ async def test_agent_coalesces_queued_tasks_for_same_context(tmp_path: Path) -> 
         backends=fake_backends(config, FakeCodex()),
     )
     agent.add_task_preparer("demo", _prepare_demo)
-    assert store.record_task(_merge_task("task-1"))
+    assert store.record_task(agent._admit(_merge_task("task-1")))
 
     result = await agent.submit(_merge_task("task-2"))
 
@@ -304,6 +353,7 @@ async def test_waiting_context_does_not_consume_execution_capacity(tmp_path: Pat
     class GatedCodex(FakeCodex):
         async def run_turn(self, **kwargs):
             name = kwargs["prompt"]
+            kwargs["thread_id"] = kwargs["thread_id"] or f"thread-{name}"
             result = await super().run_turn(**kwargs)
             started[name].set()
             await release[name].wait()
@@ -406,7 +456,7 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
     )
     commit = agent.store.mark_task_done
 
-    def finish(result):
+    def finish(result, *, followup=None):
         (snapshot,) = worktrees.event_paths
         (snapshot / "owned.txt").write_text("unfinished work")
         if conflict == "closing":
@@ -414,7 +464,7 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
             other.begin_context_cleanup(task.context_key, record.context_generation)
         else:
             other.cancel_task_tree(task.task_id)
-        committed = commit(result)
+        committed = commit(result, followup=followup)
         assert not committed
         return committed
 
@@ -510,11 +560,22 @@ async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path
 @pytest.mark.parametrize("backend", ["codex", "claude"])
 @pytest.mark.parametrize("workspace_policy", ["context", "event_snapshot"])
 @pytest.mark.parametrize("switch_backend", [False, True])
-async def test_restart_resumes_session_in_place_then_runs_queued_task(
+async def test_restart_preserves_admitted_execution_and_session_workspace(
     tmp_path: Path, backend, workspace_policy, switch_backend
 ) -> None:
     config = _config(tmp_path, concurrency=1)
-    config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"backend": backend})})
+    config = _with_backend(config, backend)
+    config = config.model_copy(
+        update={
+            "backends": {
+                **config.backends,
+                backend: config.backends[backend].model_copy(
+                    update={"defaults": ModelSettings(model="admitted-model", reasoning="high")}
+                ),
+            }
+        }
+    )
+    admitted_execution = config.resolve_execution()
     started = asyncio.Event()
 
     class InterruptedBackend(FakeCodex):
@@ -543,8 +604,16 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
         (original_snapshot / "unfinished.txt").write_text("snapshot work in progress")
 
     if switch_backend:
-        backend = "claude" if backend == "codex" else "codex"
-        config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"backend": backend})})
+        config = _with_backend(config, "claude" if backend == "codex" else "codex")
+    config = config.model_copy(
+        update={
+            "backends": {
+                name: configured.model_copy(update={"defaults": ModelSettings(model="new-default", reasoning="low")})
+                for name, configured in config.backends.items()
+            }
+        }
+    )
+    assert config.resolve_execution().model == "new-default"
 
     class ResumedBackend(FakeCodex):
         async def run_turn(self, **kwargs):
@@ -553,7 +622,7 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
                 assert (original_snapshot / "unfinished.txt").read_text() == "snapshot work in progress"
             return await super().run_turn(**kwargs)
 
-    session_id = "replacement-session" if switch_backend else "thread-1"
+    session_id = "thread-1"
     resumed_backend = ResumedBackend(new_session_id=session_id)
     second_worktrees = FakeWorktrees(tmp_path / "worktrees")
     second_worktrees.prepare_context = Mock(wraps=second_worktrees.prepare_context)
@@ -565,16 +634,14 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
     await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
     await second.shutdown()
 
-    assert [thread for _, thread in resumed_backend.calls] == [None if switch_backend else "thread-1", session_id]
-    assert resumed_backend.instructions[0].split("\nNyanpasu subtask control")[0] == "Keep the original role."
-    if not switch_backend:
-        assert "Continue from the saved conversation" in resumed_backend.prompts[0]
+    assert [thread for _, thread in resumed_backend.calls] == ["thread-1", session_id]
+    assert resumed_backend.instructions[0].split("\nNyanpasu task control")[0] == "Keep the original role."
+    assert "Continue from the saved conversation" in resumed_backend.prompts[0]
+    assert resumed_backend.executions == [admitted_execution, admitted_execution]
     assert "Continue from the saved conversation" not in resumed_backend.prompts[1]
     assert second_worktrees.event_paths == []  # The interrupted snapshot was reused, not recreated.
     assert [call.args[0].task_id for call in second_worktrees.prepare_context.call_args_list] == ["queued"]
-    assert [call.args[0].task_id for call in second._prepare_task.call_args_list] == (
-        ["interrupted", "queued"] if switch_backend else ["queued"]
-    )
+    assert [call.args[0].task_id for call in second._prepare_task.call_args_list] == ["queued"]
     assert second.store.task_status("interrupted") == second.store.task_status("queued") == "completed"
     assert second.store.task_run("interrupted").error is None
     assert second.store.task_run("interrupted").backend == second.store.task_run("queued").backend == backend
@@ -583,45 +650,51 @@ async def test_restart_resumes_session_in_place_then_runs_queued_task(
 
 
 @pytest.mark.anyio
-async def test_interrupted_backend_switch_keeps_original_session_identity_until_replacement_starts(tmp_path: Path):
-    config = _config(tmp_path)
+async def test_interrupted_start_keeps_admitted_backend_after_default_changes(tmp_path: Path):
+    original_config = _with_backend(_config(tmp_path), "claude")
+    config = _with_backend(original_config, "codex")
     store = StateStore(config.db_path)
-    task = _task("interrupted")
+    task = _task("interrupted").model_copy(update={"execution": original_config.resolve_execution()})
     workspace = tmp_path / "preserved"
     workspace.mkdir()
     context = AgentContext(
         context_key=task.context_key,
         backend="claude",
-        thread_id=None,
+        thread_id="old-claude-session",
+        memory_key=_memory_key(task),
         session_worktree=workspace,
         workspace_key=None,
         revision=None,
     )
-    store.record_task(task, default_backend="claude")
-    store.bind_task_execution(task.task_id, "old-claude-session", "old-turn", "claude", context=context)
+    store.record_task(task)
+    store.bind_task_execution(
+        task.task_id, "old-claude-session", "old-turn", "claude", context=context, **_native_binding(config, task)
+    )
     started = asyncio.Event()
 
     class InterruptedStart(FakeCodex):
         async def run_turn(self, **kwargs):
-            assert kwargs["thread_id"] is None
+            assert kwargs["thread_id"] == "old-claude-session"
+            assert kwargs["execution"] == task.execution
             started.set()
             await asyncio.Event().wait()
 
-    first = AgentService(config, store=store, backends=fake_backends(config, InterruptedStart()))
+    first = AgentService(config, store=store, backends=fake_backends(config, InterruptedStart(), "claude"))
     await first.startup()
     await asyncio.wait_for(started.wait(), 2)
     await first.shutdown()
     record = store.task_run(task.task_id)
     assert (record.backend, record.thread_id, record.turn_id) == ("claude", "old-claude-session", "old-turn")
 
-    replacement = FakeCodex(new_session_id="new-codex-session")
-    second = AgentService(config, store=store, backends=fake_backends(config, replacement))
+    resumed = FakeCodex()
+    second = AgentService(config, store=store, backends=fake_backends(config, resumed, "claude"))
     await second.startup()
     await asyncio.wait_for(asyncio.gather(*second._tasks), 2)
     await second.shutdown()
-    assert replacement.calls == [(workspace, None)]
+    assert resumed.calls == [(workspace, "old-claude-session")]
+    assert resumed.executions == [task.execution]
     record = store.task_run(task.task_id)
-    assert (record.backend, record.thread_id, record.turn_id) == ("codex", "new-codex-session", "turn-1")
+    assert (record.backend, record.thread_id, record.turn_id) == ("claude", "old-claude-session", "turn-1")
 
 
 @pytest.mark.anyio
@@ -656,12 +729,11 @@ async def test_recovery_waits_for_live_owner_and_does_not_replay_completed_work(
 
 @pytest.mark.anyio
 async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backend(tmp_path: Path) -> None:
-    config = _config(tmp_path).model_copy(
-        update={"runtime": RuntimeConfig(backend="claude", context_lease_wait_seconds=0.01)}
-    )
+    config = _with_backend(_config(tmp_path), "claude")
     state = StateStore(config.db_path)
     task = _task("orphan")
-    state.record_task(task, default_backend="claude")
+    task = task.model_copy(update={"execution": config.resolve_execution()})
+    state.record_task(task)
     state.mark_task_running(task.task_id, None, "claude")
     workspace = tmp_path / "preserved"
     workspace.mkdir()
@@ -669,11 +741,14 @@ async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backen
         backend="claude",
         context_key=task.context_key,
         thread_id="original-session",
+        memory_key=_memory_key(task),
         session_worktree=workspace,
         workspace_key=None,
         revision=None,
     )
-    state.bind_task_execution(task.task_id, "original-session", "old-turn", "claude", context=context)
+    state.bind_task_execution(
+        task.task_id, "original-session", "old-turn", "claude", context=context, **_native_binding(config, task)
+    )
     state.try_acquire_context_lease(task.context_key, owner_id="previous-process", task_id=task.task_id, ttl_seconds=60)
     backend = FakeCodex()
     agent = AgentService(
@@ -702,9 +777,9 @@ async def test_service_startup_recovers_only_unfinished_tasks(tmp_path: Path) ->
         config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
     )
     await agent.run_now(_task("completed"))
-    agent.store.record_task(_task("failed"))
+    agent.store.record_task(agent._admit(_task("failed")))
     agent.store.mark_task_failed("failed", "real backend failure")
-    agent.store.record_task(_task("queued"))
+    agent.store.record_task(agent._admit(_task("queued")))
     app = create_app(config, agent=agent, plugin_registry=PluginRegistry())
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(asyncio.gather(*agent._tasks), 2)
@@ -715,7 +790,7 @@ async def test_service_startup_recovers_only_unfinished_tasks(tmp_path: Path) ->
 
 @pytest.mark.anyio
 async def test_restart_keeps_prepared_request_and_does_not_run_coalesced_children(tmp_path: Path) -> None:
-    config = _config(tmp_path, concurrency=1).model_copy(update={"enabled_plugins": ("demo",)})
+    config = _config(tmp_path, concurrency=1).model_copy(update={"plugins": PluginsConfig(enabled=("demo",))})
     started = asyncio.Event()
 
     class InterruptedBackend(FakeCodex):
@@ -774,8 +849,8 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
     await agent.run_now(task.model_copy(update={"task_id": "task-2", "dedupe_key": "task-2"}))
 
     assert (
-        codex.instructions[0].split("\nNyanpasu subtask control")[0]
-        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+        codex.instructions[0].split("\nNyanpasu task control")[0]
+        == codex.instructions[1].split("\nNyanpasu task control")[0]
     )
     assert "Persistent role." in codex.instructions[0]
     assert f"--- SOUL.md ({tmp_path / 'SOUL.md'}) ---" in codex.instructions[0]
@@ -844,7 +919,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
     agent = AgentService(
         config,
         worktrees=FakeWorktrees(tmp_path / "worktrees"),
-        backends=fake_backends(config, backend, config.runtime.backend),
+        backends=fake_backends(config, backend, config.resolve_execution("github_reviewer.review").backend),
     )
     monkeypatch.setattr(
         module,
@@ -933,8 +1008,8 @@ async def test_reviewer_events_during_review_resume_with_completed_task_head(tmp
     assert "Previous task head (not proof of completed review): head-a" in codex.prompts[1]
     assert codex.calls[1][1] == "thread-1"
     assert (
-        codex.instructions[0].split("\nNyanpasu subtask control")[0]
-        == codex.instructions[1].split("\nNyanpasu subtask control")[0]
+        codex.instructions[0].split("\nNyanpasu task control")[0]
+        == codex.instructions[1].split("\nNyanpasu task control")[0]
     )
     context = agent.store.get_context(first.context_key)
     assert context is not None and context.revision == "head-c"
@@ -979,7 +1054,7 @@ async def test_backend_switch_starts_fresh_session_and_preserves_history(
     sessions = set()
     executions = []
     for index, name in enumerate((initial_backend, other_backend, initial_backend)):
-        config = _config(tmp_path).model_copy(update={"runtime": RuntimeConfig(backend=name)})
+        config = _with_backend(_config(tmp_path), name)
         execution = FakeCodex(new_session_id=f"session-{index}")
         executions.append(execution)
         instances: dict[str, Backend] = {name: Backend(execution, CodexHistorySource(execution))}
@@ -1015,10 +1090,13 @@ async def test_backend_switch_starts_fresh_session_and_preserves_history(
 
 @pytest.mark.anyio
 async def test_reviewer_backend_switch_uses_fresh_review_and_current_model(tmp_path: Path, monkeypatch):
-    config = _config(tmp_path).model_copy(
+    config = _with_backend(_config(tmp_path), "claude")
+    config = config.model_copy(
         update={
-            "runtime": RuntimeConfig(backend="claude"),
-            "claude": ClaudeConfig(model="claude-test", reasoning_effort="medium"),
+            "backends": {
+                **config.backends,
+                "claude": ClaudeBackendConfig(defaults=ModelSettings(model="claude-test", reasoning="medium")),
+            }
         }
     )
     agent, plugin, execution, _ = _review_setup(tmp_path, monkeypatch, config=config)
@@ -1053,10 +1131,7 @@ async def test_backend_metadata_before_execution_and_after_coalescing(tmp_path: 
 
     from nyanpasu.web import create_app
 
-    config = NyanpasuConfig(
-        state_dir=tmp_path / "state",
-        runtime=RuntimeConfig(backend="claude"),
-    )
+    config = _with_backend(_config(tmp_path), "claude")
     agent = AgentService(config)
     agent._semaphore = asyncio.Semaphore(0)  # Keep submissions queued while inspecting their metadata.
     agent.add_task_preparer("demo", _prepare_demo)

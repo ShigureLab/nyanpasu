@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from nyanpasu.config import EnvCommand
 from nyanpasu.environment import resolve_env_value
+from nyanpasu.memory import MemoryAccess
 
 
 class GitHubModel(BaseModel):
@@ -94,6 +95,13 @@ class GitHubRepoSettings(GitHubModel):
     github_remote: str | None = None
     base_branches: tuple[str, ...] = ()
     instruction_docs: tuple[InstructionDocumentSettings, ...] = ()
+    memory: MemoryAccess | None = None
+
+    def memory_access(self, repo: str) -> MemoryAccess:
+        if self.memory is not None:
+            return self.memory
+        domain = f"shared:github:{repo}"
+        return MemoryAccess(read_domains=("public", domain), write_domain=domain)
 
     @field_validator("local_path", mode="before")
     @classmethod

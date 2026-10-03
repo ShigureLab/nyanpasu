@@ -4,18 +4,25 @@ GitHub pull request review plugin for Nyanpasu.
 
 This package owns GitHub review behavior: webhook payload parsing, polling, PR state baselines, `gh-llm` review prompts, and GitHub-facing review policy. Shared GitHub config/workspace/signature helpers come from `nyanpasu-github`. The Nyanpasu core runtime only receives generic `AgentTask` objects.
 
-Each PR maps to one Nyanpasu context key, so follow-up events reuse the same agent session and context worktree. The worktree is reset to the current PR head before each review task.
+Each PR maps to one Nyanpasu context key. Follow-up events reuse its workspace and, while the backend and memory audience are unchanged, its native agent session. The worktree is reset to the current PR head before each review task.
 
 ## Config
 
 ```toml
-enabled_plugins = ["github_reviewer"]
+[plugins]
+enabled = ["github_reviewer"]
 
-[codex]
-model = "gpt-6-astra"
-reasoning_effort = "medium"
+[backends.codex]
+driver = "codex"
 
-[plugins.github_reviewer]
+[backends.codex.defaults]
+model = "your-review-model"
+reasoning = "medium"
+
+[tasks.kinds."github_reviewer.review".execution]
+backend = "codex"
+
+[plugins.settings.github_reviewer]
 github_login = "your-github-login"
 review_language = "Chinese"
 poll_enabled = true
@@ -25,16 +32,16 @@ poll_max_events_per_cycle = 0
 dry_run = false
 post_reviews = true
 
-[[plugins.github_reviewer.instruction_docs]]
+[[plugins.settings.github_reviewer.instruction_docs]]
 name = "SOUL.md"
 path = "/path/to/SOUL.md"
 
-[plugins.github_reviewer.repos."owner/repo"]
+[plugins.settings.github_reviewer.repos."owner/repo"]
 local_path = "/path/to/repo"
 github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
 
-[[plugins.github_reviewer.repos."owner/repo".instruction_docs]]
+[[plugins.settings.github_reviewer.repos."owner/repo".instruction_docs]]
 name = "AGENTS.md"
 path = "/path/to/repo/AGENTS.md"
 required = false
@@ -42,11 +49,13 @@ required = false
 
 `instruction_docs` are resolved when the review is prepared for execution. Plugin-level documents apply to every reviewer task; repo-level documents apply to that repo. They join the session's developer instructions rather than being appended to every user message. Configure these as trusted policy documents; PR content and comments remain external task material.
 
-Choose the backend with `runtime.backend` and configure its `[codex]` or `[claude]` section; see [runtime configuration](../../README.md#runtime-configuration). Install the reviewer skills for the selected CLI and pass GitHub credentials through its `env` or `pass_env`. After switching backends and restarting Nyanpasu, the next review starts a new session on the selected backend, using its configured model and reasoning effort in the disclosure footer. Previous sessions remain available in history.
+Route reviews with `tasks.kinds."github_reviewer.review".execution` and configure the named backend under `backends.<name>`; see [runtime configuration](../../README.md#runtime-configuration). Install the reviewer skills for every selected CLI through its [native session home](../../README.md#native-session-homes). Agent credentials belong under `backends.<name>.process.env` or `process.pass_env`. Newly admitted reviews use the current routing; queued or interrupted reviews retain their admitted target. Previous sessions remain available in history.
+
+Reviews use the repository's configured memory audience; the default reads public source summaries plus that repository's shared audience and contributes only to the shared audience. Independent-design children have memory disabled. Their default kind is `github_reviewer.independent-design`, which can select a different backend/model from the parent. See [background memory](../../README.md#background-memory) for access controls, extraction, and consolidation.
 
 ## Session Instructions And Turn Input
 
-The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the agent session. Each execution renders its disclosure footer from the owning backend’s `model` and `reasoning_effort` configuration. If the model is unset, the footer names Codex or Claude Code without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
+The fixed reviewer role is maintained in [reviewer.md](src/nyanpasu_github_reviewer/instructions/reviewer.md). It binds the PR identity, review boundaries, continuation rules, language, and skill usage to the agent session. Each execution renders its disclosure footer from the task’s resolved `model` and `reasoning` target. If the model is unset, the footer names Codex or Claude Code without guessing a model. [review-output.md](src/nyanpasu_github_reviewer/instructions/review-output.md) is the reference for priorities, suggestions, review decisions, and footer placement. Tool procedures come from the `github-conversation` and `gh-slate` skills.
 
 Every execution prepares one short user message containing the target head, worktree, publication mode, the current model's disclosure footer, and trigger summaries or request links. Supplying the footer in each turn also updates the declaration when an existing session resumes with a different model. The previous task head is a navigation hint, not proof that a review was completed. Submitted GitHub reviews and published threads remain the evidence for prior review coverage.
 
@@ -104,10 +113,13 @@ Existing dashboards retain their embedded definitions until the next warranted u
 The reviewer prompt directs the agent to use the `gh-slate` skill and CLI to maintain one dashboard named `nyanpasu-review` on each PR. Install the skill and **gh-slate 0.1.1 or newer** in the environment used by the selected agent, following the [gh-slate installation instructions](https://github.com/ShigureLab/gh-slate#install). For a uv tool installation, run `uv tool upgrade gh-slate`; verify `gh-slate --version` meets this minimum before deploying the reviewer template.
 
 ```toml
-[codex.env]
+[backends.codex]
+driver = "codex"
+
+[backends.codex.process.env]
 GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
 
-[plugins.github_reviewer]
+[plugins.settings.github_reviewer]
 github_login = "your-bot-login"
 ```
 

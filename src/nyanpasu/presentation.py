@@ -7,6 +7,11 @@ from nyanpasu.redaction import redact
 TITLE_LENGTH = 140
 
 
+def task_execution(task: dict[str, Any]) -> dict[str, Any]:
+    """Display the admitted target, preserving unknown targets in historical tasks."""
+    return {"kind": task.get("kind", "default"), "execution": task.get("execution")}
+
+
 def task_title(task: dict[str, Any]) -> str:
     metadata = task.get("metadata", {})
     request = metadata.get("request")

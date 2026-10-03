@@ -3,19 +3,22 @@ from __future__ import annotations
 import json
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from nyanpasu.config import ClaudeBackendConfig, ModelSettings
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, JsonProcessRunner
 from nyanpasu.models import RunResult
+from nyanpasu.native_home import native_env
 from nyanpasu.redaction import redact
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from nyanpasu.config import ClaudeConfig, NyanpasuConfig
+    from nyanpasu.config import FallbackModel, NyanpasuConfig
+    from nyanpasu.targets import ExecutionTarget
 
 
 class AutoReviewUnavailable(RuntimeError):
@@ -46,17 +49,35 @@ def auto_review_failure(event: dict) -> str | None:
 class ClaudeBackend:
     """One print-mode process per turn; Claude owns persistence and resume."""
 
-    def __init__(self, config: NyanpasuConfig):
-        self.config = config.claude
-        self.env = MappingProxyType(process_env(self.config, cwd=config.state_dir, backend="claude"))
+    def __init__(self, config: NyanpasuConfig, name: str = "claude", *, home: Path | None = None):
+        configured = config.backends[name]
+        if not isinstance(configured, ClaudeBackendConfig):
+            raise ValueError(f"backend {name} is not a Claude Code backend")
+        self.config = configured
+        env = native_env(process_env(configured.process, cwd=config.state_dir, backend="claude-code"), home=home)
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        self.env = MappingProxyType(env)
         self._runner = JsonProcessRunner()
 
     def runtime_info(self) -> dict:
-        return self._runner.runtime_info()
+        return {
+            **self._runner.runtime_info(),
+            "fallback_models": [model.model_dump() for model in self.config.options.fallback_models],
+        }
 
-    def _argv(self, session_id: str, *, resume: bool, instructions: str, config: ClaudeConfig) -> list[str]:
+    def _argv(
+        self,
+        session_id: str,
+        *,
+        resume: bool,
+        instructions: str,
+        settings: ModelSettings,
+        fallbacks: tuple[FallbackModel, ...],
+        output_schema: dict[str, Any] | None = None,
+    ) -> list[str]:
+        options = self.config.options
         argv = [
-            *config.command,
+            *self.config.process.command,
             "-p",
             "--input-format",
             "stream-json",
@@ -65,32 +86,34 @@ class ClaudeBackend:
             "--verbose",
             "--replay-user-messages",
             "--permission-mode",
-            config.permission_mode,
+            options.permission_mode,
             "--resume" if resume else "--session-id",
             session_id,
         ]
-        if config.model:
-            argv.extend(["--model", config.model])
-        if config.fallback_models:
-            argv.extend(["--fallback-model", ",".join(model.model for model in config.fallback_models)])
-        if any(model.reasoning_effort is not None for model in config.fallback_models):
+        if settings.model:
+            argv.extend(["--model", settings.model])
+        if fallbacks:
+            argv.extend(["--fallback-model", ",".join(model.model for model in fallbacks)])
+        if any(model.reasoning is not None for model in fallbacks):
             model_settings = {
-                model.model.removesuffix("[1m]"): {"effortLevel": model.reasoning_effort or config.reasoning_effort}
-                for model in config.fallback_models
-                if model.reasoning_effort is not None or config.reasoning_effort is not None
+                model.model.removesuffix("[1m]"): {"effortLevel": model.reasoning or settings.reasoning}
+                for model in fallbacks
+                if model.reasoning is not None or settings.reasoning is not None
             }
-            if config.model and config.reasoning_effort:
-                model_settings[config.model.removesuffix("[1m]")] = {"effortLevel": config.reasoning_effort}
-            settings: dict = {"modelSettings": model_settings}
-            if config.reasoning_effort:
-                settings["effortLevel"] = config.reasoning_effort
-            argv.extend(["--settings", json.dumps(settings)])
-        elif config.reasoning_effort:
-            argv.extend(["--effort", config.reasoning_effort])
-        if config.allowed_tools:
-            argv.extend(["--allowedTools", ",".join(config.allowed_tools)])
+            if settings.model and settings.reasoning:
+                model_settings[settings.model.removesuffix("[1m]")] = {"effortLevel": settings.reasoning}
+            native_settings: dict = {"modelSettings": model_settings}
+            if settings.reasoning:
+                native_settings["effortLevel"] = settings.reasoning
+            argv.extend(["--settings", json.dumps(native_settings)])
+        elif settings.reasoning:
+            argv.extend(["--effort", settings.reasoning])
+        if options.allowed_tools:
+            argv.extend(["--allowedTools", ",".join(options.allowed_tools)])
         if instructions:
             argv.extend(["--append-system-prompt", instructions])
+        if output_schema is not None:
+            argv.extend(["--json-schema", json.dumps(output_schema)])
         return argv
 
     async def run_turn(
@@ -99,20 +122,27 @@ class ClaudeBackend:
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
-        choices = (self.config, *self.config.fallback_models)
+        choices = (
+            ModelSettings(model=execution.model, reasoning=execution.reasoning),
+            *self.config.options.fallback_models,
+        )
+        if any(choice.reasoning is not None for choice in choices[1:]) and execution.reasoning not in {
+            None,
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        }:
+            raise ValueError("Claude per-model fallback reasoning supports low, medium, high, and xhigh")
         index = 0
         while True:
             choice = choices[index]
-            config = self.config.model_copy(
-                update={
-                    "model": choice.model,
-                    "reasoning_effort": choice.reasoning_effort or self.config.reasoning_effort,
-                    "fallback_models": self.config.fallback_models[index:],
-                }
-            )
+            settings = ModelSettings(model=choice.model, reasoning=choice.reasoning or execution.reasoning)
             try:
                 return await self._run_turn(
                     cwd=cwd,
@@ -120,7 +150,10 @@ class ClaudeBackend:
                     thread_id=thread_id,
                     developer_instructions=developer_instructions,
                     on_started=on_started,
-                    config=config,
+                    settings=settings,
+                    fallbacks=self.config.options.fallback_models[index:],
+                    timeout=execution.turn_timeout_seconds,
+                    output_schema=output_schema,
                 )
             except AutoReviewUnavailable as exc:
                 # Changing generation models cannot recover a pinned classifier.
@@ -157,13 +190,16 @@ class ClaudeBackend:
         thread_id: str | None,
         developer_instructions: str,
         on_started: ExecutionStarted | None,
-        config: ClaudeConfig,
+        settings: ModelSettings,
+        fallbacks: tuple[FallbackModel, ...],
+        timeout: int,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         session_id = str(UUID(thread_id)) if thread_id else str(uuid4())
         # The input message UUID is persisted by Claude, so task links survive restarts.
         turn_id = str(uuid4())
         result = None
-        active_model = config.model
+        active_model = settings.model
 
         async def received(event: dict) -> None:
             nonlocal result, active_model
@@ -184,7 +220,7 @@ class ClaudeBackend:
                 )
             elif event.get("type") == "result":
                 result = event
-            elif config.permission_mode == "auto" and (reason := auto_review_failure(event)):
+            elif self.config.options.permission_mode == "auto" and (reason := auto_review_failure(event)):
                 failure = AutoReviewUnavailable(session_id, active_model, reason)
                 self._runner.diagnostics.append(
                     {
@@ -195,14 +231,20 @@ class ClaudeBackend:
                 )
                 raise failure
 
+        argv = self._argv(
+            session_id,
+            resume=thread_id is not None,
+            instructions=developer_instructions,
+            settings=settings,
+            fallbacks=fallbacks,
+            output_schema=output_schema,
+        )
         try:
             returncode, stderr = await self._runner.run(
-                self._argv(
-                    session_id, resume=thread_id is not None, instructions=developer_instructions, config=config
-                ),
+                argv,
                 cwd=cwd,
                 env=self.env,
-                timeout=config.command_timeout_seconds,
+                timeout=timeout,
                 input_text=json.dumps(
                     {
                         "type": "user",
@@ -225,9 +267,15 @@ class ClaudeBackend:
         if returncode or result.get("is_error") or result.get("subtype") != "success":
             reason = result.get("result") or "; ".join(result.get("errors", [])) or stderr or result.get("subtype")
             raise RuntimeError(f"Claude run failed: {redact(reason)}")
-        if not isinstance(result.get("result"), str):
+        if output_schema is not None:
+            if result.get("structured_output") is None:
+                raise RuntimeError("Claude success result is missing its structured output")
+            final_message = json.dumps(result["structured_output"], ensure_ascii=False)
+        elif not isinstance(result.get("result"), str):
             raise RuntimeError("Claude success result is missing its message")
-        return RunResult(thread_id=session_id, turn_id=turn_id, final_message=result["result"])
+        else:
+            final_message = result["result"]
+        return RunResult(thread_id=session_id, turn_id=turn_id, final_message=final_message)
 
     async def cleanup_thread(self, thread_id: str) -> None:
         # There is no archive RPC. Keep Claude's history available after task cleanup.

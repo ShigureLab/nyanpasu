@@ -1,127 +1,234 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-from nyanpasu.config import ClaudeConfig, CodexConfig, EnvCommand, ServerConfig, load_config
+from nyanpasu.config import (
+    ClaudeOptions,
+    EnvCommand,
+    ModelSettings,
+    NyanpasuConfig,
+    ProcessConfig,
+    ServerConfig,
+    load_config,
+)
+from nyanpasu.targets import ExecutionOverride
 
-if TYPE_CHECKING:
-    from pathlib import Path
+
+def test_example_configuration_loads_and_routes_both_memory_stages(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    example = Path(__file__).parents[1] / "examples" / "config.toml"
+    (tmp_path / "config.toml").write_bytes(example.read_bytes())
+
+    config = load_config()
+
+    assert config.memory.max_results_per_search == 10
+    for kind in ("memory_extraction", "memory_consolidation"):
+        target = config.resolve_execution(kind)
+        assert (target.backend, target.model, target.reasoning, target.turn_timeout_seconds) == (
+            "memory",
+            "gpt-6-luna",
+            "medium",
+            900,
+        )
+        assert target.sources["backend"] == f"tasks.kinds.{kind}.execution"
+        assert target.sources["turn_timeout_seconds"] == f"tasks.kinds.{kind}.limits"
 
 
-def test_server_token_from_config_and_environment(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("kind", ["memory_extraction", "memory_consolidation"])
+def test_background_memory_stages_resolve_independently(kind):
+    config = NyanpasuConfig.model_validate(
+        {
+            "tasks": {
+                "defaults": {
+                    "execution": {"model": "default-model", "reasoning": "high"},
+                    "limits": {"turn_timeout_seconds": 321},
+                },
+                "kinds": {
+                    kind: {
+                        "execution": {"backend": "claude", "model": "small-model", "reasoning": "low"},
+                        "limits": {"turn_timeout_seconds": 120},
+                    }
+                },
+            }
+        }
+    )
+    configured = config.resolve_execution(kind)
+    assert (configured.backend, configured.model, configured.reasoning, configured.turn_timeout_seconds) == (
+        "claude",
+        "small-model",
+        "low",
+        120,
+    )
+    other = "memory_consolidation" if kind == "memory_extraction" else "memory_extraction"
+    assert config.resolve_execution(other) == config.resolve_execution()
+
+
+def test_background_memory_without_kind_policies_keeps_normal_defaults():
+    config = NyanpasuConfig.model_validate(
+        {"tasks": {"defaults": {"execution": {"model": "default-model"}, "limits": {"turn_timeout_seconds": 321}}}}
+    )
+    for kind in ("memory_extraction", "memory_consolidation"):
+        assert config.resolve_execution(kind) == config.resolve_execution()
+
+
+def test_explicit_background_policies_keep_independent_targets():
+    config = NyanpasuConfig.model_validate(
+        {
+            "tasks": {
+                "kinds": {
+                    "memory_extraction": {
+                        "execution": {"backend": "codex", "model": "extraction-model", "reasoning": "low"},
+                        "limits": {"turn_timeout_seconds": 300},
+                    },
+                    "memory_consolidation": {
+                        "execution": {"backend": "claude", "model": "navigation-model", "reasoning": "medium"},
+                        "limits": {"turn_timeout_seconds": 900},
+                    },
+                }
+            }
+        }
+    )
+    extraction = config.resolve_execution("memory_extraction")
+    navigation = config.resolve_execution("memory_consolidation")
+    assert (extraction.backend, extraction.model, extraction.reasoning, extraction.turn_timeout_seconds) == (
+        "codex",
+        "extraction-model",
+        "low",
+        300,
+    )
+    assert (navigation.backend, navigation.model, navigation.reasoning, navigation.turn_timeout_seconds) == (
+        "claude",
+        "navigation-model",
+        "medium",
+        900,
+    )
+
+
+def test_server_token_from_config_and_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
     (tmp_path / "config.toml").write_text('[server]\ntoken = "file-secret"\n')
     config = load_config()
     assert config.server.token is not None
     assert config.server.token.get_secret_value() == "file-secret"
-    assert "file-secret" not in repr(config)
-    assert "file-secret" not in config.model_dump_json()
-    monkeypatch.setenv("NYANPASU_TOKEN", "env-secret")
-    token = load_config().server.token
-    assert token is not None
-    assert token.get_secret_value() == "env-secret"
-    monkeypatch.setenv("NYANPASU_TOKEN", "")
+    assert "file-secret" not in repr(config) and "file-secret" not in config.model_dump_json()
+    monkeypatch.setenv("NYANPASU__SERVER__TOKEN", "env-secret")
+    overridden = load_config()
+    assert overridden.server.token is not None
+    assert overridden.server.token.get_secret_value() == "env-secret"
+    monkeypatch.setenv("NYANPASU__SERVER__TOKEN", "")
     with pytest.raises(ValueError, match="nonempty bearer token"):
         load_config()
 
 
 @pytest.mark.parametrize("token", ["", " ", "secret token", "secret\n", "secret\0", "秘密", 123])
-def test_server_token_rejects_invalid_values_without_disclosing_them(token) -> None:
+def test_server_token_rejects_invalid_values_without_disclosing_them(token):
     with pytest.raises(ValueError) as error:
         ServerConfig(token=token)
     assert "secret" not in str(error.value)
 
 
-def test_load_config_reads_home_config_toml(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text(
-        """
-enabled_plugins = ["github_reviewer"]
-
-[server]
-host = "0.0.0.0"
-port = 9999
-
-[codex]
+def test_load_config_and_nested_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text("""
+[backends.codex]
+driver = "codex"
+[backends.codex.defaults]
 model = "configured-model"
-reasoning_effort = "medium"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
+reasoning = "medium"
+[backends.codex.process]
+command = ["codex", "--profile", "worker"]
 pass_env = ["GH_TOKEN"]
-
-[codex.env]
-TZ = "Asia/Shanghai"
-GH_TOKEN = { cmd = ["missing-command", "--user", "review-bot"] }
-
+[backends.codex.process.env]
+GH_TOKEN = {cmd = ["missing-command", "--user", "review-bot"]}
 [runtime]
 concurrency = 2
-coalesce_window_seconds = 60
-clean_event_snapshots = false
-
-[integrations.github]
-token_env = "GH_TOKEN"
-git_author_name = "Bot"
-git_author_email = "bot@example.com"
-
-[plugins.github_reviewer]
+[plugins]
+enabled = ["github_reviewer"]
+[plugins.settings.github_reviewer]
 github_login = "review-bot"
-poll_interval_seconds = 600
-""".strip(),
-        encoding="utf-8",
-    )
-
+""")
     config = load_config()
-
-    assert config.state_dir == (tmp_path / "home").resolve()
-    assert config.server.host == "0.0.0.0"
-    assert config.server.port == 9999
-    assert config.codex.model == "configured-model"
-    assert config.codex.reasoning_effort == "medium"
-    assert config.codex.approval_policy == "on-request"
-    assert config.codex.approvals_reviewer == "auto_review"
-    assert config.codex.pass_env == ("GH_TOKEN",)
-    assert config.codex.env == {
-        "TZ": "Asia/Shanghai",
-        "GH_TOKEN": EnvCommand(cmd=("missing-command", "--user", "review-bot")),
+    assert config.backends["codex"].process.env == {
+        "GH_TOKEN": EnvCommand(cmd=("missing-command", "--user", "review-bot"))
     }
-    assert config.runtime.concurrency == 2
-    assert config.runtime.coalesce_window_seconds == 60
-    assert config.runtime.clean_event_snapshots is False
-    assert config.integrations["github"]["token_env"] == "GH_TOKEN"
-    assert config.integrations["github"]["git_author_name"] == "Bot"
-    assert config.enabled_plugins == ("github_reviewer",)
-    assert config.plugins["github_reviewer"]["github_login"] == "review-bot"
-
-
-def test_model_environment_overrides_file(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
-    (tmp_path / "config.toml").write_text('[codex]\nmodel = "file-model"\nreasoning_effort = "high"\n')
-    monkeypatch.setenv("NYANPASU_CODEX_MODEL", "environment-model")
-    monkeypatch.setenv("NYANPASU_CODEX_REASONING_EFFORT", "medium")
-
+    assert config.resolve_execution().model == "configured-model"
+    assert config.enabled_plugin_ids == ("github_reviewer",)
+    assert config.plugins.settings["github_reviewer"]["github_login"] == "review-bot"
+    monkeypatch.setenv("NYANPASU__BACKENDS__CODEX__DEFAULTS__MODEL", "env-model")
+    monkeypatch.setenv("NYANPASU__RUNTIME__CONCURRENCY", "7")
+    monkeypatch.setenv("NYANPASU__PLUGINS__ENABLED", "[]")
     config = load_config()
+    assert config.resolve_execution().model == "env-model"
+    assert config.resolve_execution().reasoning == "medium"
+    assert config.runtime.concurrency == 7
+    assert config.enabled_plugin_ids == ()
 
-    assert config.codex.model == "environment-model"
-    assert config.codex.reasoning_effort == "medium"
 
-
-def test_claude_fallback_models_and_environment_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
-    (tmp_path / "config.toml").write_text(
-        '[claude]\nmodel = "primary"\nfallback_models = [{model = "first", reasoning_effort = "medium"}, "second"]\n'
+@pytest.fixture
+def routed():
+    return NyanpasuConfig.model_validate(
+        {
+            "backends": {
+                "codex": {"driver": "codex", "defaults": {"model": "codex-native", "reasoning": "high"}},
+                "claude": {"driver": "claude-code", "defaults": {"model": "claude-native", "reasoning": "medium"}},
+                "fast": {"driver": "codex", "defaults": {"model": "fast-native"}},
+            },
+            "tasks": {
+                "defaults": {
+                    "execution": {"backend": "codex", "model": "codex-global"},
+                    "limits": {"turn_timeout_seconds": 123},
+                },
+                "kinds": {
+                    "review": {
+                        "execution": {"backend": "claude", "model": "claude-review"},
+                        "limits": {"turn_timeout_seconds": 456},
+                    },
+                    "code": {"execution": {"model": "codex-code", "reasoning": "ultra"}},
+                },
+            },
+        }
     )
-    assert [(model.model, model.reasoning_effort) for model in load_config().claude.fallback_models] == [
-        ("first", "medium"),
-        ("second", None),
-    ]
-    monkeypatch.setenv("NYANPASU_CLAUDE_FALLBACK_MODELS", "env-first, env-second")
-    assert [model.model for model in load_config().claude.fallback_models] == ["env-first", "env-second"]
-    monkeypatch.setenv("NYANPASU_CLAUDE_FALLBACK_MODELS", "")
-    assert load_config().claude.fallback_models == ()
+
+
+def test_resolution_keeps_model_and_reasoning_with_their_backend(routed):
+    default = routed.resolve_execution()
+    assert (default.backend, default.model, default.reasoning, default.turn_timeout_seconds) == (
+        "codex",
+        "codex-global",
+        "high",
+        123,
+    )
+    review = routed.resolve_execution("review")
+    assert (review.backend, review.model, review.reasoning, review.turn_timeout_seconds) == (
+        "claude",
+        "claude-review",
+        "medium",
+        456,
+    )
+    switched_back = routed.resolve_execution("review", ExecutionOverride(backend="codex"))
+    assert (switched_back.model, switched_back.reasoning) == ("codex-global", "high")
+    assert switched_back.sources["model"] == "tasks.defaults.execution"
+    fast = routed.resolve_execution("code", ExecutionOverride(backend="fast"))
+    assert (fast.driver, fast.model, fast.reasoning) == ("codex", "fast-native", None)
+    assert fast.sources["reasoning"] == "native"
+
+
+def test_same_backend_overrides_inherit_remaining_fields(routed):
+    code = routed.resolve_execution("code", ExecutionOverride(model="request-model"))
+    assert (code.backend, code.model, code.reasoning) == ("codex", "request-model", "ultra")
+    assert code.sources["model"] == "request.execution"
+    assert code.sources["reasoning"] == "tasks.kinds.code.execution"
+    with pytest.raises(ValueError, match="unknown execution backend"):
+        routed.resolve_execution("review", ExecutionOverride(backend="missing"))
+
+
+def test_named_backend_configuration_rejects_unknown_driver_and_routing():
+    with pytest.raises(ValueError, match="driver"):
+        NyanpasuConfig.model_validate({"backends": {"codex": {"driver": "unknown"}}})
+    with pytest.raises(ValueError, match="unknown execution backend"):
+        NyanpasuConfig.model_validate({"tasks": {"kinds": {"review": {"execution": {"backend": "missing"}}}}})
 
 
 @pytest.mark.parametrize(
@@ -129,21 +236,21 @@ def test_claude_fallback_models_and_environment_override(tmp_path, monkeypatch):
     [
         ("",),
         ("with,comma",),
-        ({"model": "backup", "reasoning_effort": ""},),
-        ({"model": "backup", "reasoning_effort": "max"},),
+        ({"model": "backup", "reasoning": ""},),
+        ({"model": "backup", "reasoning": "max"},),
         ("a", "b", "c", "d"),
     ],
 )
 def test_claude_fallback_models_reject_invalid_settings(models):
     with pytest.raises(ValueError):
-        ClaudeConfig(fallback_models=models)
+        ClaudeOptions(fallback_models=models)
 
 
-@pytest.mark.parametrize("field", ["model", "reasoning_effort"])
+@pytest.mark.parametrize("field", ["model", "reasoning"])
 @pytest.mark.parametrize("value", ["", "  ", "value\0"])
-def test_model_settings_reject_empty_or_invalid_values(field, value) -> None:
-    with pytest.raises(ValueError, match="model settings"):
-        CodexConfig.model_validate({field: value})
+def test_model_settings_reject_empty_or_invalid_values(field, value):
+    with pytest.raises(ValueError, match="execution settings"):
+        ModelSettings.model_validate({field: value})
 
 
 @pytest.mark.parametrize(
@@ -163,65 +270,90 @@ def test_model_settings_reject_empty_or_invalid_values(field, value) -> None:
         {"TOKEN": "secret\0"},
     ],
 )
-def test_codex_env_rejects_invalid_sources_without_showing_values(env) -> None:
+def test_process_env_rejects_invalid_sources_without_showing_values(env):
     with pytest.raises(ValueError) as error:
-        CodexConfig(env=env)
+        ProcessConfig(command=("codex",), env=env)
     assert "secret" not in str(error.value)
 
 
-def test_load_config_allows_no_plugins(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text("", encoding="utf-8")
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        '[codex]\nmodel="old"',
+        '[claude]\nmodel="old"',
+        "enabled_plugins=[]",
+        '[runtime]\nbackend="claude"',
+        "[runtime]\nclean_event_worktrees=false",
+        'approval_policy="on-request"',
+        '[plugins.github_reviewer]\nagent_name="old"',
+    ],
+)
+def test_loader_rejects_legacy_configuration(tmp_path, monkeypatch, legacy):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(legacy)
+    with pytest.raises(ValueError, match="Extra inputs"):
+        load_config()
 
+
+def test_state_dir_is_environment_only_and_memory_path_is_derived(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
     config = load_config()
-
-    assert config.plugins == {}
-    assert config.enabled_plugins == ()
-    assert config.codex.model is None
-    assert config.codex.reasoning_effort is None
-    assert config.codex.sandbox == "workspace-write"
-    assert config.codex.approval_policy == "on-request"
-    assert config.codex.approvals_reviewer == "auto_review"
-    assert config.claude.permission_mode == "auto"
+    assert config.memory_dir == tmp_path / "memory"
+    assert config.memory.enabled and config.memory.consolidate
+    (tmp_path / "config.toml").write_text('state_dir = "/tmp/other"')
+    with pytest.raises(ValueError, match="state_dir is not configurable"):
+        load_config()
 
 
-def test_load_config_rejects_legacy_runtime_keys(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text(
-        """
-[runtime]
-clean_event_worktrees = false
-""".strip(),
-        encoding="utf-8",
+def test_legacy_token_override_is_rejected_instead_of_disabling_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    monkeypatch.setenv("NYANPASU_TOKEN", "private-token")
+    with pytest.raises(ValueError, match="legacy configuration environment keys") as error:
+        load_config()
+    assert "private-token" not in str(error.value)
+
+
+def test_environment_can_override_builtin_backend_without_config_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    monkeypatch.setenv("NYANPASU__BACKENDS__CODEX__DEFAULTS__MODEL", "env-model")
+    assert load_config().resolve_execution().model == "env-model"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("codex", {"backend": "codex"}),
+        ("codex/model", {"backend": "codex", "model": "model"}),
+        ("codex:high", {"backend": "codex", "reasoning": "high"}),
+        ("codex/model:high", {"backend": "codex", "model": "model", "reasoning": "high"}),
+    ],
+)
+def test_compact_execution_target(value, expected):
+    assert ExecutionOverride.model_validate(value).model_dump(exclude_none=True) == expected
+
+
+@pytest.mark.parametrize("value", ["", "codex/", "codex:", "/model", "codex/a/b", "codex/a:b:c"])
+def test_compact_target_rejects_missing_and_ambiguous_fields(value):
+    with pytest.raises(ValueError):
+        ExecutionOverride.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    ("name", "driver", "command"),
+    [
+        ("codex", "codex", ("codex",)),
+        ("review", "claude-code", ("claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off")),
+    ],
+)
+def test_partial_process_configuration_preserves_driver_command_defaults(tmp_path, monkeypatch, name, driver, command):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        f'[backends.{name}]\ndriver = "{driver}"\n'
+        f'[backends.{name}.process]\npass_env = ["KEY"]\n'
+        f'[tasks.defaults.execution]\nbackend = "{name}"\n'
     )
-
-    with pytest.raises(ValueError, match="clean_event_worktrees"):
-        load_config()
-
-
-def test_load_config_rejects_legacy_flat_keys(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text('approval_policy = "on-request"', encoding="utf-8")
-
-    with pytest.raises(ValueError, match="approval_policy"):
-        load_config()
-
-
-def test_load_config_rejects_state_dir_in_toml(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path / "home"))
-    config_path = tmp_path / "home" / "config.toml"
-    config_path.parent.mkdir()
-    config_path.write_text('state_dir = "/tmp/other"', encoding="utf-8")
-
-    try:
-        load_config()
-    except ValueError as exc:
-        assert "state_dir is not configurable" in str(exc)
-    else:
-        raise AssertionError("expected state_dir to be rejected")
+    monkeypatch.setenv(f"NYANPASU__BACKENDS__{name.upper()}__PROCESS__ENV__KEY", "literal-secret")
+    configured = load_config().backends[name].process
+    assert configured.command == command
+    assert configured.pass_env == ("KEY",)
+    assert configured.env == {"KEY": "literal-secret"}

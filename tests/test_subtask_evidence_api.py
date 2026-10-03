@@ -17,6 +17,7 @@ async def test_tree_and_frozen_evidence_remain_readable_after_context_cleanup(tm
     config = NyanpasuConfig(state_dir=tmp_path, server=ServerConfig(token=SecretStr("test-token")))
     store = StateStore(config.db_path)
     parent = AgentTask(
+        execution=config.resolve_execution(),
         task_id="parent",
         context_key="review:1",
         action=TaskAction.RUN,
@@ -25,7 +26,9 @@ async def test_tree_and_frozen_evidence_remain_readable_after_context_cleanup(tm
     )
     store.record_task(parent)
     store.mark_task_running(parent.task_id, None)
-    child = store.create_subtask(parent.task_id, SubtaskRequest(request_key="design", prompt="Design"))
+    child = store.create_subtask(
+        parent.task_id, SubtaskRequest(request_key="design", prompt="Design"), execution=config.resolve_execution()
+    )
     content = b"Independent evidence from the base tree\n"
     digest = hashlib.sha256(content).hexdigest()
     artifact = tmp_path / "artifacts" / "subtasks" / child.task_id / digest

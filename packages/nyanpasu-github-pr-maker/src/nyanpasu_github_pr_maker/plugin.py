@@ -160,6 +160,7 @@ class GitHubPrMakerPlugin:
             auth_instructions=self.github.agent_auth_instructions(),
         )
         return branch_agent_task(
+            kind="github_pr_maker.create",
             task_id=task_id,
             context_key=context_key,
             prompt=build_pr_maker_prompt(plan=plan),

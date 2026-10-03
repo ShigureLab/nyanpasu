@@ -857,3 +857,47 @@ test('session tabs preserve reading state during background updates and share co
     page.getByText('No sub tasks have been created for this session.', { exact: true }),
   ).toBeVisible();
 });
+
+test('mixed execution targets are inspectable without inventing native model metadata', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?view=tasks');
+  await page.getByLabel('Task kind').selectOption('memory_consolidation');
+  const rows = page.locator('.task-list .task-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('configured-small-model');
+  await expect(rows).toContainText('low');
+  await rows.first().click();
+  const execution = page.getByRole('region', { name: 'Configured execution target' });
+  await expect(execution).toContainText('tasks.kinds.memory_consolidation.execution');
+  await expect(execution).toContainText('backends.claude.defaults');
+
+  await page.route('**/api/sessions/fixture-thread', async (route) => {
+    const response = await route.fetch();
+    const detail = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...detail, runtime: { ...detail.runtime, model: null } },
+    });
+  });
+  await page.goto('/dashboard?session=fixture-thread&tab=details');
+  const native = page
+    .locator('.session-metadata > div')
+    .filter({ has: page.getByText('Native reported model', { exact: true }) });
+  await expect(native).toContainText('Not reported');
+  await expect(native).not.toContainText('configured-review-model');
+  await expect(page.getByRole('region', { name: 'Configured execution target' })).toContainText(
+    'configured-review-model',
+  );
+
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click();
+  await expect(page.getByRole('article', { name: 'Backend codex' })).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Backend claude' })).toBeVisible();
+  await page
+    .locator('.execution-activity button')
+    .filter({ hasText: 'memory_consolidation' })
+    .click();
+  await expect(page.getByLabel('Task backend')).toHaveValue('claude');
+  await expect(page.getByLabel('Task kind')).toHaveValue('memory_consolidation');
+  await expect(page.locator('.task-list .task-row')).toHaveCount(1);
+});

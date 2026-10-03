@@ -4,6 +4,7 @@ import { type Navigate, type useResource } from './api';
 import { Status } from './Entry';
 import { Time } from './Time';
 import { Download } from './Download';
+import { ExecutionSummary } from './Execution';
 
 const kinds = new Map<string, { label: string; tone: string; symbol: string }>([
   ['independent-design', { label: 'Independent design', tone: 'violet', symbol: '◇' }],
@@ -55,6 +56,7 @@ function TaskChildren({ nodes, navigate }: { nodes: TaskTreeNode[]; navigate: Na
             {node.purpose && node.title !== node.purpose && (
               <small className="task-kind-label">{kind.label}</small>
             )}
+            <ExecutionSummary kind={node.kind} backend={node.backend} execution={node.execution} />
             {node.waiting && <p className="task-waiting">Awaited by ancestor</p>}
             {node.summary && <p className="task-result-summary">{node.summary}</p>}
             {node.error && <p className="error-text">{node.error.split('\n')[0]}</p>}

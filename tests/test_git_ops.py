@@ -173,5 +173,84 @@ def test_remove_worktree_tolerates_stale_directory(tmp_path: Path) -> None:
     assert not stale_path.exists()
 
 
+@pytest.fixture
+def workspace(tmp_path):
+    repo = tmp_path / "base"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "user.name", "Test"], repo)
+    _git(["config", "user.email", "test@example.invalid"], repo)
+    (repo / "file.txt").write_text("initial content")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "Initial"], repo)
+    revision = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
+    task = AgentTask(
+        task_id="first",
+        action=TaskAction.RUN,
+        context_key="public-pr",
+        prompt="review",
+        workspace=WorkspaceRef(key="repo", local_path=repo, revision=revision),
+    )
+    return repo, manager, task
+
+
+def test_workspace_fetch_uses_base_after_clone_origin_changes(workspace):
+    repo, manager, task = workspace
+    context = manager.prepare_context(task, None)
+    clone = context.session_worktree
+    assert clone is not None
+    _git(["remote", "set-url", "origin", "ssh://unreachable.invalid/repo"], clone)
+    _git(["config", "core.sshCommand", "touch .git/ssh-ran; false"], clone)
+    (repo / "file.txt").write_text("next revision")
+    _git(["commit", "-am", "Next"], repo)
+    revision = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    assert task.workspace is not None
+    task = task.model_copy(update={"workspace": task.workspace.model_copy(update={"revision": revision})})
+
+    updated = manager.prepare_context(task, context)
+
+    assert updated.revision == revision
+    assert (clone / "file.txt").read_text() == "next revision"
+    assert not (clone / ".git" / "ssh-ran").exists()
+
+
+@pytest.mark.parametrize("explicit_remote", [True, False])
+def test_clone_can_checkout_revisions_from_partial_source(tmp_path, workspace, explicit_remote):
+    repo, manager, task = workspace
+    _git(["config", "uploadpack.allowFilter", "true"], repo)
+    _git(["config", "uploadpack.allowAnySHA1InWant", "true"], repo)
+    (repo / "file.txt").write_text("newer content")
+    _git(["commit", "-am", "Next"], repo)
+    partial = tmp_path / "partial"
+    _git(["clone", "--filter=blob:none", "--no-checkout", repo.as_uri(), str(partial)], tmp_path)
+    _git(["checkout", "HEAD"], partial)
+    assert task.workspace is not None
+    task = task.model_copy(
+        update={
+            "workspace": task.workspace.model_copy(
+                update={"local_path": partial, "remote": repo.as_uri() if explicit_remote else None}
+            )
+        }
+    )
+    context = manager.prepare_context(task, None)
+    clone = context.session_worktree
+    assert clone is not None
+    assert (clone / "file.txt").read_text() == "initial content"
+    (repo / "file.txt").write_text("unneeded intermediate blob")
+    _git(["commit", "-am", "Intermediate"], repo)
+    intermediate = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    (repo / "file.txt").write_text("final revision")
+    _git(["commit", "-am", "Final"], repo)
+    final = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    _git(["fetch", "origin"], partial)
+    task = task.model_copy(update={"workspace": task.workspace.model_copy(update={"revision": final})})
+
+    manager.prepare_context(task, context)
+
+    assert (clone / "file.txt").read_text() == "final revision"
+    assert _git(["show", f"{intermediate}:file.txt"], clone).stdout == "unneeded intermediate blob"
+
+
 def _git(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", *argv], cwd=cwd, text=True, capture_output=True, check=True)
