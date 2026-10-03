@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.agent import AgentService
-from nyanpasu.config import NyanpasuConfig, ServerConfig
+from nyanpasu.config import NyanpasuConfig, PluginsConfig, ServerConfig
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
@@ -72,17 +72,19 @@ async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secre
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         server=ServerConfig(token=SecretStr(server_token) if server_token else None),
-        enabled_plugins=("github_reviewer",),
         integrations={"github": {"token": "webhook-token"}},
-        plugins={
-            "github_reviewer": {
-                "poll_enabled": False,
-                "dry_run": True,
-                "post_reviews": False,
-                "webhook_secret": webhook_secret,
-                "repos": {"ExampleOrg/ExampleRepo": {"local_path": str(tmp_path / "repo")}},
-            }
-        },
+        plugins=PluginsConfig(
+            enabled=("github_reviewer",),
+            settings={
+                "github_reviewer": {
+                    "poll_enabled": False,
+                    "dry_run": True,
+                    "post_reviews": False,
+                    "webhook_secret": webhook_secret,
+                    "repos": {"ExampleOrg/ExampleRepo": {"local_path": str(tmp_path / "repo")}},
+                }
+            },
+        ),
     )
     fake_agent = FakeAgent()
     registry = PluginRegistry()
@@ -138,8 +140,12 @@ async def test_webhook_and_polling_enqueue_same_event_once(
     repo = "ExampleOrg/ExampleRepo"
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        enabled_plugins=("github_reviewer",),
-        plugins={"github_reviewer": {"poll_enabled": False, "repos": {repo: {"local_path": str(tmp_path / "repo")}}}},
+        plugins=PluginsConfig(
+            enabled=("github_reviewer",),
+            settings={
+                "github_reviewer": {"poll_enabled": False, "repos": {repo: {"local_path": str(tmp_path / "repo")}}}
+            },
+        ),
     )
     agent = AgentService(config)
     # Exercise real admission and persistence without launching a reviewer.
@@ -197,4 +203,5 @@ async def test_webhook_and_polling_enqueue_same_event_once(
         assert journal[0]["status"] == ("completed" if poll_first else "skipped")
     reopened = StateStore(config.db_path)
     redelivered = parse_github_event(github_event, "delivery-after-restart", payload)
-    assert not reopened.record_task(plugin.event_to_task(redelivered))
+    task = plugin.event_to_task(redelivered)
+    assert not reopened.record_task(task.model_copy(update={"execution": config.resolve_execution(task.kind)}))

@@ -7,8 +7,8 @@ from unittest.mock import Mock
 import pytest
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
-from nyanpasu.config import CodexConfig, NyanpasuConfig
-from nyanpasu.models import AgentContext, TaskAction
+from nyanpasu.config import CodexBackendConfig, ModelSettings, NyanpasuConfig
+from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings, ReviewTrigger
@@ -27,7 +27,10 @@ def _plugin(tmp_path: Path) -> GitHubReviewerPlugin:
         )
     )
     plugin.runtime = Mock(
-        config=NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(model="runtime-model", reasoning_effort="high"))
+        config=NyanpasuConfig(
+            state_dir=tmp_path,
+            backends={"codex": CodexBackendConfig(defaults=ModelSettings(model="runtime-model", reasoning="high"))},
+        )
     )
     return plugin
 
@@ -48,9 +51,15 @@ def _pr_payload(action: str, sha: str = "head-a") -> dict[str, Any]:
 
 
 def _task(plugin: GitHubReviewerPlugin, action: str, sha: str):
-    return plugin.event_to_task(
+    task = plugin.event_to_task(
         parse_github_event("pull_request", f"{action}-{sha}", _pr_payload(action, sha), agent_login="review-bot")
     )
+    return _admit(plugin, task)
+
+
+def _admit(plugin: GitHubReviewerPlugin, task: AgentTask) -> AgentTask:
+    assert plugin.runtime is not None
+    return task.model_copy(update={"execution": plugin.runtime.config.resolve_execution(task.kind)})
 
 
 def _live_pr(**updates):
@@ -203,6 +212,7 @@ async def test_hydration_and_preparation_refresh_stack_membership(tmp_path, monk
     _stub_github(monkeypatch, base={"ref": "lower", "sha": "lower-head"}, stack=stack)
 
     queued = plugin.event_to_task(parse_github_event("pull_request", "stack-open", payload))
+    queued = _admit(plugin, queued)
     prepared = await plugin.prepare_task(queued, (), None)
     assert prepared.action is TaskAction.RUN
     assert prepared.metadata["pull_request"]["base_ref"] == "lower"
@@ -264,7 +274,9 @@ def test_distinct_comment_requests_remain_admissible(tmp_path, monkeypatch, gith
 
     def submit(delivery, raw):
         event = parse_github_event(github_event, delivery, raw, agent_login="review-bot")
-        return store.record_task(plugin.event_to_task(event))
+        task = plugin.event_to_task(event)
+        admitted = _admit(plugin, task)
+        return store.record_task(admitted)
 
     assert submit("original", payload)
     assert not submit("redelivery", payload)
@@ -289,8 +301,11 @@ def test_explicit_review_requests_on_same_head_remain_admissible(tmp_path, monke
     payload = pr_payload("review_requested") | {"requested_reviewer": {"login": "review-bot"}}
     for delivery in ("request-1", "request-2"):
         event = parse_github_event("pull_request", delivery, payload, agent_login="review-bot")
-        assert store.record_task(plugin.event_to_task(event))
-        assert not store.record_task(plugin.event_to_task(event))
+        task = plugin.event_to_task(event)
+        admitted = _admit(plugin, task)
+        assert store.record_task(admitted)
+        assert not store.record_task(admitted)
     assert plugin.config is not None
     for _ in range(2):
-        assert store.record_task(manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 123))
+        task = manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 123)
+        assert store.record_task(_admit(plugin, task))

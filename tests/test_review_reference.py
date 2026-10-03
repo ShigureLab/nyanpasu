@@ -303,7 +303,7 @@ async def test_reference_git_failure_returns_control_error_and_allows_retry(tmp_
         metadata={"plugin_id": "review", "pull_request": {"head_sha": head, "base_ref": "missing"}},
     )
     agent = AgentService(config, backends=fake_backends(config, FakeCodex()))
-    agent.store.record_task(parent)
+    agent.store.record_task(agent._admit(parent))
     agent.store.mark_task_running(parent.task_id, None)
     agent._admitted_roots.add(parent.task_id)
 

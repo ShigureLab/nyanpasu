@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from nyanpasu.config import NyanpasuConfig
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride
 
 
 def _task(
@@ -15,6 +19,7 @@ def _task(
 ) -> AgentTask:
     return AgentTask(
         task_id=task_id,
+        execution=NyanpasuConfig().resolve_execution(),
         action=TaskAction.RUN,
         context_key=context_key,
         prompt="do work",
@@ -99,8 +104,11 @@ def test_tasks_for_different_backends_do_not_coalesce(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     first = _task("task-1").model_copy(update={"coalesce_key": "batch"})
     second = _task("task-2").model_copy(update={"coalesce_key": "batch"})
-    assert store.enqueue_task(first, default_backend="codex", coalesce_since=0) == (True, None)
-    assert store.enqueue_task(second, default_backend="claude", coalesce_since=0) == (True, None)
+    assert store.enqueue_task(first, coalesce_since=0) == (True, None)
+    second = second.model_copy(
+        update={"execution": NyanpasuConfig().resolve_execution(override=ExecutionOverride(backend="claude"))}
+    )
+    assert store.enqueue_task(second, coalesce_since=0) == (True, None)
     assert {task.status for task in store.recent_tasks()} == {TaskStatus.QUEUED}
     assert store.task_backend("task-1") == "codex"
     assert store.task_backend("task-2") == "claude"
@@ -118,8 +126,13 @@ def test_cleanup_keeps_context_backend_after_configuration_switch(tmp_path: Path
             revision=None,
         )
     )
-    task = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
-    assert store.record_task(task, default_backend="claude")
+    task = _task("cleanup").model_copy(
+        update={
+            "action": TaskAction.CLEANUP,
+            "execution": NyanpasuConfig().resolve_execution(override=ExecutionOverride(backend="claude")),
+        }
+    )
+    assert store.record_task(task)
     assert store.task_backend("cleanup") == "codex"
 
 
@@ -307,35 +320,38 @@ def test_distinct_merge_keys_keep_tasks_separate_in_shared_context(tmp_path: Pat
     assert store.coalesced_tasks_for("first") == []
 
 
-def test_migrate_conversation_copies_preserves_task_and_execution_references(tmp_path: Path) -> None:
+def test_store_rejects_unresolved_tasks_before_admission(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.db")
+    task = _task("unresolved").model_copy(update={"execution": None})
+    with pytest.raises(ValueError, match="execution must be resolved before admission"):
+        store.record_task(task)
+    with pytest.raises(ValueError, match="execution must be resolved before admission"):
+        store.enqueue_task(task, coalesce_since=0)
+    assert store.recent_tasks() == []
+
+
+def test_legacy_conversation_schema_requires_explicit_migration(tmp_path: Path) -> None:
     import sqlite3
 
     path = tmp_path / "old.db"
     state = StateStore(path)
-    for task_id in ("original", "alias"):
-        state.record_task(AgentTask(task_id=task_id, context_key="demo", action=TaskAction.RUN, prompt="request"))
+    state.record_task(_task("original"))
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE task_runs ADD COLUMN result_json TEXT")
         conn.execute("ALTER TABLE task_runs DROP COLUMN coalesced_into")
+        conn.execute("PRAGMA user_version=0")
         conn.execute(
             "UPDATE task_runs SET result_json=? WHERE task_id='original'",
             ('{"final_message":"conversation copy","raw_events":[{"text":"duplicate"}]}',),
         )
-        conn.execute("UPDATE task_runs SET result_json=? WHERE task_id='alias'", ('{"coalesced_into":"original"}',))
         conn.executescript("""
-            CREATE TABLE transcript_tasks(task_id TEXT,session_id TEXT,turn_id TEXT);
-            CREATE TABLE transcript_sessions(session_id TEXT,thread_id TEXT);
             CREATE TABLE transcript_events(content TEXT);
-            INSERT INTO transcript_tasks VALUES('original','old-session','turn');
-            INSERT INTO transcript_sessions VALUES('old-session','thread');
             INSERT INTO transcript_events VALUES('conversation copy');
         """)
-    migrated = StateStore(path)
-    assert next(task for task in migrated.recent_tasks() if task.task_id == "original").thread_id == "thread"
-    assert next(task for task in migrated.recent_tasks() if task.task_id == "original").turn_id == "turn"
-    assert migrated.coalesced_tasks_for("original")[0].task_id == "alias"
-    StateStore(path)
+    with pytest.raises(ValueError, match="requires migration.*migrate-state"):
+        StateStore(path)
     with sqlite3.connect(path) as conn:
-        assert "result_json" not in {row[1] for row in conn.execute("PRAGMA table_info(task_runs)")}
-        assert not conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'transcript_%'").fetchall()
-        assert conn.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert "result_json" in {row[1] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        assert conn.execute("SELECT content FROM transcript_events").fetchall() == [("conversation copy",)]
+        assert conn.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 1
