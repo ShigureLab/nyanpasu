@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -12,9 +13,12 @@ from nyanpasu.agent import AgentService, PostProcessHook
 from nyanpasu.auth import require_server_token
 from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
+from nyanpasu.memory import MemoryAccess, MemoryNotFound, MemoryService, MemorySource
+from nyanpasu.models import AgentTask
 from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskControlHandler, TaskPreparer
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.api import dashboard_router
+from nyanpasu.transcript.models import MemoryPage
 from nyanpasu.transcript.queries import CursorError, TranscriptReader
 from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
 
@@ -22,7 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from enum import Enum
 
-    from nyanpasu.models import AgentTask, TaskRunResult
+    from nyanpasu.models import TaskRunResult
     from nyanpasu.transcript.history import SessionSource
 
 
@@ -115,15 +119,20 @@ def create_app(
     app.state.agent = resolved_agent
     runtime.app = app
     state_store = StateStore(resolved_config.db_path)
+    memory = (
+        resolved_agent.memory if isinstance(resolved_agent, AgentService) else MemoryService(resolved_config.memory_dir)
+    )
+    if resolved_config.server.token is None and (
+        state_store.has_restricted_memory() or any(domain != "public" for domain in memory.list_domains())
+    ):
+        raise ValueError("non-public history requires authenticated service endpoints")
+    if owned_backends is not None:
+        owned_backends.register_session_locator(state_store.native_home)
     reader = TranscriptReader(state_store.db_path, session_sources)
 
-    def runtime_info() -> dict[str, Any]:
-        info = backends.runtime_info()
-        active = info["backends"].get(resolved_config.runtime.backend, {})
-        return {"connection": active.get("connection", "idle"), "diagnostics": active.get("diagnostics", []), **info}
-
     protected = APIRouter(dependencies=[Depends(require_server_token)])
-    protected.include_router(dashboard_router(resolved_config, reader, runtime_info))
+    protected.include_router(dashboard_router(resolved_config, reader, backends.runtime_info))
+    protected.include_router(memory_router(resolved_config, reader, memory))
 
     @app.middleware("http")
     async def prevent_data_caching(request, call_next):
@@ -152,7 +161,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "backend": resolved_config.runtime.backend,
+            "backends": list(resolved_config.backends),
             "enabled_plugins": list(resolved_config.enabled_plugin_ids),
         }
 
@@ -178,6 +187,62 @@ def create_app(
 
     app.include_router(protected)
     return app
+
+
+def memory_router(config: NyanpasuConfig, reader: TranscriptReader, memory: MemoryService) -> APIRouter:
+    """Operators inspect the entire corpus or an existing task's memory scope."""
+    router = APIRouter(prefix="/api/memory")
+
+    def access_for_task(task_id: str | None) -> MemoryAccess:
+        if task_id is None:
+            return MemoryAccess(memory.list_domains())
+        with reader.connect() as conn:
+            row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Task not found")
+        return AgentTask.model_validate(json.loads(row["task_json"])).memory
+
+    @router.get("", response_model=MemoryPage)
+    def search_memory(
+        task_id: str | None = None,
+        q: Annotated[str, Query(max_length=256)] = "",
+        topic: Annotated[str, Query(max_length=256)] = "",
+        limit: Annotated[int, Query(ge=1, le=50)] = 50,
+    ):
+        access = access_for_task(task_id)
+        if not config.memory.enabled:
+            return {
+                "enabled": False,
+                "count": 0,
+                "domains": [],
+                "topics": [],
+                "items": [],
+                "navigation_count": 0,
+                "navigation": [],
+                "has_more": False,
+            }
+        sources = memory.search(access, q, topics=(topic,) if topic else (), limit=limit + 1)
+        return {
+            "enabled": True,
+            **memory.describe(access),
+            "items": [
+                {key: value for key, value in source.to_dict().items() if key != "body"} for source in sources[:limit]
+            ],
+            "navigation": [navigation.to_dict() for navigation in memory.list_navigation(access)],
+            "has_more": len(sources) > limit,
+        }
+
+    @router.get("/{source_id}", response_model=MemorySource)
+    def read_memory(source_id: str, task_id: str | None = None):
+        access = access_for_task(task_id)
+        if not config.memory.enabled:
+            raise HTTPException(404, "Memory is disabled")
+        try:
+            return memory.read(access, source_id).to_dict()
+        except MemoryNotFound as exc:
+            raise HTTPException(404, "Memory not found") from exc
+
+    return router
 
 
 def app_from_env() -> FastAPI:

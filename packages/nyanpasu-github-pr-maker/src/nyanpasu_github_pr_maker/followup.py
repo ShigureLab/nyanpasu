@@ -155,6 +155,8 @@ def build_follow_up_task(
         git_author_email=record.git_author_email,
     )
     return AgentTask(
+        kind="github_pr_maker.followup",
+        memory=repo_settings.memory_access(record.repo),
         task_id=task_id,
         action=TaskAction.RUN,
         context_key=record.context_key,

@@ -10,7 +10,7 @@ from nyanpasu_github_pr_maker.followup import GitHubPrMakerFollowUpPoller
 from nyanpasu_github_pr_maker.models import CreatePullRequestTaskRequest
 from nyanpasu_github_pr_maker.plugin import GitHubPrMakerPlugin
 
-from nyanpasu.config import NyanpasuConfig
+from nyanpasu.config import NyanpasuConfig, PluginsConfig
 from nyanpasu.models import AgentContext, AgentTask, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
@@ -58,22 +58,24 @@ async def test_pr_maker_accepts_task_and_registers_post_process(tmp_path: Path, 
     monkeypatch.setattr(agent_tasks_module, "resolve_branch_sha", lambda *_, **__: "base-sha")
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        enabled_plugins=("github_pr_maker",),
         integrations={"github": {"token_env": "NYANPASU_TEST_GH_TOKEN"}},
-        plugins={
-            "github_pr_maker": {
-                "default_base_branch": "develop",
-                "dry_run": True,
-                "follow_up_enabled": False,
-                "repos": {
-                    "ExampleOrg/ExampleRepo": {
-                        "local_path": str(tmp_path / "repo"),
-                        "github_remote": "git@github.com:ExampleOrg/ExampleRepo.git",
-                        "base_branches": ["develop"],
-                    }
-                },
-            }
-        },
+        plugins=PluginsConfig(
+            enabled=("github_pr_maker",),
+            settings={
+                "github_pr_maker": {
+                    "default_base_branch": "develop",
+                    "dry_run": True,
+                    "follow_up_enabled": False,
+                    "repos": {
+                        "ExampleOrg/ExampleRepo": {
+                            "local_path": str(tmp_path / "repo"),
+                            "github_remote": "git@github.com:ExampleOrg/ExampleRepo.git",
+                            "base_branches": ["develop"],
+                        }
+                    },
+                }
+            },
+        ),
     )
     fake_agent = FakeAgent()
     registry = PluginRegistry()

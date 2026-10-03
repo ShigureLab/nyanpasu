@@ -1,6 +1,6 @@
 # Claude Code
 
-Required when `runtime.backend = "claude"`. [Codex](codex.md) is the other supported backend; installing both is optional.
+Required when a task selects a configured backend whose driver is `claude-code`. [Codex](codex.md) is the other supported backend; installing both is optional.
 
 ## Prerequisites and installation
 
@@ -13,6 +13,8 @@ claude --version
 claude
 ```
 
-Nyanpasu requires a CLI compatible with its stream output, session resume, and configured permission mode. The default is `permission_mode = "auto"`, which also needs account/model support. See [runtime configuration](../README.md#runtime-configuration) for compatibility, default CLI arguments, and fallback settings.
+Nyanpasu requires a CLI compatible with its stream output, session resume, and configured permission mode. The default is `permission_mode = "auto"`, which also needs account/model support. See the [configuration example](../examples/config.toml) for default CLI arguments and [runtime configuration](../README.md#runtime-configuration) for fallback settings.
 
-Install the [reviewer skills](index.md#agent-skills) for Claude and configure credentials through `claude.env` or `claude.pass_env`. Set `claude.bin` for a custom executable. Preserve its configuration and native session history across restarts.
+Install the [reviewer skills](index.md#agent-skills) for Claude and configure credentials through `backends.claude.process.env` or `backends.claude.process.pass_env`. Set `backends.claude.process.command` for a custom executable. Preserve its configuration and native session history across restarts.
+
+Configure the required skills through [native session homes](../README.md#native-session-homes) and the native CLI’s discovery settings. Verify discovery inside a Nyanpasu task; a normal interactive CLI session uses a different home.

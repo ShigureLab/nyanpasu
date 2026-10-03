@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
-from nyanpasu.presentation import task_title
+from nyanpasu.presentation import task_execution, task_title
 from nyanpasu.redaction import redact
 from nyanpasu.transcript.models import (
     ContentPage,
@@ -46,11 +46,18 @@ def dashboard_router(
     def overview():
         with reader.connect() as conn:
             counts = dict(conn.execute("SELECT status,count(*) FROM task_runs GROUP BY status").fetchall())
+            executions = [
+                dict(row)
+                for row in conn.execute("""
+                    SELECT backend,coalesce(json_extract(task_json,'$.kind'),'default') AS kind,status,count(*) AS count
+                    FROM task_runs GROUP BY backend,kind,status ORDER BY backend,kind,status
+                """)
+            ]
         return {
             "generated_at": time.time(),
             "service": "available",
             "task_counts": counts,
-            "backend": config.runtime.backend,
+            "executions": executions,
             "session_source": "native",
         }
 
@@ -142,7 +149,15 @@ def dashboard_router(
         )
 
     @router.get("/tasks", response_model=TaskPage)
-    def tasks(q: Search = "", state: str = "", plugin: str = "", offset: Offset = 0, limit: PageSize = 50):
+    def tasks(
+        q: Search = "",
+        state: str = "",
+        plugin: str = "",
+        backend: str = "",
+        kind: str = "",
+        offset: Offset = 0,
+        limit: PageSize = 50,
+    ):
         where, args = ["1=1"], []
         if q:
             where.append("(instr(lower(r.context_key),lower(?))>0 OR instr(lower(r.task_json),lower(?))>0)")
@@ -155,6 +170,12 @@ def dashboard_router(
                 "coalesce(json_extract(r.task_json,'$.metadata.plugin_id'),json_extract(r.task_json,'$.metadata.source_plugin_id'),'core')=?"
             )
             args.append(plugin)
+        if backend:
+            where.append("r.backend=?")
+            args.append(backend)
+        if kind:
+            where.append("coalesce(json_extract(r.task_json,'$.kind'),'default')=?")
+            args.append(kind)
         with reader.connect() as conn:
             total = conn.execute(f"SELECT count(*) FROM ({TASKS}) r WHERE {' AND '.join(where)}", args).fetchone()[0]
             rows = conn.execute(
@@ -174,7 +195,9 @@ def dashboard_router(
         items = []
         for row in rows:
             item = dict(row)
-            item["title"] = task_title(json.loads(item.pop("task_json")))
+            task = json.loads(item.pop("task_json"))
+            item["title"] = task_title(task)
+            item.update(task_execution(task))
             items.append(item)
         return {"items": redact(items), "total": total, "has_more": offset + len(rows) < total}
 
@@ -186,15 +209,22 @@ def dashboard_router(
                 raise HTTPException(404, "Task not found")
             data = dict(row)
             data["task"] = json.loads(data.pop("task_json"))
+            data.update(task_execution(data["task"]))
             evidence = conn.execute(
                 "SELECT wait_for,subtask_result FROM task_runs WHERE task_id=?", (task_id,)
             ).fetchone()
             data["waiting_for"] = json.loads(evidence["wait_for"] or "[]")
             data["subtask_result"] = json.loads(evidence["subtask_result"]) if evidence["subtask_result"] else None
             data["children"] = [
-                dict(child)
+                {
+                    "task_id": child["task_id"],
+                    "status": child["status"],
+                    "context_key": child["context_key"],
+                    "backend": child["backend"],
+                    **task_execution(json.loads(child["task_json"])),
+                }
                 for child in conn.execute(
-                    "SELECT task_id,status,context_key FROM task_runs WHERE spawned_by_task_id=? ORDER BY created_at",
+                    "SELECT task_id,status,context_key,backend,task_json FROM task_runs WHERE spawned_by_task_id=? ORDER BY created_at",
                     (task_id,),
                 )
             ]
@@ -271,19 +301,24 @@ def dashboard_router(
     def runtime():
         with reader.connect() as conn:
             leases = [dict(row) for row in conn.execute("SELECT * FROM context_leases ORDER BY expires_at DESC")]
+        observed = runtime_info()
         return {
-            "backend": config.runtime.backend,
-            "model": config.process_config().model,
-            "fallback_models": [model.model_dump() for model in config.claude.fallback_models]
-            if config.runtime.backend == "claude"
-            else [],
-            "reasoning_effort": config.process_config().reasoning_effort,
-            "bin": config.process_config().bin,
+            "default_execution": config.resolve_execution().model_dump(mode="json"),
+            "task_kinds": {kind: config.resolve_execution(kind).model_dump(mode="json") for kind in config.tasks.kinds},
+            "backends": {
+                name: {
+                    "driver": backend.driver,
+                    "command": list(backend.process.command),
+                    "connection": "idle",
+                    "diagnostics": [],
+                    **redact(observed.get("backends", {}).get(name, {})),
+                }
+                for name, backend in config.backends.items()
+            },
             "concurrency": config.runtime.concurrency,
             "concurrency_scope": "root executions; descendants share the root slot, including while waiting",
             "leases": leases,
             "generated_at": time.time(),
-            **redact(runtime_info()),
         }
 
     return router

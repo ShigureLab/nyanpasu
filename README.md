@@ -20,148 +20,100 @@ Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh
 
 ## Configuration
 
-Nyanpasu uses TOML and Pydantic models. Core config lives at the top level; plugin config lives under `plugins.<plugin_id>`.
+Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, separate native homes, and memory live below the same directory. `state_dir` is not a TOML option.
 
-Nyanpasu has one user-facing home directory. Set `NYANPASU_HOME` to choose it; otherwise it defaults to `~/.nyanpasu`. Config is always read from `$NYANPASU_HOME/config.toml`, and runtime state, logs, SQLite, and managed workspaces also live under `$NYANPASU_HOME`.
-
-`state_dir` is intentionally not a TOML option. To move both config and state, move `NYANPASU_HOME`.
+Backends have names and separate process settings, model defaults, and adapter options. Tasks select a backend independently, so Codex and Claude can run in the same service. Plugin activation lives under `plugins.enabled`, with plugin configuration under `plugins.settings.<id>`.
 
 ```toml
-enabled_plugins = ["github_reviewer", "github_pr_maker"]
+[backends.codex]
+driver = "codex"
 
-[server]
-host = "127.0.0.1"
-port = 8765
+[backends.codex.defaults]
+model = "your-codex-model"
+reasoning = "high"
 
-[codex]
-model = "gpt-6-astra"
-reasoning_effort = "medium"
-sandbox = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "auto_review"
-command_timeout_seconds = 3600
-pass_env = ["NYANPASU_GITHUB_TOKEN"]
+[backends.claude]
+driver = "claude-code"
 
-[claude]
-model = "sonnet"
-reasoning_effort = "medium"
-permission_mode = "auto"
+[backends.claude.process]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 
-[runtime]
-backend = "codex" # or "claude"
-concurrency = 4
-coalesce_window_seconds = 600
-clean_event_snapshots = true
+[backends.claude.defaults]
+model = "your-review-model"
+reasoning = "medium"
+
+[tasks.defaults.execution]
+backend = "codex"
+
+[tasks.kinds."github_reviewer.review".execution]
+backend = "claude"
+
+[tasks.kinds.memory_extraction.execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "medium"
+
+[tasks.kinds.memory_consolidation.execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "medium"
+
+[plugins]
+enabled = ["github_reviewer"]
 
 [integrations.github]
 token_env = "NYANPASU_GITHUB_TOKEN"
-git_author_name = "Nyanpasu"
-git_author_email = "nyanpasu@example.invalid"
 
-[plugins.github_reviewer]
+[plugins.settings.github_reviewer]
 github_login = "your-github-login"
-poll_interval_seconds = 600
-poll_event_pages = 3
-poll_max_events_per_cycle = 0
-review_language = "Chinese"
 
-[[plugins.github_reviewer.instruction_docs]]
-name = "SOUL.md"
-path = "/path/to/SOUL.md"
-
-[plugins.github_reviewer.repos."owner/repo"]
+[plugins.settings.github_reviewer.repos."owner/repo"]
 local_path = "/path/to/repo"
-github_remote = "https://github.com/owner/repo.git"
-base_branches = ["main"]
-
-[[plugins.github_reviewer.repos."owner/repo".instruction_docs]]
-name = "AGENTS.md"
-path = "/path/to/repo/AGENTS.md"
-required = false
-
-[plugins.github_pr_maker]
-branch_prefix = "nyanpasu"
-default_base_branch = "main"
-dry_run = false
-draft = false
-follow_up_enabled = true
-follow_up_interval_seconds = 600
-
-[plugins.github_pr_maker.repos."owner/repo"]
-local_path = "/path/to/repo"
-github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
 ```
 
-Instruction documents are task-scoped. A plugin can attach files such as `SOUL.md`, `AGENTS.md`, or project policy notes to an `AgentTask`; the core runtime appends them only for that task before invoking the selected backend. They are not global Nyanpasu identity and are not hardcoded into the core or GitHub reviewer prompt.
+The [complete example](examples/config.toml) lists backend options, native homes, task kinds, and memory settings. `process.command` is an argument array run without a shell; setting it replaces the driver's entire default command. `process.pass_env` forwards named service variables, while `process.env` overrides them and accepts either literal strings or commands such as `GH_TOKEN = { cmd = ["gh", "auth", "token"] }`.
 
-Integration config is generic core data. Nyanpasu core stores `integrations` as plain TOML tables; packages such as `nyanpasu-github` parse their own integration settings. GitHub plugins accept a literal `token`, a command-backed `token`, or `token_env`. Configure only one source. Credentials are resolved when each plugin starts and reused for its lifetime. A configured environment variable that is missing or empty prevents that backend from starting. If neither `token` nor `token_env` is set, GitHub plugins use the ambient `gh auth` state.
+Environment overrides use `NYANPASU__SECTION__FIELD`, for example `NYANPASU__TASKS__DEFAULTS__EXECUTION__BACKEND=claude`. Values use TOML syntax; arrays must be TOML arrays, and strings that look like numbers or booleans must be quoted. Child-process environment names keep their spelling, as in `NYANPASU__BACKENDS__CODEX__PROCESS__ENV__GH_PROMPT_DISABLED='"1"'`.
 
-To pin plugin-side API calls to one locally authenticated account without storing a token in TOML:
-
-```toml
-[integrations.github]
-token = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
-```
-
-Token commands follow the same execution, validation, and error reporting rules as the runtime `env` commands below. They run once per plugin startup. Restart the service to refresh resolved credentials.
-
-Agent-driven GitHub tasks that run `gh`, such as PR maker, also need the token environment variable to be visible to the selected runtime. Add that variable name to `codex.pass_env` or `claude.pass_env`, for example `pass_env = ["NYANPASU_GITHUB_TOKEN"]`. Nyanpasu records the variable name in prompts and task plans, not the token value.
+Instruction documents such as `SOUL.md` and `AGENTS.md` remain task-scoped. Plugins attach them to a task; the runtime supplies them to that task's native session. Integration credentials under `integrations.github` serve plugin-side API calls. Agent-side GitHub commands also need credentials in the selected backend's `process.env` or `process.pass_env`.
 
 ## Runtime configuration
 
-Choose `codex` or `claude` with `runtime.backend` or `NYANPASU_BACKEND`. Install and authenticate the selected CLI before starting Nyanpasu. Configure it in the corresponding `[codex]` or `[claude]` section; see the [complete example](examples/config.toml).
+At admission, the service resolves and records a task's backend, model, reasoning, and timeout. Each execution field uses the first applicable value from the request override, `tasks.kinds.<kind>.execution`, `tasks.defaults.execution`, and the selected backend's `defaults`. An unset model or reasoning leaves the choice to the native CLI. A backend switch excludes model/reasoning settings belonging to other backend names. Kind-specific `limits.turn_timeout_seconds` overrides the task default, which is 3600 seconds. A child resolves its own kind and overrides independently.
 
-Both backends support `bin`, `args`, `model`, `reasoning_effort`, `command_timeout_seconds`, `env`, and `pass_env`. `bin` is an executable name or path, and `args` is a literal argument list that replaces the defaults when specified. Arguments are passed directly without a shell.
+Queued and interrupted tasks retain their admitted target across configuration changes and resume their original native session and workspace. Newly admitted work uses the new settings. After an unclean exit, recovery waits for any remaining context lease to expire. Completed and failed tasks are not retried, and tasks from disabled plugins remain queued.
 
-Set `model` and `reasoning_effort` to pin the agent's configuration for new and resumed sessions. Omitted values inherit the CLI's defaults. The Dashboard's Runtime page and the reviewer's disclosure footer use the configured values. `NYANPASU_CODEX_MODEL` / `NYANPASU_CLAUDE_MODEL` and `NYANPASU_CODEX_REASONING_EFFORT` / `NYANPASU_CLAUDE_REASONING_EFFORT` override the TOML settings.
-
-Claude supports an optional ordered fallback chain, with an optional reasoning effort for each model:
-
-```toml
-[claude]
-model = "opus"
-reasoning_effort = "high"
-fallback_models = [
-  { model = "sonnet", reasoning_effort = "medium" },
-  { model = "haiku", reasoning_effort = "low" },
-]
+```bash
+uv run nyanpasu explain-target --kind github_reviewer.review
+uv run nyanpasu run-task task.json --target codex/your-model:high
 ```
 
-Use model IDs available through your provider, with at most three fallback models. A string list such as `fallback_models = ["sonnet", "haiku"]` inherits the primary reasoning effort. Per-model efforts support `low`, `medium`, `high`, and `xhigh`, subject to provider support. They control task generation; Claude manages its separate safety classifier's reasoning settings. `NYANPASU_CLAUDE_FALLBACK_MODELS` overrides the list with comma-separated IDs; an empty value clears it. Codex does not use this setting.
+The Runtime page shows configured backends, task-kind routing, and the source of each selected field. Configured intent is not proof of the model actually used after provider fallback. Claude's optional `backends.<name>.options.fallback_models` accepts up to three model names or `{ model = "your-backup-model", reasoning = "medium" }` entries; omitted fallback reasoning inherits the task's setting.
 
-Generation failures use Claude's native [`--fallback-model` flag](https://code.claude.com/docs/en/model-config#fallback-model-chains), requiring a CLI version supporting ordered chains. For auto review, Nyanpasu detects the specific tool failure saying the model is temporarily unavailable and auto mode cannot determine the action's safety. It stops that process, resumes the same session with the next model, and asks it to check completed work before retrying the blocked action through auto review. This preserves `permission_mode = "auto"`; an ordinary safety rejection does not trigger fallback. If every configured model fails auto review, the task fails instead of accepting a misleading successful completion. Changing the task model only helps when your provider also changes the classifier model.
+### Native session homes
 
-Each new task starts with the primary model. The Dashboard's Runtime page shows the configured chain and records fallback and classifier-unavailability warnings with session identifiers. An omitted list leaves native CLI fallback settings in effect, but Nyanpasu's auto-review recovery requires an explicit list.
+Each context/backend/memory-audience combination has a separate native home for configuration and session history. `backends.<name>.home.native_directory` is relative to that home and defaults to `.codex` or `.claude`. An optional `home.template` supplies a minimal home tree containing configuration, authentication, and skills as real files; symbolic links are rejected. Without a template, the service seeds only the driver's supported configuration and authentication files. Existing context files are retained.
 
-If your CLI supports `CLAUDE_CODE_AUTO_MODE_MODEL`, set it through `claude.env` to pin a separate safety classifier. Nyanpasu then leaves classifier fallback to the CLI and fails the task if review remains unavailable; changing generation models cannot recover that classifier.
+Both native automatic memory systems are disabled for Nyanpasu workers; normal interactive CLI settings remain unchanged. Keep personal memories, conversation histories, and service administrative credentials out of templates. Backend processes run directly with the service user's filesystem access and the native CLI's configured permissions.
 
-Automatic permission review is enabled by default for both backends, including when these settings are omitted:
+## Background memory
 
-| Backend     | Default safety settings                                                                               |
-| ----------- | ----------------------------------------------------------------------------------------------------- |
-| Codex       | `sandbox = "workspace-write"`, `approval_policy = "on-request"`, `approvals_reviewer = "auto_review"` |
-| Claude Code | `permission_mode = "auto"`                                                                            |
+After a successful root task with a contribution audience, `memory_extraction` reads that task's native evidence in chunks and produces a source-oriented Markdown account. `memory_consolidation` then derives navigation from accounts in that same audience. The service validates structured output, records input provenance, and publishes completed results; checkpoints support recovery without exposing incomplete replacements. Summaries remain fallible accounts of evidence, so verify current repository, service, and PR state before acting on them.
 
-Codex routes approval requests to its automatic reviewer. Claude's [auto mode](https://code.claude.com/docs/en/permission-modes#eliminate-permission-prompts-with-auto-mode) uses a separate classifier for actions requiring approval and requires account and model support. Automatic checks do not guarantee safety. Claude's [Bash sandbox](https://code.claude.com/docs/en/sandboxing) is configured separately through its native settings; permission mode alone does not enable filesystem or network isolation.
+Normal tasks receive authorized navigation and use `memory.describe`, `memory.search` (`query`, optional `topics` and `limit`), and `memory.read` (`source_id`). They have no memory write tools. Topics organize retrieval, while task capabilities determine access: `read_domains` selects readable audiences and `write_domain` selects the background contribution audience. Generic tasks default to no memory, and reviewer independent-design children disable it. GitHub tasks normally read `public` plus `shared:github:<owner/repo>` and contribute only to the latter. Repository memory settings can override these audiences; non-public audiences require `server.token`.
 
-Use `env` for literal or command-backed environment variables and `pass_env` to forward named variables from the service environment. For example:
+The Dashboard's global Memory view shows every stored audience for operator inspection, including private sources and navigation. A task's **Inspect task memory** view shows only the memory available to that task.
 
-```toml
-[codex.env]
-TZ = "Asia/Shanghai"
-GH_PROMPT_DISABLED = "1"
-GH_TOKEN = { cmd = ["gh", "auth", "token", "--hostname", "github.com", "--user", "your-bot-login"] }
+Both stages use the normal task queue and backend routing. Configure `tasks.kinds.memory_extraction` and `tasks.kinds.memory_consolidation` independently; an omitted kind inherits normal task defaults. The [complete example](examples/config.toml) gives them a separate backend with model credentials. `memory.enabled = false` disables all memory use; `memory.consolidate = false` disables production while retaining reads. `memory.max_results_per_search` sets the default and maximum result count from 1 to 100.
+
+Retry failed maintenance for a completed source task with:
+
+```bash
+uv run nyanpasu memory-rebuild SOURCE_TASK_ID
 ```
 
-The same settings work under `[claude.env]`. Values in `env` override inherited values and `pass_env`; their names do not need to appear in `pass_env`. These settings affect agent child processes, while `integrations.github` configures plugin-side GitHub credentials. Configure both for the same account when the agent and plugin need to publish as one bot.
-
-Environment commands run once when the backend is first used, with the service environment and `NYANPASU_HOME` as the working directory. They cannot reference other `env` entries. Trailing CR/LF characters are removed from stdout. Failure, a timeout after 10 seconds, or empty, invalid UTF-8 or NUL-containing output prevents startup. Errors omit command output, and resolved values stay in memory until the service restarts.
-
-Restart Nyanpasu after configuration changes. Changing `runtime.backend` makes the next task in an existing context start a new native session, retaining its context key and workspace. Tasks resume the current session while the backend stays the same; switching back also creates a new session. Previous conversations remain available in history and are not migrated. Keep the original runtime and history files available to read them.
-
-Service restarts automatically recover queued and interrupted tasks using the configured backend. When the backend is unchanged, an interrupted task continues in its native session with its saved execution instructions. When the backend changes, recovery refreshes the task instructions and starts a new native session on the selected backend. Both paths preserve the workspace and ask the agent to check existing results before repeating actions. After an unclean exit, recovery waits for any remaining context lease to expire. Completed and failed tasks are not retried, and tasks from disabled plugins remain queued.
+The command waits for publication, reuses a completed extraction checkpoint when available, and exits unsuccessfully on failure. Maintenance status, errors, and native history remain visible as ordinary Dashboard tasks.
 
 ## Run
 
@@ -198,7 +150,7 @@ token = "replace-with-a-random-token"
 ```
 
 Generate a token with `uv run python -c 'import secrets; print(secrets.token_urlsafe(32))'`.
-Alternatively, set `NYANPASU_TOKEN` in the service environment; it overrides `server.token`.
+Alternatively, set `NYANPASU__SERVER__TOKEN` in the service environment; it overrides `server.token`.
 An empty token is rejected. Omitting both settings keeps local unauthenticated access available.
 Restart the service after changing the token or listening address. Use HTTPS through a reverse
 proxy when accessing the service over an untrusted network.
@@ -207,7 +159,7 @@ The Dashboard asks for the token and stores it only in browser local storage. **
 it and clears the displayed data. All `/api/*`, `/tasks`, `/contexts`, and plugin routes require
 `Authorization: Bearer <token>` when configured, including exports and content downloads. Tokens
 are never accepted in query strings. `/dashboard`, its static assets, and `/health` remain public.
-For example, `curl -H "Authorization: Bearer $NYANPASU_TOKEN" http://127.0.0.1:8765/tasks`.
+For example, `curl -H "Authorization: Bearer $NYANPASU__SERVER__TOKEN" http://127.0.0.1:8765/tasks`.
 
 Plugin routers inherit this authentication by default. A plugin with its own authentication may
 register a router with `require_auth=False`. The GitHub reviewer does this only when
@@ -299,6 +251,8 @@ AgentTask(
     task_id="event-123",
     action=TaskAction.RUN,
     context_key="my-domain:object-456",
+    kind="my_plugin.handle",
+    execution_override=ExecutionOverride(backend="codex", reasoning="high"),
     prompt="Review or handle this event.",
     developer_instructions="Continue this object's task across turns and follow the configured publication policy.",
     instruction_docs=[
@@ -326,7 +280,7 @@ Core executes the task and calls post-process hooks registered for `metadata["pl
 
 Plugins that need current external state before execution can register `runtime.add_task_preparer(self.id, self.prepare_task)`. The async preparer receives `(task, coalesced_tasks, context)` after the context lease is acquired, and returns a task with the current workspace, instructions, and message. Keep the task ID and context key unchanged; return an ignored task when the work is no longer applicable.
 
-Task merging is opt-in with a `coalesce_key` and requires a registered preparer. Compatible queued tasks with the same key, plugin, and context can merge within `runtime.coalesce_window_seconds`; the preparer owns their domain-specific merge. Ordinary tasks remain separate. Recording and merging happen in one transaction, and a running task cannot receive late merged events. This window does not delay task execution or guarantee that nearby events will share a turn.
+Task merging is opt-in with a `coalesce_key` and requires a registered preparer. Compatible queued tasks with the same key, plugin, context, execution target, and memory audience can merge within `runtime.coalesce_window_seconds`; the preparer owns their domain-specific merge. Ordinary tasks remain separate. Recording and merging happen in one transaction, and a running task cannot receive late merged events. This window does not delay task execution or guarantee that nearby events will share a turn.
 
 By default, the task uses `workspace_policy = "context"`: Nyanpasu resets the context workspace to `workspace.revision` or `workspace.ref`, runs the selected backend there, and keeps that workspace for the next event in the same context. Plugins can opt into `workspace_policy = "event_snapshot"` only when they need a disposable per-event workspace.
 
@@ -336,6 +290,6 @@ An agent can create, inspect, await, cancel and complete owned subtasks using th
 
 Before deep review, the reviewer uses `review-scope` to inspect a pinned Git file inventory and submit an admission decision for every changed path. The service rejects missing/duplicate paths and prevents any child role from taking relocated, undecided or out-of-parent scope. Decisions survive restart and freeze after child dispatch. The dashboard shows accepted, relocation and clarification groups; deferred paths never count as reviewed-clean. Useful acceptance evidence can live in a fixed PR archive without becoming repository-maintained code. The agent judges necessity and may read context across boundaries; the gate controls subtask assignments, not arbitrary file access by the agent.
 
-The GitHub reviewer chooses when independent design is useful. A design child gets a fresh repository exported from the pinned merge-base and original requirements, derives the minimum responsibilities and reusable base behavior, then builds a failure model. The parent compares designs and audits production/test necessity, including concrete deletion, consolidation or replacement alternatives and reasons to retain them. It also checks whether tests catch realistic failures without breaking on behavior-preserving changes. The review dashboard requires necessity records before deep completion; it does not require a quota of simplification findings. This supplies independent inputs, not an OS/network sandbox.
+The GitHub reviewer chooses when independent design is useful. A design child gets a fresh repository exported from the pinned merge-base and original requirements, derives the minimum responsibilities and reusable base behavior, then builds a failure model. The parent compares designs and audits production/test necessity, including concrete deletion, consolidation or replacement alternatives and reasons to retain them. It also checks whether tests catch realistic failures without breaking on behavior-preserving changes. The review dashboard requires necessity records before deep completion; it does not require a quota of simplification findings. The independent-design child has memory disabled; the core execution access controls also apply.
 
 See [the provisional reviewer evaluation cases](evals/reviewer/README.md).

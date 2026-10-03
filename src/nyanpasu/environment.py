@@ -66,7 +66,7 @@ COMMON_ENV = frozenset(
 )
 BACKEND_ENV = {
     "codex": {"CODEX_HOME", "CODEX_NETWORK_ALLOW_LOCAL_BINDING", "CODEX_NETWORK_PROXY_ACTIVE"},
-    "claude": {"CLAUDE_CONFIG_DIR"},
+    "claude-code": {"CLAUDE_CONFIG_DIR"},
 }
 
 

@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 
 from nyanpasu.agent import AgentService
+from nyanpasu.config import PluginsConfig
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
@@ -218,7 +219,7 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
         update={"metadata": {**task.metadata, "review_inventory": inventory, "review_scope": plan.model_dump()}}
     )
     store = StateStore(config.db_path)
-    store.record_task(task)
+    store.record_task(task.model_copy(update={"execution": config.resolve_execution(task.kind)}))
     recovered = store.task_request(task.task_id)
     assert recovered.metadata == task.metadata
     for path in recovered.metadata["review_scope"]["groups"][0]["files"]:
@@ -314,7 +315,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
 @pytest.mark.parametrize("scope_state", ["legacy", "unassigned", "stale", "accepted"])
 async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, scope_state):
     task, _, _, _ = scoped_task(tmp_path)
-    config = _config(tmp_path).model_copy(update={"enabled_plugins": ("github_reviewer",)})
+    config = _config(tmp_path).model_copy(update={"plugins": PluginsConfig(enabled=("github_reviewer",))})
     inventory = build_inventory(config, task)
     if scope_state != "legacy":
         task = task.model_copy(

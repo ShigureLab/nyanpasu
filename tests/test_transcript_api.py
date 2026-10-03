@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from nyanpasu.config import NyanpasuConfig
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.web import create_app
 from tests.claude_source import SESSION, records, write_session
@@ -50,11 +51,20 @@ if TYPE_CHECKING:
 async def test_task_titles_agree_across_dashboard_tasks_sessions_and_tree(tmp_path: Path, metadata, prompt, expected):
     config = NyanpasuConfig(state_dir=tmp_path)
     state = StateStore(config.db_path)
-    task = AgentTask(task_id="task", context_key="demo", action=TaskAction.RUN, prompt=prompt, metadata=metadata)
+    task = AgentTask(
+        execution=config.resolve_execution(),
+        task_id="task",
+        context_key="demo",
+        action=TaskAction.RUN,
+        prompt=prompt,
+        metadata=metadata,
+    )
     state.record_task(task)
     state.mark_task_running(task.task_id, None)
     state.bind_task_execution(task.task_id, "thread", "turn")
-    state.create_subtask(task.task_id, SubtaskRequest(request_key="child", prompt="Child"))
+    state.create_subtask(
+        task.task_id, SubtaskRequest(request_key="child", prompt="Child"), execution=config.resolve_execution()
+    )
     app = create_app(config, session_sources=lambda _: MemorySessionSource())
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         dashboard = (await client.get("/api/dashboard")).json()
@@ -72,11 +82,19 @@ async def test_task_titles_agree_across_dashboard_tasks_sessions_and_tree(tmp_pa
 
 
 @pytest.mark.anyio
-async def test_sessions_sort_and_show_latest_native_activity_before_pagination(tmp_path: Path):
+async def test_session_list_uses_persisted_activity_and_reads_native_metadata_only_in_details(tmp_path: Path):
     config = NyanpasuConfig(state_dir=tmp_path / "state")
     state = StateStore(config.db_path)
     for index, backend in enumerate(("claude", "codex"), start=1):
-        state.record_task(AgentTask(task_id=backend, context_key=backend, action=TaskAction.RUN, prompt=backend))
+        state.record_task(
+            AgentTask(
+                execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+                task_id=backend,
+                context_key=backend,
+                action=TaskAction.RUN,
+                prompt=backend,
+            )
+        )
         state.bind_task_execution(backend, SESSION, None, backend)
         with state._connect() as conn:
             conn.execute("UPDATE task_runs SET created_at=?,updated_at=? WHERE task_id=?", (index, index, backend))
@@ -98,26 +116,32 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
             assert "runtime" not in page["items"][0]
             return page["items"][0]
 
-        assert (await first_session())["session_id"] == SESSION
-        # New content in the older session, without a scheduler or task status update.
+        first = await first_session()
+        assert first["session_id"] == SESSION
+        assert datetime.fromisoformat(first["updated_at"]).timestamp() == 2
+        assert codex.calls == []
+        # Native-only activity does not open every historical profile or reorder the list.
         data.append(
             {**data[-1], "uuid": "new-message", "parentUuid": "claude-final", "timestamp": "2026-09-14T08:00:08+08:00"}
         )
         write_session(home, data)
-        latest = await first_session()
-        assert latest["session_id"] == "claude:" + SESSION
-        assert latest["updated_at"] == "2026-09-14T00:00:08+00:00"
-        detail = (await client.get("/api/sessions/" + latest["session_id"])).json()
-        assert detail["updated_at"] == latest["updated_at"]
+        codex.metadata["updatedAt"] = codex_time + 1
+        assert await first_session() == first
+        assert codex.calls == []
+        second = (await client.get("/api/sessions?offset=1&limit=1")).json()["items"][0]
+        assert second["session_id"] == "claude:" + SESSION
+        assert datetime.fromisoformat(second["updated_at"]).timestamp() == 1
+
+        detail = (await client.get("/api/sessions/" + second["session_id"])).json()
+        assert detail["updated_at"] == "2026-09-14T00:00:08+00:00"
         assert detail["runtime"]["backend"] == "claude"
         assert "history_error" not in detail
-        assert (await client.get("/api/sessions?offset=1&limit=1")).json()["items"][0]["session_id"] == SESSION
-
-        codex.metadata["updatedAt"] = codex_time + 1
-        latest = await first_session()
-        assert latest["session_id"] == SESSION
-        assert latest["updated_at"] == "2026-09-14T00:00:08.250000+00:00"
-        assert all(method == "read" for method, _, _ in codex.calls)
+        assert codex.calls == []
+        detail = (await client.get("/api/sessions/" + SESSION)).json()
+        assert detail["updated_at"] == "2026-09-14T00:00:08.250000+00:00"
+        assert codex.calls == [("read", SESSION, None)]
+        assert await first_session() == first
+        assert codex.calls == [("read", SESSION, None)]
 
         # A later task transition still counts, and missing history keeps task metadata visible.
         state.mark_task_failed("claude", "interrupted")
@@ -143,7 +167,15 @@ async def test_sessions_prioritize_active_execution_before_pagination(tmp_path: 
         ("waiting", "waiting", 40),
         ("cancelled", "cancelled", 70),
     ]:
-        state.record_task(AgentTask(task_id=task_id, context_key=task_id, action=TaskAction.RUN, prompt=task_id))
+        state.record_task(
+            AgentTask(
+                execution=config.resolve_execution(),
+                task_id=task_id,
+                context_key=task_id,
+                action=TaskAction.RUN,
+                prompt=task_id,
+            )
+        )
         state.bind_task_execution(task_id, task_id, None)
         with state._connect() as conn:
             conn.execute("UPDATE task_runs SET status=?,updated_at=? WHERE task_id=?", (status, updated_at, task_id))
@@ -184,15 +216,20 @@ async def test_session_state_comes_from_execution_not_coalesced_events(tmp_path:
     config = NyanpasuConfig(state_dir=tmp_path)
     state = StateStore(config.db_path)
     parent = AgentTask(
-        task_id="parent", context_key="demo", action=TaskAction.RUN, prompt="Actual review", coalesce_key="review"
+        execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+        task_id="parent",
+        context_key="demo",
+        action=TaskAction.RUN,
+        prompt="Actual review",
+        coalesce_key="review",
     )
     previous = parent.model_copy(update={"task_id": "previous"})
-    state.record_task(previous, default_backend=backend)
+    state.record_task(previous)
     state.bind_task_execution("previous", SESSION, "previous-turn", backend)
     state.mark_task_failed("previous", "Timed out")
-    state.record_task(parent, default_backend=backend)
+    state.record_task(parent)
     child = parent.model_copy(update={"task_id": "child", "prompt": "Merged event"})
-    assert state.enqueue_task(child, default_backend=backend, coalesce_since=0) == (True, "parent")
+    assert state.enqueue_task(child, coalesce_since=0) == (True, "parent")
     assert state.task_status("child") == "completed"
     state.mark_task_running("parent", None)
     state.bind_task_execution("parent", SESSION, "current-turn", backend)
@@ -241,7 +278,13 @@ async def test_session_state_comes_from_execution_not_coalesced_events(tmp_path:
 async def test_search_download_export_and_validation_use_native_content(tmp_path: Path, turn_id: str):
     config = NyanpasuConfig(state_dir=tmp_path)
     state = StateStore(config.db_path)
-    task = AgentTask(task_id="task", context_key="demo", action=TaskAction.RUN, prompt="original")
+    task = AgentTask(
+        execution=config.resolve_execution(),
+        task_id="task",
+        context_key="demo",
+        action=TaskAction.RUN,
+        prompt="original",
+    )
     state.record_task(task)
     state.bind_task_execution("task", "thread", "turn")
     text = ("开始🙂\n" * 10000) + "a unique NEEDLE" + ("\nend" * 10000)
@@ -280,7 +323,15 @@ async def test_search_download_export_and_validation_use_native_content(tmp_path
 async def test_unavailable_codex_does_not_hide_task_metadata_or_expose_other_threads(tmp_path: Path):
     config = NyanpasuConfig(state_dir=tmp_path)
     state = StateStore(config.db_path)
-    state.record_task(AgentTask(task_id="failed", context_key="demo", action=TaskAction.RUN, prompt="request"))
+    state.record_task(
+        AgentTask(
+            execution=config.resolve_execution(),
+            task_id="failed",
+            context_key="demo",
+            action=TaskAction.RUN,
+            prompt="request",
+        )
+    )
     state.bind_task_execution("failed", "thread", "turn")
     state.mark_task_failed("failed", "backend process failed")
 
@@ -311,15 +362,29 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
     store = StateStore(config.db_path)
     for index, name in enumerate(("earlier", "current"), start=1):
         store.record_task(
-            AgentTask(task_id=name, context_key="pr", action=TaskAction.RUN, prompt=name), default_backend=backend
+            AgentTask(
+                execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+                task_id=name,
+                context_key="pr",
+                action=TaskAction.RUN,
+                prompt=name,
+            )
         )
         store.mark_task_running(name, None)
         store.bind_task_execution(name, "parent-session", name, backend)
         with store._connect() as conn:
             conn.execute("UPDATE task_runs SET created_at=? WHERE task_id=?", (index, name))
-    old = store.create_subtask("earlier", SubtaskRequest(request_key="old", prompt="Old review", purpose="old"))
+    old = store.create_subtask(
+        "earlier",
+        SubtaskRequest(request_key="old", prompt="Old review", purpose="old"),
+        execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+    )
     store.mark_task_failed(old.task_id, "Old experiment failed")
-    design = store.create_subtask("current", SubtaskRequest(request_key="design", prompt="Design", purpose="design"))
+    design = store.create_subtask(
+        "current",
+        SubtaskRequest(request_key="design", prompt="Design", purpose="design"),
+        execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+    )
     store.bind_task_execution(design.task_id, "design-session", "design-turn", backend)
     store.record_subtask_result(
         design.task_id,
@@ -339,10 +404,18 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
             final_message="",
         )
     )
-    audit = store.create_subtask("current", SubtaskRequest(request_key="audit", prompt="Audit", purpose="audit"))
+    audit = store.create_subtask(
+        "current",
+        SubtaskRequest(request_key="audit", prompt="Audit", purpose="audit"),
+        execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+    )
     store.mark_task_running(audit.task_id, None)
     store.bind_task_execution(audit.task_id, "audit-session", "audit-turn", backend)
-    experiment = store.create_subtask(audit.task_id, SubtaskRequest(request_key="experiment", prompt="Experiment"))
+    experiment = store.create_subtask(
+        audit.task_id,
+        SubtaskRequest(request_key="experiment", prompt="Experiment"),
+        execution=config.resolve_execution(override=ExecutionOverride(backend=backend)),
+    )
     if not await_grandchild:
         store.wait_for_subtasks(audit.task_id, [experiment.task_id])
         store.mark_task_waiting(audit.task_id)
@@ -388,3 +461,76 @@ async def test_session_task_tree_preserves_ownership_evidence_and_history_withou
         store.cancel_task_tree("current")
         cancelled = (await client.get(f"/api/sessions/{prefix}audit-session/task-tree")).json()
         assert not cancelled["groups"][0]["children"][0]["waiting"]
+
+
+@pytest.mark.anyio
+async def test_task_execution_is_frozen_and_missing_native_model_stays_unknown(tmp_path: Path):
+    config = NyanpasuConfig(
+        state_dir=tmp_path,
+        backends={
+            "codex": {"driver": "codex", "defaults": {"model": "admitted-model", "reasoning": "high"}},
+            "cheap": {"driver": "claude-code", "defaults": {"model": "small-model", "reasoning": "low"}},
+        },
+        tasks={
+            "kinds": {
+                "memory_extraction": {"execution": {"backend": "cheap"}},
+                "memory_consolidation": {"execution": {"backend": "cheap"}},
+            }
+        },
+    )
+    store = StateStore(config.db_path)
+    parent = AgentTask(
+        task_id="parent",
+        context_key="review",
+        action=TaskAction.RUN,
+        prompt="Review change",
+        kind="review",
+        execution=config.resolve_execution("review"),
+    )
+    store.record_task(parent)
+    store.mark_task_running(parent.task_id, None)
+    store.bind_task_execution(parent.task_id, "parent-thread", "turn")
+    child = store.create_subtask(
+        parent.task_id,
+        SubtaskRequest(request_key="memory", prompt="Consolidate evidence", kind="memory_consolidation"),
+        execution=config.resolve_execution("memory_consolidation"),
+    )
+    store.record_task(parent.model_copy(update={"task_id": "historical", "context_key": "old"}))
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE task_runs SET task_json=json_remove(task_json,'$.execution','$.kind') WHERE task_id='historical'"
+        )
+    # Changing live defaults must not rewrite a task's recorded model or fill in native metadata.
+    changed = config.model_copy(
+        update={
+            "backends": {
+                **config.backends,
+                "codex": config.backends["codex"].model_copy(
+                    update={
+                        "defaults": config.backends["codex"].defaults.model_copy(update={"model": "new-default-model"})
+                    }
+                ),
+            }
+        }
+    )
+    source = MemorySessionSource(metadata={"model": None})
+    app = create_app(changed, session_sources=lambda _: source)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        listed = (await client.get("/api/tasks?kind=memory_consolidation&backend=cheap")).json()
+        assert [task["task_id"] for task in listed["items"]] == [child.task_id]
+        assert listed["items"][0]["execution"]["model"] == "small-model"
+        detail = (await client.get("/api/tasks/parent")).json()
+        assert detail["execution"]["model"] == "admitted-model"
+        assert detail["children"][0]["execution"]["backend"] == "cheap"
+        historical = (await client.get("/api/tasks/historical")).json()
+        assert historical["execution"] is None and historical["kind"] == "default"
+        session = (await client.get("/api/sessions/parent-thread")).json()
+        assert session["runtime"]["model"] is None
+        assert session["execution"]["model"] == session["tasks"][0]["execution"]["model"] == "admitted-model"
+        tree = (await client.get("/api/sessions/parent-thread/task-tree")).json()
+        assert tree["groups"][0]["children"][0]["execution"]["backend"] == "cheap"
+        overview = (await client.get("/api/overview")).json()
+        assert "backend" not in overview
+        assert any(
+            item["backend"] == "cheap" and item["kind"] == "memory_consolidation" for item in overview["executions"]
+        )

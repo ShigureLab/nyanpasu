@@ -43,7 +43,7 @@ def review(
     core_config = load_config()
     ensure_state_dirs(core_config)
     plugin_config = _plugin_config(
-        core_config.plugins.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
+        core_config.plugins.settings.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
     )
     task = manual_event_task(plugin_config, repo, pr)
 
@@ -75,7 +75,7 @@ def poll(
     core_config = load_config()
     ensure_state_dirs(core_config)
     plugin_config = _plugin_config(
-        core_config.plugins.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
+        core_config.plugins.settings.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
     )
     repos = tuple(repo or plugin_config.repos)
     unknown = sorted(set(repos) - set(plugin_config.repos))

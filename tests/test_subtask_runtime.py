@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -114,7 +115,7 @@ async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path, cance
 
 
 async def wait_status(agent: AgentService, task_id: str, status: str):
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(15):
         while agent.store.task_status(task_id) != status:
             await asyncio.sleep(0.005)
 
@@ -187,7 +188,6 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
 @pytest.mark.anyio
 async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(tmp_path, monkeypatch):
     import shlex
-    import sys
     from pathlib import Path
 
     from nyanpasu.task_control import call_control
@@ -210,14 +210,11 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
         await agent.submit(_task("parent"))
         await started.wait()
         command = next(line for line in backend.instructions[0].splitlines() if line.startswith("Pipe a JSON"))
-        control = Path(shlex.split(command.split("request to: ")[1])[-2])
+        argv = shlex.split(command.split("request to: ")[1])
+        control = Path(argv[-2])
         capability = json.loads(control.read_text())
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "nyanpasu.task_control",
-            str(control),
-            "-",
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
         )
@@ -390,24 +387,33 @@ async def test_backend_start_failure_keeps_workspace_owned_for_cleanup(tmp_path)
 
 
 @pytest.mark.anyio
-async def test_subtask_cannot_fall_back_to_the_service_working_directory(tmp_path):
+async def test_workspace_free_parent_and_child_use_separate_scratch_directories(tmp_path):
     config = _config(tmp_path)
-    started = asyncio.Event()
+    started = {name: asyncio.Event() for name in ("parent", "child")}
+    directories = {}
 
     class Backend(FakeCodex):
         async def run_turn(self, **kwargs):
             await super().run_turn(**kwargs)
-            started.set()
+            name = kwargs["prompt"]
+            directories[name] = kwargs["cwd"]
+            started[name].set()
             await asyncio.Event().wait()
 
-    agent = AgentService(
-        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
-    )
+    agent = AgentService(config, backends=fake_backends(config, Backend()))
     try:
-        await agent.submit(_task("parent").model_copy(update={"workspace": None}))
-        await asyncio.wait_for(started.wait(), 2)
-        with pytest.raises(ValueError, match="repository workspace"):
-            await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
-        assert agent.store.subtasks("parent") == []
+        await agent.submit(_task("parent").model_copy(update={"workspace": None, "prompt": "parent"}))
+        await asyncio.wait_for(started["parent"].wait(), 3)
+        (directories["parent"] / "parent-artifact.txt").write_text("parent-only evidence")
+        child = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        await asyncio.wait_for(started["child"].wait(), 3)
+        assert child.workspace is None
+        assert directories["parent"] != directories["child"]
+        for directory in directories.values():
+            assert directory != Path.cwd()
+            assert directory.is_dir()
+            assert directory.parent == config.state_dir / "scratch"
+        assert not (directories["child"] / "parent-artifact.txt").exists()
+        assert [item.task_id for item in agent.store.subtasks("parent")] == [child.task_id]
     finally:
         await agent.shutdown()

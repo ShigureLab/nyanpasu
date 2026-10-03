@@ -12,8 +12,9 @@ from loguru import logger
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
-from nyanpasu.models import AgentTask
+from nyanpasu.models import AgentTask, TaskStatus
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride
 from nyanpasu.task_control import call_control
 from nyanpasu.web import create_app
 
@@ -41,11 +42,26 @@ def serve() -> None:
 
 
 @app.command()
-def run_task(path: Annotated[PathArgument, typer.Argument(help="Path to a JSON task file.")]) -> None:
+def run_task(
+    path: Annotated[PathArgument, typer.Argument(help="Path to a JSON task file.")],
+    backend: str | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    target: str | None = None,
+) -> None:
     configure_logging()
     resolved = load_config()
     ensure_state_dirs(resolved)
     task = _task_from_json(json.loads(path.read_text(encoding="utf-8")))
+    if target is not None:
+        task = task.model_copy(update={"execution_override": ExecutionOverride.model_validate(target)})
+    overrides = {
+        key: value
+        for key, value in {"backend": backend, "model": model, "reasoning": reasoning}.items()
+        if value is not None
+    }
+    if overrides:
+        task = task.model_copy(update={"execution_override": task.execution_override.model_copy(update=overrides)})
 
     async def run() -> None:
         agent = AgentService(resolved)
@@ -83,6 +99,36 @@ def status(limit: int = 20) -> None:
             ensure_ascii=False,
         )
     )
+
+
+@app.command()
+def explain_target(
+    kind: str = "default", backend: str | None = None, model: str | None = None, reasoning: str | None = None
+) -> None:
+    """Show the configured execution target and the source of each field."""
+    target = load_config().resolve_execution(kind, ExecutionOverride(backend=backend, model=model, reasoning=reasoning))
+    typer.echo(target.model_dump_json(indent=2))
+
+
+@app.command()
+def memory_rebuild(source_task_id: str) -> None:
+    """Retry background memory for a completed task and wait for publication."""
+    configure_logging()
+    resolved = load_config()
+    ensure_state_dirs(resolved)
+
+    async def run() -> None:
+        agent = AgentService(resolved)
+        try:
+            task = await agent.rebuild_memory(source_task_id)
+            result = await agent.wait_for_memory(task.task_id)
+            typer.echo(result.model_dump_json())
+            if result.status is not TaskStatus.COMPLETED:
+                raise typer.Exit(1)
+        finally:
+            await agent.shutdown()
+
+    anyio.run(run)
 
 
 @app.command()

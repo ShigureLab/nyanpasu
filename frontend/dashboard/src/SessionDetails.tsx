@@ -2,6 +2,7 @@ import type { SessionDetail } from './api-types';
 import { backendLabel, type Navigate } from './api';
 import { Copy } from './Entry';
 import { Time } from './Time';
+import { ExecutionDetails } from './Execution';
 
 export function SessionDetails({
   detail,
@@ -41,9 +42,9 @@ export function SessionDetails({
         {detail?.runtime && (
           <>
             <div>
-              <dt>Model</dt>
+              <dt>Native reported model</dt>
               <dd>
-                {detail.runtime.model ?? 'Unavailable'}{' '}
+                {detail.runtime.model ?? 'Not reported'}{' '}
                 <span className="subtle">{detail.runtime.reasoning_effort}</span>
               </dd>
             </div>
@@ -68,6 +69,7 @@ export function SessionDetails({
           </>
         )}
       </dl>
+      {detail && <ExecutionDetails kind={detail.kind} execution={detail.execution} />}
     </section>
   );
 }

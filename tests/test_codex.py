@@ -6,7 +6,25 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
-from nyanpasu.config import CodexConfig, NyanpasuConfig
+from nyanpasu.config import (
+    CodexBackendConfig,
+    CodexOptions,
+    ModelSettings,
+    NyanpasuConfig,
+    ProcessConfig,
+)
+from nyanpasu.targets import ExecutionTarget
+
+
+def _target(backend):
+    return ExecutionTarget(
+        backend="codex" if backend.config.driver == "codex" else "claude",
+        driver=backend.config.driver,
+        model=backend.config.defaults.model,
+        reasoning=backend.config.defaults.reasoning,
+        turn_timeout_seconds=3600,
+    )
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,7 +36,12 @@ def test_safe_codex_env_filters_by_default_and_honors_pass_env(tmp_path: Path, m
     monkeypatch.setenv("GH_TOKEN", "secret-gh-token")
     monkeypatch.setenv("NYANPASU_TEST_ALLOWED", "allowed")
 
-    config = NyanpasuConfig(state_dir=tmp_path / "state", codex=CodexConfig(pass_env=("NYANPASU_TEST_ALLOWED",)))
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        backends={
+            "codex": CodexBackendConfig(process=ProcessConfig(pass_env=("NYANPASU_TEST_ALLOWED",), command=("codex",)))
+        },
+    )
 
     env = safe_codex_env(config)
 
@@ -85,12 +108,12 @@ def test_app_server_backend_resets_dead_process_state(tmp_path: Path) -> None:
 def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        codex=CodexConfig(
-            approval_policy="on-request",
-            approvals_reviewer="auto_review",
-            model="configured-model",
-            reasoning_effort="medium",
-        ),
+        backends={
+            "codex": CodexBackendConfig(
+                defaults=ModelSettings(model="configured-model", reasoning="medium"),
+                options=CodexOptions(approval_policy="on-request", approvals_reviewer="auto_review"),
+            )
+        },
     )
     backend = RecordingAppServerBackend(config)
 
@@ -99,14 +122,24 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
             "threadId": "thread-1",
             "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
         }
-        await backend.run_turn(cwd=tmp_path, prompt="review", thread_id=None, developer_instructions="review role")
+        await backend.run_turn(
+            execution=_target(backend),
+            cwd=tmp_path,
+            prompt="review",
+            thread_id=None,
+            developer_instructions="review role",
+        )
 
         backend._completed_turns[("thread-1", "turn-1")] = {
             "threadId": "thread-1",
             "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]},
         }
         await backend.run_turn(
-            cwd=tmp_path, prompt="new commit", thread_id="thread-1", developer_instructions="updated review role"
+            execution=_target(backend),
+            cwd=tmp_path,
+            prompt="new commit",
+            thread_id="thread-1",
+            developer_instructions="updated review role",
         )
 
     asyncio.run(run())
@@ -160,6 +193,30 @@ def test_app_server_server_requests_are_answered_for_daemon_mode(tmp_path: Path)
     ]
 
 
+def test_structured_output_schema_reaches_codex_turn(tmp_path: Path) -> None:
+    backend = RecordingAppServerBackend(NyanpasuConfig(state_dir=tmp_path / "state"))
+    schema = {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+
+    async def run():
+        backend._completed_turns[("thread-1", "turn-1")] = {
+            "threadId": "thread-1",
+            "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": '{"summary":"verified"}'}]},
+        }
+        return await backend.run_turn(
+            execution=_target(backend), cwd=tmp_path, prompt="extract", thread_id=None, output_schema=schema
+        )
+
+    result = asyncio.run(run())
+    assert backend.requests[1][1]["outputSchema"] == schema
+    assert "outputSchema" not in backend.requests[0][1]
+    assert result.final_message == '{"summary":"verified"}'
+
+
 class RecordingAppServerBackend(CodexAppServerBackend):
     def __init__(self, config: NyanpasuConfig) -> None:
         super().__init__(config)
@@ -199,7 +256,9 @@ async def test_cancel_waits_for_native_turn_to_stop(tmp_path, cancel_during_star
             return await super()._request(method, params)
 
     backend = Server(NyanpasuConfig(state_dir=tmp_path))
-    execution = asyncio.create_task(backend.run_turn(cwd=tmp_path, prompt="work", thread_id=None))
+    execution = asyncio.create_task(
+        backend.run_turn(execution=_target(backend), cwd=tmp_path, prompt="work", thread_id=None)
+    )
     await started.wait()
     if not cancel_during_start:
         release_start.set()
@@ -264,6 +323,7 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
         target = _task("parent")
         if stop == "cancel":
             # The parent controls a real app-server child without starting a second native turn.
+            target = first._admit(target)
             first.store.record_task(target)
             first.store.mark_task_running(target.task_id, None)
             first._admitted_roots.add(target.task_id)
@@ -311,3 +371,41 @@ async def test_interrupt_failure_preserves_recovery_and_blocks_cleanup(tmp_path,
             assert len(worktrees.removed) == 1
     finally:
         await second.shutdown()
+
+
+@pytest.mark.anyio
+async def test_concurrent_requests_use_each_tasks_execution(tmp_path):
+    from nyanpasu.targets import ExecutionOverride
+
+    config = NyanpasuConfig(state_dir=tmp_path)
+
+    class Server(RecordingAppServerBackend):
+        async def _request(self, method, params):
+            self.requests.append((method, params))
+            if method == "thread/start":
+                await asyncio.sleep(0)
+                return {"thread": {"id": params["model"]}}
+            thread = params["threadId"]
+            self._completed_turns[(thread, "turn")] = {
+                "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]}
+            }
+            return {"turn": {"id": "turn"}}
+
+    backend = Server(config)
+    await asyncio.gather(
+        *(
+            backend.run_turn(
+                cwd=tmp_path,
+                prompt="run",
+                thread_id=None,
+                execution=config.resolve_execution(override=ExecutionOverride(model=model, reasoning=effort)),
+            )
+            for model, effort in [("first", "high"), ("second", "low")]
+        )
+    )
+    turns = [params for method, params in backend.requests if method == "turn/start"]
+    assert {(p["threadId"], p["model"], p["effort"]) for p in turns} == {
+        ("first", "first", "high"),
+        ("second", "second", "low"),
+    }
+    assert backend.config.defaults.model is None

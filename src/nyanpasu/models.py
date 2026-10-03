@@ -7,6 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from nyanpasu.memory import MemoryAccess
+from nyanpasu.targets import ExecutionOverride, ExecutionTarget
+
 
 class TaskAction(StrEnum):
     RUN = "run"
@@ -51,6 +54,10 @@ class AgentTask(NyanpasuModel):
     action: TaskAction
     context_key: str
     prompt: str
+    kind: str = "default"
+    execution_override: ExecutionOverride = Field(default_factory=ExecutionOverride)
+    execution: ExecutionTarget | None = None
+    memory: MemoryAccess = Field(default_factory=MemoryAccess)
     developer_instructions: str = ""
     coalesce_key: str | None = None
     workspace: WorkspaceRef | None = None
@@ -75,6 +82,9 @@ class SubtaskRequest(NyanpasuModel):
     developer_instructions: str = ""
     revision: str | None = None
     purpose: str = "subtask"
+    kind: str = "subtask"
+    execution: ExecutionOverride = Field(default_factory=ExecutionOverride)
+    memory_enabled: bool = True
     workspace_mode: Literal["clone", "snapshot"] = "clone"
     inputs: dict[str, Any] = Field(default_factory=dict)
 
@@ -94,6 +104,7 @@ class AgentContext(NyanpasuModel):
     session_worktree: Path | None
     workspace_key: str | None
     revision: str | None
+    memory_key: str = ""
 
     @field_validator("session_worktree", mode="before")
     @classmethod
@@ -101,6 +112,12 @@ class AgentContext(NyanpasuModel):
         if value is None or value == "":
             return None
         return Path(value).expanduser().resolve()
+
+
+class NativeSessionLocation(NyanpasuModel):
+    native_home: Path
+    isolated_home: Path
+    driver: Literal["codex", "claude-code"]
 
 
 class TaskRunResult(NyanpasuModel):
@@ -147,6 +164,8 @@ class TaskRunSummary(NyanpasuModel):
     updated_at: float
     spawned_by_task_id: str | None = None
     context_generation: int = 1
+    kind: str = "default"
+    execution: ExecutionTarget | None = None
 
     @field_validator("event_worktree", mode="before")
     @classmethod

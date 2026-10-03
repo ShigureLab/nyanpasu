@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import anyio.to_thread as to_thread
 
 from nyanpasu.redaction import redact
+from nyanpasu.safe_files import open_regular_file
 from nyanpasu.transcript.adapters import item_snapshot
 from nyanpasu.transcript.history import HistoryItem, HistoryTurn, SessionHistory, SessionMetadata
 from nyanpasu.transcript.source import iso_time
@@ -15,14 +17,22 @@ if TYPE_CHECKING:
     from nyanpasu.codex import CodexSessionSource
 
 
-def item_times(thread: dict[str, Any]) -> dict[tuple[str, str], dict[str, str | None]]:
+def item_times(
+    thread: dict[str, Any], native_home: Path | None = None, root: Path | None = None
+) -> dict[tuple[str, str], dict[str, str | None]]:
     """Read timing annotations from Codex's own rollout, without copying its journal."""
     path = thread.get("path")
     if path is None:
         return {}
+    if native_home is not None and not Path(path).resolve().is_relative_to(native_home.resolve()):
+        raise ValueError("Codex rollout path is outside its native home")
     times = {}
     try:
-        with Path(path).open(encoding="utf-8") as rollout:
+        anchor = root or Path(path).parent
+        with (
+            open_regular_file(anchor, Path(path).resolve(strict=True).relative_to(anchor)) as raw,
+            io.TextIOWrapper(raw, encoding="utf-8") as rollout,
+        ):
             for line in rollout:
                 try:
                     record = json.loads(line)
@@ -49,8 +59,10 @@ def item_times(thread: dict[str, Any]) -> dict[tuple[str, str], dict[str, str | 
 
 
 class CodexHistorySource:
-    def __init__(self, client: CodexSessionSource):
+    def __init__(self, client: CodexSessionSource, *, native_home: Path | None = None, root: Path | None = None):
         self.client = client
+        self.native_home = native_home
+        self.root = root
 
     @staticmethod
     def _metadata(thread: dict[str, Any]) -> SessionMetadata:
@@ -84,7 +96,7 @@ class CodexHistorySource:
             cursor = page.get("nextCursor")
             if cursor is None:
                 break
-        times = await to_thread.run_sync(item_times, thread)
+        times = await to_thread.run_sync(item_times, thread, self.native_home, self.root)
         return SessionHistory(
             metadata=self._metadata(thread),
             turns=tuple(

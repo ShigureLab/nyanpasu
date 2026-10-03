@@ -73,7 +73,7 @@ class PluginManager:
     async def setup(self) -> None:
         for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
-            raw_config = self.config.plugins.get(plugin_id, {})
+            raw_config = self.config.plugins.settings.get(plugin_id, {})
             plugin_config: BaseModel | dict[str, Any]
             if plugin.config_model is not None:
                 plugin_config = plugin.config_model.model_validate(raw_config)

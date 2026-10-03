@@ -18,7 +18,10 @@ git_author_email = "nyanpasu@example.invalid"
 Agent-driven plugins may ask Codex to run `gh` itself. In that case, also expose the token variable to Codex:
 
 ```toml
-[codex]
+[backends.codex]
+driver = "codex"
+
+[backends.codex.process]
 pass_env = ["NYANPASU_GITHUB_TOKEN"]
 ```
 

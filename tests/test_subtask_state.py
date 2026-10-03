@@ -5,12 +5,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from nyanpasu.config import NyanpasuConfig
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
 
+CONFIG = NyanpasuConfig()
+
 
 def root(store: StateStore, name: str = "review") -> AgentTask:
-    task = AgentTask(task_id=name, context_key="pr:1", action=TaskAction.RUN, prompt="Review")
+    task = AgentTask(
+        task_id=name, context_key="pr:1", action=TaskAction.RUN, prompt="Review", execution=CONFIG.resolve_execution()
+    )
     store.record_task(task)
     store.mark_task_running(name, None)
     return store.task_request(name)
@@ -32,7 +37,14 @@ def test_concurrent_retries_create_one_child_and_preserve_input(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
     with ThreadPoolExecutor(max_workers=4) as workers:
-        children = list(workers.map(lambda _: store.create_subtask(parent.task_id, request()), range(8)))
+        children = list(
+            workers.map(
+                lambda _: store.create_subtask(
+                    parent.task_id, request(), execution=CONFIG.resolve_execution("subtask")
+                ),
+                range(8),
+            )
+        )
     assert len({child.task_id for child in children}) == 1
     child = children[0]
     assert child.spawned_by_task_id == parent.task_id
@@ -41,15 +53,19 @@ def test_concurrent_retries_create_one_child_and_preserve_input(tmp_path):
     assert store.root_task_id(child.task_id) == parent.task_id
     assert store.context_scope(child.context_key).parent_context_key == parent.context_key
     with pytest.raises(ValueError, match="different input"):
-        store.create_subtask(parent.task_id, request().model_copy(update={"prompt": "Changed requirements"}))
+        store.create_subtask(
+            parent.task_id,
+            request().model_copy(update={"prompt": "Changed requirements"}),
+            execution=CONFIG.resolve_execution("subtask"),
+        )
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_request_keys_belong_to_each_parent_and_survive_migration(tmp_path, legacy):
+def test_request_keys_survive_restart_and_legacy_schema_is_rejected(tmp_path, legacy):
     path = tmp_path / "state.db"
     store = StateStore(path)
     first = root(store)
-    child = store.create_subtask(first.task_id, request())
+    child = store.create_subtask(first.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     if legacy:
         with sqlite3.connect(path) as conn:
             conn.executescript("""
@@ -63,14 +79,19 @@ def test_request_keys_belong_to_each_parent_and_survive_migration(tmp_path, lega
                     SELECT p.context_key,p.context_generation,s.request_key,s.request_json,s.task_id
                     FROM current_requests s JOIN task_runs p ON p.task_id=s.parent_task_id;
                 DROP TABLE current_requests;
+                PRAGMA user_version=0;
             """)
+    if legacy:
+        with pytest.raises(ValueError, match="Unsupported state schema version"):
+            StateStore(path)
+        return
     store = StateStore(path)
-    assert store.create_subtask(first.task_id, request()) == child
+    assert store.create_subtask(first.task_id, request(), execution=CONFIG.resolve_execution("subtask")) == child
     finish(store, child)
     finish(store, first)
     second = root(store, "followup")
     assert second.context_generation == first.context_generation
-    next_child = store.create_subtask(second.task_id, request())
+    next_child = store.create_subtask(second.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     assert next_child.task_id != child.task_id
     assert next_child.spawned_by_task_id == second.task_id
     store.wait_for_subtasks(second.task_id, [next_child.task_id])
@@ -85,7 +106,10 @@ def test_concurrent_preparations_deduplicate_original_input(tmp_path):
         children = list(
             workers.map(
                 lambda i: store.create_subtask(
-                    parent.task_id, original, prepared=original.model_copy(update={"inputs": {"target": i}})
+                    parent.task_id,
+                    original,
+                    prepared=original.model_copy(update={"inputs": {"target": i}}),
+                    execution=CONFIG.resolve_execution("subtask"),
                 ),
                 range(8),
             )
@@ -101,7 +125,7 @@ def test_wait_survives_restart_and_observes_child_finishing_on_either_side(tmp_p
     path = tmp_path / "state.db"
     store = StateStore(path)
     parent = root(store)
-    child = store.create_subtask(parent.task_id, request())
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     if finish_before_wait:
         finish(store, child)
     store.wait_for_subtasks(parent.task_id, [child.task_id])
@@ -121,9 +145,11 @@ def test_wait_survives_restart_and_observes_child_finishing_on_either_side(tmp_p
 def test_cannot_wait_on_other_roots_or_an_ancestor(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
-    child = store.create_subtask(parent.task_id, request())
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     store.mark_task_running(child.task_id, None)
-    unrelated = AgentTask(task_id="other", context_key="pr:2", action=TaskAction.RUN, prompt="Other")
+    unrelated = AgentTask(
+        task_id="other", context_key="pr:2", action=TaskAction.RUN, prompt="Other", execution=CONFIG.resolve_execution()
+    )
     store.record_task(unrelated)
     with pytest.raises(ValueError, match="descendant"):
         store.wait_for_subtasks(child.task_id, [parent.task_id])
@@ -134,13 +160,13 @@ def test_cannot_wait_on_other_roots_or_an_ancestor(tmp_path):
 def test_closing_tree_rejects_creation_and_recovery_and_reopen_fences_old_results(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
-    child = store.create_subtask(parent.task_id, request())
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     store.mark_task_running(child.task_id, None)
-    grandchild = store.create_subtask(child.task_id, request("test"))
+    grandchild = store.create_subtask(child.task_id, request("test"), execution=CONFIG.resolve_execution("subtask"))
     scopes = store.begin_context_cleanup(parent.context_key)
     assert {scope.context_key for scope in scopes} == {parent.context_key, child.context_key, grandchild.context_key}
     with pytest.raises(ValueError, match="closing"):
-        store.create_subtask(child.task_id, request("late"))
+        store.create_subtask(child.task_id, request("late"), execution=CONFIG.resolve_execution("subtask"))
     assert store.unfinished_roots() == []
     for scope in reversed(scopes):
         store.close_context_scope(scope.context_key, scope.generation)
@@ -159,7 +185,9 @@ def test_creation_racing_cleanup_never_leaves_an_active_orphan(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        creation = workers.submit(store.create_subtask, parent.task_id, request())
+        creation = workers.submit(
+            store.create_subtask, parent.task_id, request(), execution=CONFIG.resolve_execution("subtask")
+        )
         cleanup = workers.submit(store.begin_context_cleanup, parent.context_key)
         cleanup.result()
         try:
@@ -174,7 +202,7 @@ def test_creation_racing_cleanup_never_leaves_an_active_orphan(tmp_path):
 def test_reloaded_subtasks_remain_separate_from_coalesced_events(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
-    child = store.create_subtask(parent.task_id, request())
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     reloaded = StateStore(tmp_path / "state.db")
     assert reloaded.task_request(parent.task_id).spawned_by_task_id is None
     assert [item.task_id for item in reloaded.subtasks(parent.task_id)] == [child.task_id]
@@ -186,12 +214,12 @@ def test_failure_and_descendant_cancellation_commit_or_rollback_together(tmp_pat
     path = tmp_path / "state.db"
     store = StateStore(path)
     parent = root(store)
-    child = store.create_subtask(parent.task_id, request())
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
     store.mark_task_running(child.task_id, None)
-    pending = store.create_subtask(child.task_id, request("pending"))
-    completed = store.create_subtask(child.task_id, request("completed"))
+    pending = store.create_subtask(child.task_id, request("pending"), execution=CONFIG.resolve_execution("subtask"))
+    completed = store.create_subtask(child.task_id, request("completed"), execution=CONFIG.resolve_execution("subtask"))
     finish(store, completed)
-    sibling = store.create_subtask(parent.task_id, request("sibling"))
+    sibling = store.create_subtask(parent.task_id, request("sibling"), execution=CONFIG.resolve_execution("subtask"))
     owner = parent if failed_owner == "root" else child
     # Failure halfway through persistence must not leave a terminal owner behind.
     with sqlite3.connect(path) as conn:
@@ -226,12 +254,13 @@ def test_child_workspace_and_wait_roundtrip_preserve_pinned_revision(tmp_path):
         action=TaskAction.RUN,
         prompt="Review",
         workspace=WorkspaceRef(key="repo", local_path=tmp_path, revision="head"),
+        execution=CONFIG.resolve_execution(),
     )
     store.record_task(parent)
     store.mark_task_running(parent.task_id, None)
     spec = request().model_copy(update={"revision": "base"})
-    child = store.create_subtask(parent.task_id, spec)
-    assert store.create_subtask(parent.task_id, spec) == child
+    child = store.create_subtask(parent.task_id, spec, execution=CONFIG.resolve_execution("subtask"))
+    assert store.create_subtask(parent.task_id, spec, execution=CONFIG.resolve_execution("subtask")) == child
     assert child.workspace is not None
     assert child.workspace.local_path == tmp_path
     assert child.workspace.revision == "base"
