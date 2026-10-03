@@ -16,7 +16,7 @@ export interface TranscriptContract {
   search: SearchResults;
   content: ContentPage;
   memory: MemoryPage;
-  memory_note: MemoryNote;
+  memory_source: MemorySource;
   [k: string]: unknown;
 }
 export interface SessionPage {
@@ -328,7 +328,9 @@ export interface MemoryPage {
   count: number;
   domains: MemoryDomain[];
   topics: MemoryTopic[];
-  items: MemorySummary[];
+  items: MemorySourceSummary[];
+  navigation_count: number;
+  navigation: MemoryNavigation[];
   has_more: boolean;
   [k: string]: unknown;
 }
@@ -342,30 +344,41 @@ export interface MemoryTopic {
   count: number;
   [k: string]: unknown;
 }
-export interface MemorySummary {
+export interface MemorySourceSummary {
   id: string;
   domain: string;
-  key: string;
+  task_id: string;
   title: string;
   topics: string[];
-  applies_to: string[];
   sources: string[];
   revision: string;
   updated_at: string;
-  merged_from: string[];
+  complete: boolean;
   [k: string]: unknown;
 }
-export interface MemoryNote {
+export interface MemoryNavigation {
   id: string;
   domain: string;
-  key: string;
+  body: string;
+  sources: string[];
+  source_revisions: {
+    [k: string]: string;
+  };
+  revision: string;
+  updated_at: string;
+  stale?: boolean;
+  [k: string]: unknown;
+}
+export interface MemorySource {
+  id: string;
+  domain: string;
+  task_id: string;
   title: string;
   body: string;
   topics: string[];
-  applies_to: string[];
   sources: string[];
   revision: string;
   updated_at: string;
-  merged_from?: string[];
+  complete: boolean;
   [k: string]: unknown;
 }

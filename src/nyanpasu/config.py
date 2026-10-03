@@ -195,7 +195,7 @@ class MemoryConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     enabled: bool = True
     consolidate: bool = True
-    max_notes_per_search: int = Field(default=10, ge=1, le=100)
+    max_results_per_search: int = Field(default=10, ge=1, le=100)
 
 
 class ServerConfig(BaseModel):

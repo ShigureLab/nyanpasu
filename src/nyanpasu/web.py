@@ -12,7 +12,7 @@ from nyanpasu.agent import AgentService, PostProcessHook
 from nyanpasu.auth import require_server_token
 from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
-from nyanpasu.memory import MemoryAccess, MemoryNote, MemoryNotFound, MemoryService
+from nyanpasu.memory import MemoryAccess, MemoryNotFound, MemoryService, MemorySource
 from nyanpasu.models import AgentTask
 from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskControlHandler, TaskPreparer
 from nyanpasu.store import StateStore
@@ -208,22 +208,34 @@ def memory_router(config: NyanpasuConfig, reader: TranscriptReader, memory: Memo
     ):
         access = access_for_task(task_id)
         if not config.memory.enabled:
-            return {"enabled": False, "count": 0, "domains": [], "topics": [], "items": [], "has_more": False}
-        notes = memory.search(access, q, topics=(topic,) if topic else (), limit=limit + 1)
+            return {
+                "enabled": False,
+                "count": 0,
+                "domains": [],
+                "topics": [],
+                "items": [],
+                "navigation_count": 0,
+                "navigation": [],
+                "has_more": False,
+            }
+        sources = memory.search(access, q, topics=(topic,) if topic else (), limit=limit + 1)
         return {
             "enabled": True,
             **memory.describe(access),
-            "items": [{key: value for key, value in note.to_dict().items() if key != "body"} for note in notes[:limit]],
-            "has_more": len(notes) > limit,
+            "items": [
+                {key: value for key, value in source.to_dict().items() if key != "body"} for source in sources[:limit]
+            ],
+            "navigation": [navigation.to_dict() for navigation in memory.list_navigation(access)],
+            "has_more": len(sources) > limit,
         }
 
-    @router.get("/{note_id}", response_model=MemoryNote)
-    def read_memory(note_id: str, task_id: str | None = None):
+    @router.get("/{source_id}", response_model=MemorySource)
+    def read_memory(source_id: str, task_id: str | None = None):
         access = access_for_task(task_id)
         if not config.memory.enabled:
             raise HTTPException(404, "Memory is disabled")
         try:
-            return memory.read(access, note_id).to_dict()
+            return memory.read(access, source_id).to_dict()
         except MemoryNotFound as exc:
             raise HTTPException(404, "Memory not found") from exc
 

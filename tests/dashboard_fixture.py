@@ -32,7 +32,12 @@ def fixture_app():
             "codex": {"driver": "codex", "defaults": {"model": "configured-review-model", "reasoning": "high"}},
             "claude": {"driver": "claude-code", "defaults": {"model": "configured-small-model", "reasoning": "low"}},
         },
-        tasks={"kinds": {"memory_consolidation": {"execution": {"backend": "claude"}}}},
+        tasks={
+            "kinds": {
+                "memory_extraction": {"execution": {"backend": "claude"}},
+                "memory_consolidation": {"execution": {"backend": "claude"}},
+            }
+        },
     )
     state = StateStore(config.db_path)
     task = AgentTask(
@@ -119,52 +124,99 @@ def fixture_app():
             memory=MemoryAccess(("public",), "public"),
         )
     )
+    state.record_task(
+        AgentTask(
+            task_id="fixture-extraction",
+            context_key="demo:extraction",
+            action=TaskAction.RUN,
+            prompt="Extract a source summary",
+            kind="memory_extraction",
+            execution=config.resolve_execution("memory_extraction"),
+            memory=MemoryAccess(("public",), "public"),
+        )
+    )
+    state.record_task(
+        AgentTask(
+            task_id="fixture-runtime",
+            context_key="demo:runtime",
+            action=TaskAction.RUN,
+            prompt="Check active task leases",
+            execution=config.resolve_execution(),
+        )
+    )
+    state.mark_task_done(
+        TaskRunResult(
+            task_id="fixture-runtime",
+            status=TaskStatus.COMPLETED,
+            thread_id=None,
+            turn_id=None,
+            final_message="Checked",
+        )
+    )
     memory = MemoryService(config.memory_dir)
     public_access = MemoryAccess(("public",), "public")
-    first = memory.write(
+    first = memory.checkpoint_source(
         public_access,
-        key="python-tests",
-        title="Python tests",
-        body="Use pytest.",
-        topics=("python", "tests"),
-        applies_to=("repository:Relax",),
-        sources=("task:fixture-task",),
-    )
-    second = memory.write(
-        public_access,
-        key="pytest-fixtures",
-        title="Pytest fixtures",
-        body="Reuse shared fixtures.",
-        topics=("tests",),
-        sources=("task:fixture-review",),
-    )
-    memory.merge(
-        public_access,
-        (second.id,),
-        target_id=first.id,
-        key=first.key,
-        title="Python testing guide",
+        "fixture-task",
+        input_digest="python-evidence",
+        cursor=1,
+        complete=True,
+        title="Python testing summary",
         body="Use pytest and shared fixtures.",
         topics=("python", "tests"),
-        applies_to=first.applies_to,
-        sources=("task:fixture-memory",),
-        expected_revisions={first.id: first.revision, second.id: second.revision},
+        sources=("codex:fixture-thread:fixture-turn:pytest-result",),
     )
-    memory.write(
+    memory.checkpoint_source(
         public_access,
-        key="runtime",
+        "fixture-runtime",
+        input_digest="runtime-evidence",
+        cursor=1,
+        complete=True,
         title="Runtime checks",
         body="Check active task leases.",
         topics=("runtime",),
-        sources=("task:fixture-review",),
+        sources=("tool:runtime:lease-result",),
     )
-    memory.write(
-        MemoryAccess(("private:fixture",), "private:fixture"),
-        key="private-guide",
-        title="Private workspace guide",
-        body="This knowledge belongs to the fixture task's private audience.",
+    memory.checkpoint_source(
+        public_access,
+        "legacy:old-note:0",
+        input_digest="legacy-import",
+        cursor=1,
+        complete=True,
+        title="Imported testing note",
+        body="Imported historical guidance; not reverified.",
+        topics=("imported",),
+        sources=("legacy:old-note",),
+    )
+    snapshot = memory.snapshot_domain(public_access)
+    memory.publish_navigation(
+        public_access,
+        body=f"Start with the [Python source summary](memory:{first.id}) for test evidence.",
+        source_ids=list(snapshot.source_revisions),
+        source_revisions=snapshot.source_revisions,
+        input_digest=snapshot.input_digest,
+        expected_revision=None,
+    )
+    private_access = MemoryAccess(("private:fixture",), "private:fixture")
+    private = memory.checkpoint_source(
+        private_access,
+        "fixture-task",
+        input_digest="private-evidence",
+        cursor=1,
+        complete=True,
+        title="Private workspace summary",
+        body="This source summary belongs to the fixture task's private audience.",
         topics=("private-topic",),
-        sources=("task:fixture-task",),
+        sources=("tool:private:confirmed-result",),
+    )
+    snapshot = memory.snapshot_domain(private_access)
+    memory.publish_navigation(
+        private_access,
+        body=f"Private workspace navigation: [read the authorized source](memory:{private.id}).",
+        source_ids=[private.id],
+        source_revisions=snapshot.source_revisions,
+        input_digest=snapshot.input_digest,
+        expected_revision=None,
     )
     items: list[dict[str, Any]] = [
         {

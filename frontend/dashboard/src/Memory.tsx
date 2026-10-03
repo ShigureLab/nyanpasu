@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import Markdown from 'react-markdown';
+import Markdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { MemoryNote, MemoryPage } from './api-types';
+import type { MemoryPage, MemorySource } from './api-types';
 import { query, useResource, type Navigate } from './api';
 import { Time } from './Time';
 
@@ -25,14 +25,14 @@ export function MemoryView({
     live,
     refresh,
   );
-  const note = useResource<MemoryNote>(
+  const source = useResource<MemorySource>(
     selected ? query(`/api/memory/${encodeURIComponent(selected)}`, { task_id: taskId }) : null,
     live,
     refresh,
   );
   return (
     <section className="full-view memory-view">
-      <span className="eyebrow">SHARED KNOWLEDGE</span>
+      <span className="eyebrow">SOURCE SUMMARIES &amp; NAVIGATION</span>
       <h1>Memory</h1>
       {taskId ? (
         <div className="toolbar memory-context">
@@ -45,6 +45,22 @@ export function MemoryView({
       ) : (
         <p className="subtle">Public memory. Open a task to inspect its authorized memory.</p>
       )}
+      <div className="toolbar">
+        <button
+          onClick={() =>
+            navigate({ view: 'tasks', kind: 'memory_extraction', backend: null, task: null })
+          }
+        >
+          Extraction tasks
+        </button>
+        <button
+          onClick={() =>
+            navigate({ view: 'tasks', kind: 'memory_consolidation', backend: null, task: null })
+          }
+        >
+          Consolidation tasks
+        </button>
+      </div>
       {page.error && (
         <p className="notice error" role="alert">
           {page.error}
@@ -60,6 +76,41 @@ export function MemoryView({
               </span>
             ))}
           </div>
+          <section aria-label="Domain navigation">
+            <h2>Domain navigation</h2>
+            {page.data.navigation.length === 0 && (
+              <p className="empty">No navigation available for this audience.</p>
+            )}
+            {page.data.navigation.map((navigation) => (
+              <details className="memory-note" key={navigation.id} open>
+                <summary>
+                  <code>{navigation.domain}</code> ·{' '}
+                  {navigation.stale ? 'Awaiting refresh' : 'Current'}
+                </summary>
+                <p className="subtle">
+                  Updated <Time value={navigation.updated_at} />
+                </p>
+                <MemoryMarkdown onSelect={setSelected}>{navigation.body}</MemoryMarkdown>
+                <details>
+                  <summary>Source summaries ({navigation.sources.length})</summary>
+                  <ul className="memory-sources">
+                    {navigation.sources.map((id) => (
+                      <li key={id}>
+                        <button className="quiet" onClick={() => setSelected(id)}>
+                          {page.data?.items.find((item) => item.id === id)?.title ?? id}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              </details>
+            ))}
+          </section>
+          <h2>Source summaries</h2>
+          <p className="subtle">
+            Published summaries from completed tasks. Extraction and navigation updates run in the
+            background.
+          </p>
           <form
             className="toolbar memory-search"
             onSubmit={(event) => {
@@ -70,7 +121,7 @@ export function MemoryView({
           >
             <input
               aria-label="Search memory"
-              placeholder="Search knowledge, conditions or topics…"
+              placeholder="Search source summaries or topics…"
               value={input}
               onChange={(event) => setInput(event.target.value)}
             />
@@ -102,109 +153,102 @@ export function MemoryView({
                 >
                   <strong>{item.title}</strong>
                   <span>{item.topics.join(' · ')}</span>
-                  {item.applies_to.length > 0 && <small>{item.applies_to.join(' · ')}</small>}
                   <small>
                     {item.domain} · <Time value={item.updated_at} label="Updated" />
                   </small>
-                  {item.merged_from.length > 0 && (
-                    <small>Merged {item.merged_from.length} notes</small>
-                  )}
+                  <small>
+                    {item.complete ? 'Published' : 'Extracting'} ·{' '}
+                    {item.task_id.startsWith('legacy:') ? 'Imported memory' : item.task_id}
+                  </small>
                 </button>
               ))}
-              {page.data.items.length === 0 && <p className="empty">No matching memories.</p>}
+              {page.data.items.length === 0 && (
+                <p className="empty">No matching source summaries.</p>
+              )}
               {page.data.has_more && (
                 <p className="subtle">
                   More results are available. Refine the search or select a topic.
                 </p>
               )}
             </div>
-            <article className="memory-note" aria-label="Memory details">
-              {!selected && (
-                <p className="empty">Select a memory to read its evidence and revision.</p>
+            <article className="memory-note" aria-label="Source summary details">
+              {!selected && <p className="empty">Select a source summary to read its evidence.</p>}
+              {selected && source.loading && !source.data && (
+                <p className="empty">Loading summary…</p>
               )}
-              {selected && note.loading && !note.data && <p className="empty">Loading memory…</p>}
-              {note.error && (
+              {source.error && (
                 <p className="notice error" role="alert">
-                  {note.error}
+                  {source.error}
                 </p>
               )}
-              {note.data && (
+              {source.data && (
                 <>
-                  <h2>{note.data.title}</h2>
+                  <h2>{source.data.title}</h2>
                   <dl className="task-metadata">
                     <div>
-                      <dt>Canonical key</dt>
+                      <dt>Source task</dt>
                       <dd>
-                        <code>{note.data.key}</code>
+                        {source.data.task_id.startsWith('legacy:') ? (
+                          <span>Imported memory</span>
+                        ) : (
+                          <button
+                            className="quiet"
+                            onClick={() => navigate({ view: 'tasks', task: source.data!.task_id })}
+                          >
+                            task:{source.data.task_id}
+                          </button>
+                        )}
                       </dd>
                     </div>
                     <div>
-                      <dt>Memory ID</dt>
+                      <dt>Source ID</dt>
                       <dd>
-                        <code>{note.data.id}</code>
+                        <code>{source.data.id}</code>
                       </dd>
                     </div>
                     <div>
                       <dt>Topics</dt>
-                      <dd>{note.data.topics.join(' · ') || 'None'}</dd>
+                      <dd>{source.data.topics.join(' · ') || 'None'}</dd>
                     </div>
                     <div>
-                      <dt>Applies to</dt>
-                      <dd>{note.data.applies_to.join(' · ') || 'No additional conditions'}</dd>
+                      <dt>Status</dt>
+                      <dd>{source.data.complete ? 'Published' : 'Extracting'}</dd>
                     </div>
                     <div>
                       <dt>Domain</dt>
-                      <dd>{note.data.domain}</dd>
+                      <dd>{source.data.domain}</dd>
                     </div>
                     <div>
                       <dt>Updated</dt>
                       <dd>
-                        <Time value={note.data.updated_at} />
+                        <Time value={source.data.updated_at} />
                       </dd>
                     </div>
                     <div>
                       <dt>Revision</dt>
                       <dd>
-                        <code>{note.data.revision}</code>
+                        <code>{source.data.revision}</code>
                       </dd>
                     </div>
                   </dl>
-                  <div className="markdown">
-                    <Markdown remarkPlugins={[remarkGfm]}>{note.data.body}</Markdown>
-                  </div>
-                  <h3>Sources</h3>
+                  <MemoryMarkdown onSelect={setSelected}>{source.data.body}</MemoryMarkdown>
+                  <h3>Evidence references</h3>
                   <ul className="memory-sources">
-                    {note.data.sources.map((source) => (
-                      <li key={source}>
-                        {source.startsWith('task:') ? (
+                    {source.data.sources.map((reference) => (
+                      <li key={reference}>
+                        {reference.startsWith('task:') && !reference.startsWith('task:legacy:') ? (
                           <button
                             className="quiet"
-                            onClick={() => navigate({ view: 'tasks', task: source.slice(5) })}
+                            onClick={() => navigate({ view: 'tasks', task: reference.slice(5) })}
                           >
-                            {source}
+                            {reference}
                           </button>
                         ) : (
-                          <span>{source}</span>
+                          <span>{reference}</span>
                         )}
                       </li>
                     ))}
                   </ul>
-                  {(note.data.merged_from ?? []).length > 0 && (
-                    <section aria-label="Merged memories">
-                      <h3>Merged from</h3>
-                      <p className="subtle">
-                        These notes were consolidated into this revision and are no longer separate
-                        search results.
-                      </p>
-                      <ul>
-                        {(note.data.merged_from ?? []).map((id) => (
-                          <li key={id}>
-                            <code>{id}</code>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  )}
                 </>
               )}
             </article>
@@ -212,5 +256,34 @@ export function MemoryView({
         </>
       )}
     </section>
+  );
+}
+
+function MemoryMarkdown({
+  children,
+  onSelect,
+}: {
+  children: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="markdown">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={(url) => (/^memory:[a-f0-9]{32}$/.test(url) ? url : defaultUrlTransform(url))}
+        components={{
+          a: ({ href, children }) =>
+            href?.startsWith('memory:') ? (
+              <button className="quiet" onClick={() => onSelect(href.slice(7))}>
+                {children}
+              </button>
+            ) : (
+              <a href={href}>{children}</a>
+            ),
+        }}
+      >
+        {children}
+      </Markdown>
+    </div>
   );
 }

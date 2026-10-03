@@ -121,47 +121,69 @@ test('temporary API failures preserve the dashboard shell and saved token', asyn
   ).toBe(true);
 });
 
-test('memory search shows merge evidence and only task-authorized private knowledge', async ({
+test('source summaries and navigation preserve task-authorized memory boundaries', async ({
   page,
 }) => {
   await page.goto('/dashboard?view=memory');
   await page.getByLabel('Access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
-  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
+  const navigation = page.getByRole('region', { name: 'Domain navigation' });
+  const summary = page.getByRole('article', { name: 'Source summary details' });
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace summary');
+  await expect(navigation).not.toContainText('Private workspace navigation');
   await expect(page.getByLabel('Memory topic').locator('option')).not.toContainText([
     'private-topic',
   ]);
+  await navigation.getByRole('button', { name: 'Python source summary', exact: true }).click();
+  await expect(summary).toContainText('Use pytest and shared fixtures.');
+  await expect(summary).toContainText('codex:fixture-thread:fixture-turn:pytest-result');
+  await expect(summary).toContainText('Published');
+  await expect(summary).not.toContainText('Canonical key');
+  await expect(summary).not.toContainText('Merged from');
   await page.getByLabel('Memory topic').selectOption('python');
   await expect(page.locator('.memory-row')).toHaveCount(1);
   await page.locator('.memory-row').click();
-  const note = page.getByRole('article', { name: 'Memory details' });
-  await expect(note).toContainText('repository:Relax');
-  await expect(note).toContainText('Use pytest and shared fixtures.');
-  await expect(note.getByRole('region', { name: 'Merged memories' }).locator('li')).toHaveCount(1);
   await expect(
-    note
+    summary
       .locator('dl > div')
       .filter({ has: page.getByText('Revision', { exact: true }) })
       .locator('code'),
   ).toHaveText(/^[a-f0-9]{64}$/);
-  await note.getByRole('button', { name: 'task:fixture-task', exact: true }).click();
+  await summary
+    .locator('dl')
+    .getByRole('button', { name: 'task:fixture-task', exact: true })
+    .click();
   await expect(page).toHaveURL(/task=fixture-task/);
   await page.getByRole('button', { name: 'Inspect task memory', exact: false }).click();
+  await expect(navigation).toContainText('Private workspace navigation');
   await page.getByLabel('Memory topic').selectOption('private-topic');
   await expect(page.locator('.memory-row')).toHaveCount(1);
-  await page.locator('.memory-row').click();
-  await expect(note).toContainText("fixture task's private audience");
+  await navigation.getByRole('button', { name: 'read the authorized source', exact: true }).click();
+  await expect(summary).toContainText("fixture task's private audience");
   await page.getByRole('button', { name: 'Public memory', exact: true }).click();
-  await expect(page.locator('.memory-row')).toHaveCount(2);
-  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
-  await expect(note).not.toContainText("fixture task's private audience");
+  await expect(page.locator('.memory-row')).toHaveCount(3);
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace summary');
+  await expect(navigation).not.toContainText('Private workspace navigation');
+  await expect(summary).not.toContainText("fixture task's private audience");
+  await page.getByLabel('Memory topic').selectOption('imported');
+  await page.locator('.memory-row').click();
+  await expect(summary).toContainText('Imported memory');
+  await expect(summary.getByRole('button', { name: /task:legacy:/ })).toHaveCount(0);
+  await page.getByLabel('Memory topic').selectOption('');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByLabel('Search memory').fill('leases');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await expect(page.locator('.memory-row')).toHaveCount(1);
   await page.locator('.memory-row').click();
-  await expect(note).toContainText('Check active task leases.');
+  await expect(summary).toContainText('Check active task leases.');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
+  await page.getByRole('button', { name: 'Extraction tasks', exact: true }).click();
+  await expect(page.getByLabel('Task kind')).toHaveValue('memory_extraction');
+  await expect(page.locator('.task-list .task-row')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Memory', exact: true }).click();
+  await page.getByRole('button', { name: 'Consolidation tasks', exact: true }).click();
+  await expect(page.getByLabel('Task kind')).toHaveValue('memory_consolidation');
+  await expect(page.locator('.task-list .task-row')).toHaveCount(1);
 });

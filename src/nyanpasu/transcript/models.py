@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nyanpasu.memory import MemoryNote
+from nyanpasu.memory import MemoryNavigation, MemorySource
 from nyanpasu.targets import ExecutionTarget
 
 
@@ -299,17 +299,16 @@ class ContentPage(ContractModel):
     recorded_bytes: int
 
 
-class MemorySummary(ContractModel):
+class MemorySourceSummary(ContractModel):
     id: str
     domain: str
-    key: str
+    task_id: str
     title: str
     topics: list[str]
-    applies_to: list[str]
     sources: list[str]
     revision: str
     updated_at: str
-    merged_from: list[str]
+    complete: bool
 
 
 class MemoryDomain(ContractModel):
@@ -327,7 +326,9 @@ class MemoryPage(ContractModel):
     count: int
     domains: list[MemoryDomain]
     topics: list[MemoryTopic]
-    items: list[MemorySummary]
+    items: list[MemorySourceSummary]
+    navigation_count: int
+    navigation: list[MemoryNavigation]
     has_more: bool
 
 
@@ -342,4 +343,4 @@ class TranscriptContract(ContractModel):
     search: SearchResults
     content: ContentPage
     memory: MemoryPage
-    memory_note: MemoryNote
+    memory_source: MemorySource

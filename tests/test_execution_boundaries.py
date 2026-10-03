@@ -151,12 +151,16 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
     original = config_for(tmp_path)
     original = original.model_copy(update={"memory": original.memory.model_copy(update={"consolidate": True})})
     first = make_agent(original, Interrupted())
-    note = first.memory.write(
+    source = first.memory.checkpoint_source(
         PRIVATE,
-        key="private-fact",
+        task_id="earlier-source",
+        input_digest="a" * 64,
+        cursor=1,
+        complete=True,
         title="Verified fact",
         body="private knowledge",
         sources=("tool:verified",),
+        expected_revision=None,
     )
     saved = await interrupt(
         first,
@@ -172,9 +176,10 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
                 "count": 0,
                 "domains": [],
                 "topics": [],
+                "navigation_count": 0,
             }
             with pytest.raises(MemoryNotFound):
-                await restarted.control.dispatch(saved.task_id, "memory.read", {"note_id": note.id})
+                await restarted.control.dispatch(saved.task_id, "memory.read", {"source_id": source.id})
             with pytest.raises(MemoryDenied):
                 await restarted.control.dispatch(
                     saved.task_id,
@@ -183,7 +188,7 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
                 )
             with pytest.raises(MemoryDenied):
                 await restarted.control.dispatch(
-                    saved.task_id, "memory.delete", {"note_id": note.id, "expected_revision": note.revision}
+                    saved.task_id, "memory.delete", {"source_id": source.id, "expected_revision": source.revision}
                 )
             checked.append(kwargs["thread_id"])
             return await super().run_turn(**kwargs)
@@ -196,8 +201,10 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
         assert checked == [first.store.task_run(saved.task_id).thread_id]
         assert len(backend.calls) == 1
         assert restarted.store.task_request(saved.task_id).memory == PRIVATE
-        assert restarted.memory.list_notes(PRIVATE) == [note]
-        assert restarted.store.task_status(f"memory:{saved.task_id}") is None
+        assert [item.id for item in restarted.memory.list_sources(PRIVATE)] == [source.id]
+        assert all(
+            item.kind not in {"memory_extraction", "memory_consolidation"} for item in restarted.store.recent_tasks(10)
+        )
     finally:
         await restarted.shutdown()
 
