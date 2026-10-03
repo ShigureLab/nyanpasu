@@ -132,9 +132,20 @@ AUTO_REVIEW_ERROR = (
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("structured", [True, False])
-async def test_structured_output_uses_validated_result_field(configured, tmp_path, process, structured):
-    schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+@pytest.mark.parametrize(
+    ("result_fields", "expected"),
+    [
+        pytest.param({}, None, id="missing"),
+        pytest.param({"structured_output": None}, None, id="null"),
+        pytest.param(
+            {"structured_output": {"summary": "Verified evidence."}}, {"summary": "Verified evidence."}, id="object"
+        ),
+        pytest.param({"structured_output": {"summary": None}}, {"summary": None}, id="nullable-field"),
+        pytest.param({"structured_output": {}}, {}, id="empty-object"),
+    ],
+)
+async def test_structured_output_uses_validated_result_field(configured, tmp_path, process, result_fields, expected):
+    schema = {"type": "object", "properties": {"summary": {"type": ["string", "null"]}}}
 
     async def respond(argv, *, input_text, received, **kwargs):
         message = json.loads(input_text)
@@ -144,9 +155,8 @@ async def test_structured_output_uses_validated_result_field(configured, tmp_pat
             "session_id": message["session_id"],
             "is_error": False,
             "result": "A summary was generated.",
+            **result_fields,
         }
-        if structured:
-            event["structured_output"] = {"summary": "Verified evidence."}
         await received(event)
         return 0, ""
 
@@ -155,9 +165,9 @@ async def test_structured_output_uses_validated_result_field(configured, tmp_pat
     invocation = backend.run_turn(
         execution=_target(backend), cwd=tmp_path, prompt="extract", thread_id=None, output_schema=schema
     )
-    if structured:
+    if expected is not None:
         result = await invocation
-        assert json.loads(result.final_message) == {"summary": "Verified evidence."}
+        assert json.loads(result.final_message) == expected
     else:
         with pytest.raises(RuntimeError, match="missing its structured output"):
             await invocation

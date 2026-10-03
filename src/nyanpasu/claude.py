@@ -268,7 +268,7 @@ class ClaudeBackend:
             reason = result.get("result") or "; ".join(result.get("errors", [])) or stderr or result.get("subtype")
             raise RuntimeError(f"Claude run failed: {redact(reason)}")
         if output_schema is not None:
-            if "structured_output" not in result:
+            if result.get("structured_output") is None:
                 raise RuntimeError("Claude success result is missing its structured output")
             final_message = json.dumps(result["structured_output"], ensure_ascii=False)
         elif not isinstance(result.get("result"), str):
