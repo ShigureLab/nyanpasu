@@ -190,6 +190,7 @@ Old `[codex]`, `[claude]`, `runtime.backend`, `enabled_plugins`, and direct `plu
    ```
 
    Supply each historical backend's actual history directory. A wrapper's configuration directory may link to history elsewhere; use the directory containing the real `projects` or `sessions` tree. Reader access is confined to that native directory by default; `--isolated-home backend=/absolute/path` explicitly changes its boundary when required. Migration clears active context thread bindings, so future work starts fresh isolated native sessions. Old conversations remain available through their historical references while their history files are retained.
+
 5. Restart, verify authentication and `/health`, inspect Runtime and the task queue, and run a bounded task through each configured driver.
 
 The configuration converter does not alter native CLI settings or import personal native memories into the shared corpus. Review task evidence through the normal [memory workflow](memory.md) before storing reusable knowledge.
