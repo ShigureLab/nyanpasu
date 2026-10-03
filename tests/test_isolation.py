@@ -308,6 +308,42 @@ else:
     assert tool.read_text() == "operator supplied tool"
 
 
+def test_nested_backend_sandbox_can_map_its_uid_without_exposing_host_files(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "allowed.txt").write_text("current workspace")
+    private = tmp_path / "private-memory.md"
+    private.write_text("another audience's memory")
+    native = tmp_path / "operator" / ".codex"
+    native.mkdir(parents=True)
+    (native / "history.jsonl").write_text("operator history")
+    forbidden = [
+        str(private),
+        str(native / "history.jsonl"),
+        f"/proc/{os.getpid()}/root{private}",
+        f"/proc/1/root{private}",
+        f"/proc/self/root{private}",
+    ]
+    nested = f"""
+import json, pathlib
+assert all(not pathlib.Path(path).exists() for path in {forbidden!r})
+assert pathlib.Path('allowed.txt').read_text() == 'current workspace'
+print(json.dumps({{'nested': True}}))
+"""
+    script = f"""
+import subprocess
+result = subprocess.run([
+    '/usr/bin/bwrap', '--unshare-all', '--share-net', '--cap-drop', 'ALL',
+    '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev',
+    '--', '/usr/bin/python3', '-c', {nested!r},
+], text=True, capture_output=True)
+assert result.returncode == 0, result.stderr
+print(result.stdout)
+"""
+    assert _run(ExecutionIsolation(tmp_path / "home"), workspace, script) == {"nested": True}
+    assert private.read_text() == "another audience's memory"
+
+
 def test_native_executables_boot_inside_real_isolation(tmp_path):
     if shutil.which("codex") is None or shutil.which("claude") is None:
         pytest.skip("native CLIs are not installed in this test environment")

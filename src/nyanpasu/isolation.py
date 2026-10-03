@@ -205,8 +205,6 @@ class ExecutionIsolation:
             (
                 "--proc",
                 "/proc",
-                "--remount-ro",
-                "/proc",
                 "--dev",
                 "/dev",
                 "--tmpfs",
