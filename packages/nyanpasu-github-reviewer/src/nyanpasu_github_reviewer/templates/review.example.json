@@ -54,5 +54,23 @@
       "status": "unresolved"
     }
   },
+  "ci": {
+    "source": { "head_sha": "0123456789abcdef0123456789abcdef01234567" },
+    "snapshot_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "status": "completed",
+    "failures": {
+      "check:12345": {
+        "name": "unit-tests / Python 3.12",
+        "url": "https://github.com/example/project/actions/runs/789/job/12345",
+        "conclusion": "failure",
+        "tested_sha": "0123456789abcdef0123456789abcdef01234567",
+        "run_id": 789,
+        "run_attempt": 1,
+        "summary": "示例：安装依赖时连接包索引超时，尚未执行测试。",
+        "evidence": "依赖安装步骤报告连接超时；当前日志没有测试失败证据。",
+        "next_step": "确认包索引与 runner 网络恢复后重试；暂不能归因于 PR 代码。"
+      }
+    }
+  },
   "disclosure": "Powered by Nyanpasu with Codex, please check the suggestions carefully."
 }

@@ -24,6 +24,10 @@ Read `$review_planning` before inspecting the implementation. Record run/skip/re
 
 Substantive reviews also require a production and test necessity audit: what can be deleted, combined or replaced while preserving required behavior, and why remaining complexity earns its place. Prior correctness review alone is not evidence this audit was completed. Record examined alternatives and retention reasons even when there is no justified simplification finding; never manufacture suggestions to meet a quota.
 
+## CI evidence
+
+At the start of a review and before final publication, call the supplied task-control command with `{"action":"ci-refresh"}`. When current failures exist, read `$ci_followup` and dispatch a managed `ci-analysis` child using the observed fingerprint. Continue useful review work while it runs; only the parent integrates evidence into the dashboard's optional `ci` field. CI children do not need `review_files` or the code scope plan. They do not change general/deep review coverage. Pending or running CI never keeps a review task alive: finish the review normally, and the observer will trigger a CI follow-up if a failure arrives later. When no current failures remain, omit `ci` entirely, including any stale section from an earlier head. A failed refresh does not establish recovery. Refresh again before using child evidence; discard obsolete head/run/attempt results.
+
 ## Review quality
 
 - Review the pinned range supplied in the current turn. Check that the worktree and review diff match its head and merge-base. Immediately before review publication, use the supplied task-control command with `{"action":"review-verify"}`. It verifies current eligibility and the full comparison range. If it fails, do not publish conclusions or line comments from this run; report the changed range and continue at the current range in a new review run.

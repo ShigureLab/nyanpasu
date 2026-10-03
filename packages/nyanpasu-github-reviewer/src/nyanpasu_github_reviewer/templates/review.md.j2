@@ -1,4 +1,4 @@
-{% set review_states = {"reviewing": "🔎 审查中", "preliminary": "📝 初步结果已发布 · 深度审查中", "approved": "✅ 已通过", "changes_requested": "🚧 需要修改", "comment": "💬 已完成 · 有补充意见", "incomplete": "⏸️ 部分审查未完成"} -%}
+{% set review_states = {"not_reviewed": "⏳ 尚未审查", "reviewing": "🔎 审查中", "preliminary": "📝 初步结果已发布 · 深度审查中", "approved": "✅ 已通过", "changes_requested": "🚧 需要修改", "comment": "💬 已完成 · 有补充意见", "incomplete": "⏸️ 部分审查未完成"} -%}
 {% set stage_states = {"pending": "⏳ 待开始", "running": "🔎 进行中", "completed": "✅ 已完成", "skipped": "➖ 无需执行", "incomplete": "⏸️ 未完成"} -%}
 {% set finding_states = {"unresolved": "🚧 未解决", "partial": "🛠️ 部分解决", "resolved": "✅ 已解决", "superseded": "➖ 已被后续变更取代"} -%}
 {% set priorities = {"P0": ["high", "High"], "P1": ["high", "High"], "P2": ["medium", "Medium"], "P3": ["low", "Low"]} -%}
@@ -7,7 +7,7 @@
 
 **审查状态：** {{ review_states[data.status] }}
 
-**审查版本：** {{ data.source.head_sha }}
+**{% if data.status == "not_reviewed" %}待审查版本{% else %}审查版本{% endif %}：** {{ data.source.head_sha }}
 
 **目标分支：** {% if meta.repository %}<a href="{{ meta.repository.url }}/tree/{{ data.source.base_ref }}">{{ data.source.base_ref }}</a>{% else %}{{ data.source.base_ref }}{% endif %}
 
@@ -24,6 +24,29 @@
 <td nowrap valign="top">{{ label }}</td>
 <td nowrap valign="top">{{ stage_states[data.stages[key].status] }}</td>
 <td valign="top">{{ data.stages[key].summary }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+{% endif -%}
+{% if data.ci is defined -%}
+{% set ci_states = {"analyzing": "🔎 分析中", "completed": "已分析", "incomplete": "⏸️ 分析未完成"} -%}
+### CI 异常
+
+**检查版本：** {{ data.ci.source.head_sha }} · {{ ci_states[data.ci.status] }}
+
+<table>
+<thead>
+<tr><th>失败检查</th><th>原因与现状</th><th>证据</th><th>建议下一步</th></tr>
+</thead>
+<tbody>
+{% for id, failure in data.ci.failures | dictsort_natural -%}
+<tr>
+<td valign="top">{{ failure.name | md_link(failure.url) }}</td>
+<td valign="top">{{ failure.summary }}</td>
+<td valign="top">{% if failure.evidence is defined %}{{ failure.evidence }}{% else %}待确认{% endif %}</td>
+<td valign="top">{% if failure.next_step is defined %}{{ failure.next_step }}{% else %}待分析{% endif %}</td>
 </tr>
 {% endfor -%}
 </tbody>
@@ -62,7 +85,7 @@
 {% endfor -%}
 {% elif data.status == "approved" -%}
 没有未解决的审查问题。
-{% elif data.status in ["reviewing", "preliminary", "incomplete"] -%}
+{% elif data.status in ["not_reviewed", "reviewing", "preliminary", "incomplete"] -%}
 尚无已确认的问题记录；这不代表审查通过。
 {% else -%}
 本次没有需要列入看板的问题。

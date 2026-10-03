@@ -41,6 +41,7 @@ nyanpasu = "nyanpasu.__main__:app"
 [dependency-groups]
 dev = [
   "httpx>=0.28.1",
+  "jsonschema>=4.26.0",
   "nyanpasu-github",
   "nyanpasu-github-pr-maker",
   "nyanpasu-github-reviewer",

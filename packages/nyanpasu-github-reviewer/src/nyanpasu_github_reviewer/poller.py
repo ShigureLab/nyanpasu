@@ -17,6 +17,7 @@ from nyanpasu_github.gh import run_gh
 from nyanpasu_github.models import PullRequestRef
 
 from nyanpasu.git_ops import safe_slug
+from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubEventJournalRecord,
@@ -43,6 +44,7 @@ GhListRepoEvents = Callable[[GitHubReviewerConfig, str], list[dict[str, Any]]]
 GhListPullRequests = Callable[[GitHubReviewerConfig, str], list[dict[str, Any]]]
 GhGetPullRequest = Callable[[GitHubReviewerConfig, str, int], dict[str, Any]]
 GhListPullRequestTimeline = Callable[[GitHubReviewerConfig, str, int], list[dict[str, Any]]]
+GhFetchCI = Callable[[GitHubReviewerConfig, PullRequestRef], CISnapshot]
 
 
 class GitHubEventsPoller:
@@ -57,6 +59,7 @@ class GitHubEventsPoller:
         list_pull_requests: GhListPullRequests | None = None,
         get_pull_request: GhGetPullRequest | None = None,
         list_pull_request_timeline: GhListPullRequestTimeline | None = None,
+        fetch_ci: GhFetchCI | None = None,
     ) -> None:
         self.config = config
         if store is None:
@@ -70,6 +73,7 @@ class GitHubEventsPoller:
         self.list_pull_requests = list_pull_requests or list_pull_requests_with_gh
         self.get_pull_request = get_pull_request or get_pull_request_with_gh
         self.list_pull_request_timeline = list_pull_request_timeline or list_pull_request_timeline_with_gh
+        self.fetch_ci = fetch_ci or fetch_ci_snapshot
 
     async def run_once(
         self,
@@ -77,6 +81,8 @@ class GitHubEventsPoller:
         *,
         wait_for_reviews: bool = False,
         force_baseline: bool = False,
+        ci_only: bool = False,
+        include_ci: bool = True,
     ) -> PollCycleResult:
         target_repos = tuple(repos or self.config.repos)
         started_at = time.monotonic()
@@ -95,10 +101,13 @@ class GitHubEventsPoller:
         remaining_events = event_limit
         for repo in target_repos:
             try:
-                discovery = await self._poll_repo(
-                    repo,
-                    force_baseline=force_baseline,
+                discovery = (
+                    PollCycleResult(submitted=0, duplicates=0, ignored=0, baselined=0, repos=(repo,))
+                    if ci_only
+                    else await self._poll_repo(repo, force_baseline=force_baseline)
                 )
+                if include_ci and self.config.ci_poll_interval_seconds and not force_baseline:
+                    await self._poll_ci_repo(repo)
                 result = await self._dispatch_pending_repo_events(
                     repo,
                     wait_for_reviews=wait_for_reviews,
@@ -158,10 +167,38 @@ class GitHubEventsPoller:
             self.config.post_reviews,
             self.config.dry_run,
         )
+        next_repo = 0.0
+        next_ci = 0.0
+        ci_interval = self.config.ci_poll_interval_seconds
         while True:
-            await self.run_once(target_repos)
-            logger.info("events poller sleeping interval_sec={}", interval)
-            await asyncio.sleep(interval)
+            now = time.monotonic()
+            repo_due = now >= next_repo
+            ci_due = bool(ci_interval) and now >= next_ci
+            await self.run_once(target_repos, ci_only=not repo_due, include_ci=ci_due)
+            finished = time.monotonic()
+            if repo_due:
+                next_repo = finished + interval
+            if ci_due:
+                next_ci = finished + ci_interval
+            deadline = min(next_repo, next_ci) if ci_interval else next_repo
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+
+    async def _poll_ci_repo(self, repo: str) -> None:
+        # CI has its own clock: completing a check need not update the PR itself.
+        numbers = await to_thread.run_sync(self.store.list_open_pr_numbers, repo)
+        branches = self.config.repo_configs[repo].base_branches
+        for number in sorted(numbers):
+            try:
+                raw = await to_thread.run_sync(self.get_pull_request, self.config, repo, number)
+                pr = PullRequestRef.from_github(repo, raw)
+                if pr.state != "open" or pr.draft or not pr.targets_any(branches):
+                    continue
+                snapshot = await to_thread.run_sync(self.fetch_ci, self.config, pr)
+                changed = await to_thread.run_sync(self.store.record_ci_snapshot, pr, snapshot)
+                if changed:
+                    logger.info("CI change journaled repo={} pr={} failures={}", repo, number, len(snapshot.failures))
+            except Exception:
+                logger.exception("CI poll failed repo={} pr={} action=preserve_previous_snapshot", repo, number)
 
     async def _poll_repo(
         self,

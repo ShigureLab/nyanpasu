@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from nyanpasu.git_ops import safe_slug
+from nyanpasu_github_reviewer.ci import CISnapshot
 from nyanpasu_github_reviewer.models import (
     GitHubEventJournalRecord,
     GitHubEventJournalStatus,
@@ -12,11 +15,14 @@ from nyanpasu_github_reviewer.models import (
     PullRequestSnapshot,
     PullRequestTimelineCursor,
     PullRequestUpdatedCursor,
+    ReviewAction,
     ReviewEvent,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from nyanpasu_github.models import PullRequestRef
 
 
 class GitHubReviewerStore:
@@ -97,11 +103,82 @@ class GitHubReviewerStore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS github_ci_snapshots (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    PRIMARY KEY (repo, pr_number)
+                );
                 """
             )
             _ensure_column(conn, "github_pr_snapshots", "created_at_github", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "github_pr_snapshots", "base_sha", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "github_pr_snapshots", "stack_json", "TEXT")
+
+    def get_ci_snapshot(self, repo: str, number: int) -> CISnapshot | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT snapshot_json FROM github_ci_snapshots WHERE repo=? AND pr_number=?", (repo, number)
+            ).fetchone()
+        return CISnapshot.model_validate_json(row["snapshot_json"]) if row is not None else None
+
+    def record_ci_snapshot(self, pr: PullRequestRef, snapshot: CISnapshot) -> bool:
+        """Persist an observation and its wakeup atomically, including first-seen failures."""
+        if snapshot.head_sha != pr.head_sha:
+            raise ValueError("CI snapshot does not match the observed PR head")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT snapshot_json,revision FROM github_ci_snapshots WHERE repo=? AND pr_number=?",
+                (pr.repo, pr.number),
+            ).fetchone()
+            previous = CISnapshot.model_validate_json(row["snapshot_json"]) if row is not None else None
+            if previous is not None and previous.fingerprint == snapshot.fingerprint:
+                return False
+            revision = int(row["revision"]) + 1 if row is not None else 1
+            conn.execute(
+                """INSERT INTO github_ci_snapshots (repo,pr_number,snapshot_json,revision) VALUES (?,?,?,?)
+                ON CONFLICT(repo,pr_number) DO UPDATE SET
+                    snapshot_json=excluded.snapshot_json,revision=excluded.revision""",
+                (pr.repo, pr.number, snapshot.model_dump_json(), revision),
+            )
+            if not snapshot.failures and not (previous and previous.failures):
+                return False
+            delivery = f"ci-{safe_slug(pr.repo)}-{pr.number}-{revision}"
+            now = time.time()
+            event = ReviewEvent(
+                delivery_id=delivery,
+                github_event="ci",
+                action=ReviewAction.REVIEW,
+                pr=pr,
+                after_sha=pr.head_sha,
+                raw={
+                    "nyanpasu": {
+                        "trigger": "ci_changed",
+                        "trigger_summary": "Current PR CI failures changed; refresh the CI dashboard section.",
+                        "ci_fingerprint": snapshot.fingerprint,
+                    },
+                },
+            )
+            _insert_event(
+                conn,
+                GitHubEventJournalRecord(
+                    delivery_id=delivery,
+                    dedupe_key=delivery,
+                    source="ci_poll",
+                    repo=pr.repo,
+                    pr_number=pr.number,
+                    github_event="ci",
+                    action=ReviewAction.REVIEW,
+                    event_created_at=datetime.fromtimestamp(now, UTC).isoformat(),
+                    event=event,
+                    created_at=now,
+                    updated_at=now,
+                ),
+            )
+            return True
 
     def get_poll_event_cursor(self, repo: str) -> PollEventCursor | None:
         with self._connect() as conn:
@@ -328,31 +405,7 @@ class GitHubReviewerStore:
     def append_event(self, record: GitHubEventJournalRecord) -> bool:
         with self._connect() as conn:
             try:
-                conn.execute(
-                    """
-                    INSERT INTO github_event_journal (
-                        delivery_id, dedupe_key, source, repo, pr_number, github_event, action, event_created_at,
-                        payload_json, status, result_json, error, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        record.delivery_id,
-                        record.dedupe_key,
-                        record.source,
-                        record.repo,
-                        record.pr_number,
-                        record.github_event,
-                        record.action.value,
-                        record.event_created_at,
-                        record.event.model_dump_json(),
-                        record.status.value,
-                        record.result_json,
-                        record.error,
-                        record.created_at,
-                        record.updated_at,
-                    ),
-                )
+                _insert_event(conn, record)
                 return True
             except sqlite3.IntegrityError:
                 return False
@@ -362,7 +415,7 @@ class GitHubReviewerStore:
             SELECT delivery_id, dedupe_key, source, repo, pr_number, github_event, action, event_created_at,
                 payload_json, status, result_json, error, created_at, updated_at
             FROM github_event_journal
-            WHERE status = ?
+            WHERE (status = ? OR (github_event = 'ci' AND status IN ('running','failed')))
         """
         values: list[object] = [GitHubEventJournalStatus.PENDING.value]
         if repo is not None:
@@ -393,6 +446,31 @@ class GitHubReviewerStore:
                 """,
                 (status.value, result_json, error, time.time(), delivery_id),
             )
+
+
+def _insert_event(conn: sqlite3.Connection, record: GitHubEventJournalRecord) -> None:
+    conn.execute(
+        """INSERT INTO github_event_journal (
+            delivery_id,dedupe_key,source,repo,pr_number,github_event,action,event_created_at,
+            payload_json,status,result_json,error,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            record.delivery_id,
+            record.dedupe_key,
+            record.source,
+            record.repo,
+            record.pr_number,
+            record.github_event,
+            record.action.value,
+            record.event_created_at,
+            record.event.model_dump_json(),
+            record.status.value,
+            record.result_json,
+            record.error,
+            record.created_at,
+            record.updated_at,
+        ),
+    )
 
 
 def _cursor_from_row(row: sqlite3.Row) -> PollEventCursor:

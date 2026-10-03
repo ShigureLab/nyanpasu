@@ -46,6 +46,7 @@ def _config(tmp_path: Path) -> GitHubReviewerConfig:
         github_login="review-bot",
         dry_run=True,
         post_reviews=False,
+        ci_poll_interval_seconds=0,
     )
 
 
@@ -55,6 +56,7 @@ def _config_with_repos(tmp_path: Path, repos: list[str]) -> GitHubReviewerConfig
         github_login="review-bot",
         dry_run=True,
         post_reviews=False,
+        ci_poll_interval_seconds=0,
     )
 
 
@@ -946,6 +948,7 @@ async def test_pr_state_poll_cleans_up_closures_outside_unfiltered_page(tmp_path
     config = GitHubReviewerConfig(
         repos={repo: RepoSettings(local_path=tmp_path, base_branches=(trunk,))},
         poll_event_pages=1,
+        ci_poll_interval_seconds=0,
     )
     tracked = _pull_request_api_item(base_ref=base_ref, stack=stack)
     unrelated = [

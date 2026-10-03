@@ -17,6 +17,8 @@ from nyanpasu.git_ops import safe_slug
 from nyanpasu.memory import MemoryAccess
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
+from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
@@ -28,6 +30,8 @@ from nyanpasu_github_reviewer.models import (
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 from nyanpasu_github_reviewer.prompt import (
     INSTRUCTIONS_DIR,
+    build_ci_followup_instructions,
+    build_ci_followup_prompt,
     build_review_instructions,
     build_review_prompt,
     cleanup_prompt,
@@ -168,7 +172,16 @@ class GitHubReviewerPlugin:
         )
 
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        if request.purpose == "ci-analysis":
+            return await asyncio.to_thread(self._prepare_ci_subtask, parent, request)
         return await asyncio.to_thread(self._prepare_scoped_subtask, parent, request)
+
+    def _prepare_ci_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        assert self.config is not None
+        if parent.spawned_by_task_id is not None:
+            raise ValueError("CI analysis must be requested by the root reviewer")
+        pr, snapshot = self._refresh_ci(parent)
+        return prepare_ci_analysis(self.config, parent, request, pr, snapshot)
 
     @staticmethod
     def _scope_for_parent(store: StateStore, parent: AgentTask) -> tuple[dict, ScopePlan, set[str]]:
@@ -198,6 +211,9 @@ class GitHubReviewerPlugin:
                 continue  # An invalid ancestor already cancelled this branch.
             try:
                 parent = store.task_request(child.spawned_by_task_id)
+                if child.metadata.get("purpose") == "ci-analysis":
+                    validate_ci_child(parent, child)
+                    continue
                 inventory, plan, allowed = self._scope_for_parent(store, parent)
                 assignment = child.metadata.get("inputs", {}).get("review_scope")
                 if (
@@ -211,7 +227,11 @@ class GitHubReviewerPlugin:
                 if child.workspace is None or child.workspace.revision != inventory[source]:
                     raise ValueError("stored child revision does not match its scope inventory")
             except ValueError as exc:
-                error = f"Deep review cannot resume: {exc}. Submit review-scope and dispatch with a new request_key."
+                error = (
+                    f"CI analysis cannot resume: {exc}. Refresh CI and dispatch with a new request_key."
+                    if child.metadata.get("purpose") == "ci-analysis"
+                    else f"Deep review cannot resume: {exc}. Submit review-scope and dispatch with a new request_key."
+                )
                 store.mark_task_failed(child.task_id, error)
                 logger.warning("review child recovery rejected task_id={} reason={}", child.task_id, error)
 
@@ -255,11 +275,22 @@ class GitHubReviewerPlugin:
         )
 
     async def scope_control(self, task: AgentTask, action: str, payload: dict[str, Any]) -> dict:
-        if action not in {"review-scope", "review-verify"} or task.spawned_by_task_id is not None:
-            raise ValueError("review-scope and review-verify are only available to the root reviewer")
+        if action not in {"review-scope", "review-verify", "ci-refresh"} or task.spawned_by_task_id is not None:
+            raise ValueError("review-scope, review-verify and ci-refresh are only available to the root reviewer")
+        if action == "ci-refresh":
+            pr, snapshot = await asyncio.to_thread(self._refresh_ci, task)
+            return {"pull_request": pr.model_dump(mode="json"), "snapshot": ci_snapshot_data(snapshot)}
         if action == "review-verify":
             return await asyncio.to_thread(self._verify_review, task)
         return await asyncio.to_thread(self._scope_control, task, payload)
+
+    def _refresh_ci(self, task: AgentTask) -> tuple[PullRequestRef, CISnapshot]:
+        assert self.config is not None
+        pinned_pr = PullRequestRef.model_validate(task.metadata["pull_request"])
+        pr = _fetch_pr(self.config, pinned_pr.repo, pinned_pr.number)
+        if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
+            raise ValueError("PR is no longer eligible for CI analysis or publication")
+        return pr, fetch_ci_snapshot(self.config, pr)
 
     def _verify_review(self, task: AgentTask) -> dict:
         assert self.config is not None
@@ -298,7 +329,11 @@ class GitHubReviewerPlugin:
         if payload:
             plan = validate_plan(inventory, payload)
             previous = task.metadata.get("review_scope")
-            if previous is not None and store.subtasks(task.task_id) and plan.model_dump() != previous:
+            scoped_children = any(
+                child.metadata.get("purpose") != "ci-analysis"
+                for child in (store.task_request(record.task_id) for record in store.subtasks(task.task_id))
+            )
+            if previous is not None and scoped_children and plan.model_dump() != previous:
                 raise ValueError("scope is frozen after child dispatch; reconsider it in a new review run")
             task = task.model_copy(update={"metadata": {**task.metadata, "review_scope": plan.model_dump()}})
         store.update_task_input(task)
@@ -339,6 +374,28 @@ class GitHubReviewerPlugin:
             )
         workspace = self._workspace_for_pr(pr)
         assert task.execution is not None
+        if triggers and all(trigger.kind == "ci_changed" for trigger in triggers):
+            snapshot = ci_snapshot_data(fetch_ci_snapshot(self.config, pr))
+            metadata["ci_snapshot"] = snapshot
+            return task.model_copy(
+                update={
+                    "workspace": workspace,
+                    "developer_instructions": build_ci_followup_instructions(self.config, pr),
+                    "instruction_docs": instruction_documents_for_repo(
+                        repo=pr.repo,
+                        plugin_instruction_docs=self.config.instruction_docs,
+                        repo_settings=self.config.repos,
+                    ),
+                    "prompt": build_ci_followup_prompt(
+                        self.config,
+                        pr,
+                        runtime=task.execution,
+                        snapshot=snapshot,
+                        has_session=bool(context and context.thread_id),
+                    ),
+                    "metadata": metadata,
+                }
+            )
         metadata["review_inventory"] = build_inventory(
             self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
         )

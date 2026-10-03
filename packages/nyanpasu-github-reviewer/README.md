@@ -27,6 +27,7 @@ github_login = "your-github-login"
 review_language = "Chinese"
 poll_enabled = true
 poll_interval_seconds = 600
+ci_poll_interval_seconds = 120 # Set 0 to disable CI polling.
 poll_event_pages = 3
 poll_max_events_per_cycle = 0
 dry_run = false
@@ -68,6 +69,23 @@ General review runs alongside any independent-design or test-audit subtasks. The
 Independent design starts from minimum required behavior, base reuse and a responsibility/state map, then derives a failure model. Deep review audits the necessity of major production mechanisms and test families even when no reference child is needed. It records concrete simpler alternatives, remove/merge/replace/retain decisions, evidence and gaps; promising candidates get bounded deletion or replacement experiments against real code where feasible. A standalone model does not establish that a production layer is removable. Earlier correctness reviews alone do not close this scope on incremental follow-ups. There is no finding quota: justified retention is a valid outcome.
 
 One root task and all descendants consume one concurrency slot, including while the root waits. Children never request additional root slots. With concurrency 1, other root reviews wait for this tree to finish; asynchronous deep review removes the dependency on delivering the general result, not the root capacity limit. New events for the same PR remain serialized to protect its workspace. A resumed parent rechecks the head before using old evidence or publishing.
+
+### CI follow-ups
+
+Code review starts on PR activity and does not wait for CI to finish. While polling is enabled, a separate lightweight loop observes every eligible open PR's current checks every `ci_poll_interval_seconds` (default 120 seconds; 0 disables this loop). It does not depend on a new commit, comment, or PR `updated_at` change. A newly completed failure or a change that removes/replaces a recorded failure queues a CI-only follow-up in the same PR context. Queued, running, successful, and unchanged checks do not create follow-ups. Checks on the current head and its current merge-test commit are associated with the PR, including fork PRs; Actions run attempts distinguish reruns at the same head. Failed GitHub reads preserve the previous observation.
+
+The parent calls task-control `ci-refresh` at review start, before final publication, and before publishing CI evidence. Failures are delegated with `purpose: ci-analysis` and `inputs: {"fingerprint": "<observed fingerprint>"}`. The service pins the actual failure instances and supplies the child prompt; CI analysis does not require the code review admission inventory or `review_files`. The child reads bounded logs and necessary context, returns evidence privately, and does not fix, rerun, or publish CI. The parent alone updates the optional CI section in the existing review dashboard. A child failure leaves an explicit analysis gap; it does not downgrade completed code review stages.
+
+Configure a fast model for this child independently from the reviewer. For the previously configured Claude-compatible provider alias:
+
+```toml
+[tasks.kinds."github_reviewer.ci-analysis".execution]
+backend = "claude"
+model = "deepseek-v4.1-flash-ali"
+reasoning = "xhigh"
+```
+
+This requires a `claude` backend with provider credentials that serve the alias. CI-only parent turns retain the regular `github_reviewer.review` execution configuration and session. When ordinary review events and CI events coalesce, the parent performs the ordinary review and handles CI alongside it. Same-PR serialization and root concurrency limits still apply: a long active review may delay its queued CI follow-up. The observer does not reserve a task while CI is pending.
 
 ## Run
 
@@ -127,7 +145,9 @@ The agent follows the skill to read existing slate data, preview changes, publis
 
 The template requires gh-slate's `dictsort_natural` filter to display finding IDs in numeric order (`F1`, `F2`, …, `F10`) without changing IDs or canonical thread links. Upgrade the CLI before deploying this template.
 
-The dashboard has Chinese headings and shows the analyzed head SHA, review status, separate general/deep stages, summary, and findings with priority, resolution status, canonical thread links, and optional rule-source links. Pending findings appear in an expanded table; resolved and superseded findings remain in a collapsed table. The five columns show the stable finding ID, severity badge, linked title with optional metadata, resolution status, and rule source. Severity cells contain the badge without a repeated priority label. Badge dimensions are fixed, and ID/status cells do not wrap. The head SHA is plain text so GitHub can link the commit automatically. Dashboard and review comments use the same 62×18 `<picture>` markup from the template, with SVG sources for dark and light themes. Summaries and finding titles follow `review_language`. The statuses are `reviewing`, `preliminary`, `approved`, `changes_requested`, `comment`, and `incomplete`. `preliminary` delivers completed general results while deep work remains pending or running; an unfinished review never displays approval. Each stage records its own scope and outcome. The disclosure text comes from the current turn's model declaration; the Nyanpasu name links to the project repository in both review/comment and dashboard footers. Detailed findings remain in their threads.
+The dashboard has Chinese headings and shows the analyzed head SHA, review status, separate general/deep stages, summary, and findings with priority, resolution status, canonical thread links, and optional rule-source links. Pending findings appear in an expanded table; resolved and superseded findings remain in a collapsed table. The five columns show the stable finding ID, severity badge, linked title with optional metadata, resolution status, and rule source. Severity cells contain the badge without a repeated priority label. Badge dimensions are fixed, and ID/status cells do not wrap. The head SHA is plain text so GitHub can link the commit automatically. Dashboard and review comments use the same 62×18 `<picture>` markup from the template, with SVG sources for dark and light themes. Summaries and finding titles follow `review_language`. The statuses are `not_reviewed`, `reviewing`, `preliminary`, `approved`, `changes_requested`, `comment`, and `incomplete`. `preliminary` delivers completed general results while deep work remains pending or running; an unfinished review never displays approval. Each stage records its own scope and outcome. The disclosure text comes from the current turn's model declaration; the Nyanpasu name links to the project repository in both review/comment and dashboard footers. Detailed findings remain in their threads.
+
+The optional **CI 异常** table appears only while current failures exist. It shows their check version, job links, cause or uncertainty, evidence, and next steps. CI has its own source SHA and execution identities; adding, updating, or removing the section leaves existing review conclusions and coverage intact. No failures means no CI section, including after recovery or replacement by a new commit. If CI fails before a review dashboard exists, a `not_reviewed` dashboard records only the observed head/base and pending stages; it cannot claim coverage, findings, or approval. A later code review supplies the full pinned inventory. Recovery removes the CI section without deleting the review dashboard.
 
 General/deep progress, repository scope, and simplification assessments use tables. The collapsed **提交范围** and **精简审查与验证依据** sections retain file lists, decisions, and evidence in their table cells; the latter shows separate production and test assessments. Rule sources remain a dedicated column: a finding that applies an explicit repository rule includes its verified title and URL; otherwise the cell shows “—”. The profile schema requires both records when deep is completed: completed audits contain decisions, while skipped audits explain the absence of applicable scope. Pending or incomplete audits cannot satisfy deep completion. Nonblocking simplification findings use `kind: simplification`; existing findings without a kind still render normally. These checks enforce the report structure, not the truth or semantic coverage of the review. Existing dashboards retain their embedded definition until the next warranted update; that update adopts stages and rechecks missing necessity evidence rather than inventing past completion. A policy upgrade alone does not trigger public re-review.
 
@@ -231,7 +251,7 @@ Timestamp cursors must also keep the ids seen at that timestamp. This avoids los
 
 ### Startup Semantics
 
-On cold start, polling establishes cursors and PR snapshots without dispatching historical work. New events are only produced after the baseline.
+On cold start, review polling establishes cursors and PR snapshots without dispatching historical review work. New review events are only produced after the baseline. CI observation inspects current state immediately: existing current failures can create a CI-only follow-up, while an all-green baseline is silent. It does not replay historical failed runs.
 
 On restart, polling resumes from the persisted cursors and snapshots. If multiple events for the same PR arrive between two polls, all canonical events are written to the journal in chronological order. The dispatcher may coalesce events for the same context into one agent turn, but the journal should still retain the individual event records for auditability.
 

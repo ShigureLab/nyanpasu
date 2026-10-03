@@ -68,6 +68,13 @@ backend = "claude"
 backend = "codex"
 # This child always has shared memory disabled.
 
+# CI analysis is a bounded log-reading child; the parent review model is unchanged.
+# This model alias requires a Claude-compatible provider configured to serve it.
+[tasks.kinds."github_reviewer.ci-analysis".execution]
+backend = "claude"
+model = "deepseek-v4.1-flash-ali"
+reasoning = "xhigh"
+
 [tasks.kinds."github_pr_maker.create".execution]
 backend = "codex"
 
@@ -128,6 +135,7 @@ github_login = "your-github-login"
 review_language = "Chinese"
 poll_enabled = true
 poll_interval_seconds = 600
+ci_poll_interval_seconds = 120 # Independent CI observation; 0 disables CI polling.
 poll_event_pages = 3
 poll_max_events_per_cycle = 0
 dry_run = false

@@ -5,12 +5,20 @@
   "required": ["status", "source", "summary", "stages", "findings", "disclosure"],
   "properties": {
     "status": {
-      "enum": ["reviewing", "preliminary", "approved", "changes_requested", "comment", "incomplete"]
+      "enum": [
+        "not_reviewed",
+        "reviewing",
+        "preliminary",
+        "approved",
+        "changes_requested",
+        "comment",
+        "incomplete"
+      ]
     },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["head_sha", "base_ref", "merge_base_sha", "inventory_id"],
+      "required": ["head_sha", "base_ref"],
       "properties": {
         "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "base_ref": { "type": "string", "minLength": 1 },
@@ -24,12 +32,7 @@
       "additionalProperties": false,
       "required": ["general", "deep"],
       "properties": {
-        "general": {
-          "allOf": [
-            { "$ref": "#/$defs/stage" },
-            { "properties": { "status": { "enum": ["running", "completed", "incomplete"] } } }
-          ]
-        },
+        "general": { "$ref": "#/$defs/stage" },
         "deep": { "$ref": "#/$defs/stage" }
       }
     },
@@ -72,6 +75,37 @@
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/finding" }
     },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "snapshot_fingerprint", "status", "failures"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["head_sha"],
+          "properties": { "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" } }
+        },
+        "snapshot_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "status": { "enum": ["analyzing", "completed", "incomplete"] },
+        "failures": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/ciFailure" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": {
+            "properties": {
+              "failures": { "additionalProperties": { "required": ["evidence", "next_step"] } }
+            }
+          }
+        }
+      ]
+    },
     "disclosure": {
       "type": "string",
       "minLength": 1,
@@ -80,6 +114,34 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "not_reviewed" } } },
+      "then": {
+        "properties": {
+          "findings": { "maxProperties": 0 },
+          "scope": false,
+          "simplification": false,
+          "stages": {
+            "properties": {
+              "general": { "properties": { "status": { "const": "pending" } } },
+              "deep": { "properties": { "status": { "const": "pending" } } }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "source": { "required": ["merge_base_sha", "inventory_id"] },
+          "stages": {
+            "properties": {
+              "general": {
+                "properties": { "status": { "enum": ["running", "completed", "incomplete"] } }
+              }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {
@@ -185,6 +247,24 @@
     }
   ],
   "$defs": {
+    "ciFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url", "conclusion", "tested_sha", "summary"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "pattern": "^https?://" },
+        "conclusion": {
+          "enum": ["failure", "error", "timed_out", "action_required", "startup_failure"]
+        },
+        "tested_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string", "minLength": 1 },
+        "next_step": { "type": "string", "minLength": 1 }
+      }
+    },
     "scopeGroup": {
       "additionalProperties": false,
       "properties": {

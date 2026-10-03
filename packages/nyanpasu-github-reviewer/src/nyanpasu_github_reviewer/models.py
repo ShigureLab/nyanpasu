@@ -132,6 +132,7 @@ class GitHubReviewerConfig(BaseModel):
     auto_collapse_author_logins: tuple[str, ...] = ()
     poll_enabled: bool = True
     poll_interval_seconds: int = 600
+    ci_poll_interval_seconds: int = Field(default=120, ge=0)
     poll_event_pages: int = 3
     poll_max_events_per_cycle: int = 0
     dry_run: bool = False
