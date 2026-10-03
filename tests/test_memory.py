@@ -156,7 +156,11 @@ def test_request_keys_replay_without_reapplying_a_stale_update(service):
     assert write(service, **inputs) == updated
     with pytest.raises(MemoryConflict, match="different input"):
         write(service, **{**inputs, "body": "Different update."})
-    service.delete(PUBLIC, updated.id, expected_revision=updated.revision)
+    latest = write(service, note_id=updated.id, expected_revision=updated.revision, body="A later command.")
+    with pytest.raises(MemoryConflict, match="result revision no longer matches"):
+        write(service, **inputs)
+    assert service.read(PUBLIC, latest.id) == latest
+    service.delete(PUBLIC, latest.id, expected_revision=latest.revision)
     with pytest.raises(MemoryConflict, match="subsequently removed"):
         write(service, **inputs)
     assert service.list_notes(PUBLIC) == []
@@ -225,6 +229,10 @@ def test_explicit_semantic_merge_retires_sources_atomically_and_is_retryable(ser
         service.read(PUBLIC, second.id)
     assert merge(service, first, second) == merged
     assert len(list(service.root.rglob("objects/*.md"))) == 1
+    latest = write(service, note_id=merged.id, expected_revision=merged.revision, body="Later verified guidance.")
+    with pytest.raises(MemoryConflict, match="result revision no longer matches"):
+        merge(service, first, second)
+    assert service.list_notes(PUBLIC) == [latest]
 
 
 def test_merge_cannot_absorb_a_readable_note_from_another_audience(service):

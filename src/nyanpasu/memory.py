@@ -268,7 +268,10 @@ class MemoryService:
             raise MemoryConflict("request_key was already used with different input")
         if receipt["note_id"] not in notes:
             raise MemoryConflict("this request already succeeded, but its result was subsequently removed")
-        return notes[receipt["note_id"]]
+        note = notes[receipt["note_id"]]
+        if receipt.get("revision") != note.revision:
+            raise MemoryConflict("this request already succeeded, but its result revision no longer matches")
+        return note
 
     @staticmethod
     def _check_revision(note: MemoryNote, expected_revision: str | None) -> None:
@@ -383,7 +386,11 @@ class MemoryService:
 
     def _finish(self, directory, manifest, notes, note, request_key, fingerprint) -> None:
         if request_key is not None:
-            manifest["requests"][request_key] = {"fingerprint": fingerprint, "note_id": note.id}
+            manifest["requests"][request_key] = {
+                "fingerprint": fingerprint,
+                "note_id": note.id,
+                "revision": note.revision,
+            }
         self._commit(directory, manifest, notes)
 
     @staticmethod

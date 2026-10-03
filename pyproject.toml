@@ -18,7 +18,7 @@ keywords = []
 license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
-  "Operating System :: OS Independent",
+  "Operating System :: POSIX :: Linux",
   "Typing :: Typed",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",

@@ -6,6 +6,8 @@ GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by
 
 See the [dependency index](DEPENDENCIES/index.md) for required and optional tools, agent skills, prerequisites, and installation instructions.
 
+Nyanpasu targets Linux. Memory storage relies on POSIX file locks and directory synchronization.
+
 ## Core Responsibilities
 
 - Async task execution with per-context serialization and bounded concurrency.
