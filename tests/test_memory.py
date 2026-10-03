@@ -88,6 +88,51 @@ def test_titles_reject_line_breaks_before_publishing(service, separator):
     assert service.list_notes(PUBLIC) == []
 
 
+@pytest.mark.parametrize("separator", ["\r", "\r\n", "\n"])
+def test_topics_reject_line_breaks_before_publishing(service, separator):
+    topic = f"original{separator}- [forged](elsewhere.md)"
+    with pytest.raises(ValueError, match="topics.*single-line"):
+        write(service, topics=(topic,))
+    assert list(service.root.iterdir()) == []
+    with pytest.raises(ValueError, match="topics.*single-line"):
+        service.search(PUBLIC, "", topics=(topic,))
+
+
+@pytest.mark.parametrize("field", ["topics", "applies_to", "sources"])
+def test_list_fields_bound_each_request_before_publishing(service, field):
+    values = tuple(f"value:{index:03}" for index in range(129))
+    with pytest.raises(ValueError, match=field):
+        write(service, **{field: values})
+    assert list(service.root.iterdir()) == []
+    note = write(service, **{field: values[:-1]})
+    assert getattr(note, field) == values[:-1]
+
+
+def test_read_domains_are_bounded_before_normalization():
+    with pytest.raises(ValueError, match="read_domains"):
+        MemoryAccess(("public",) * 129)
+    domains = tuple(f"domain:{index:03}" for index in range(128))
+    assert MemoryAccess(domains).read_domains == domains
+
+
+def test_search_topics_and_merge_sources_are_bounded_without_changing_notes(service):
+    note = write(service)
+    with pytest.raises(ValueError, match="topics"):
+        service.search(PUBLIC, "", topics=("python",) * 129)
+    with pytest.raises(ValueError, match="source_ids"):
+        service.merge(
+            PUBLIC,
+            (note.id,) * 129,
+            target_id=note.id,
+            key=note.key,
+            title=note.title,
+            body=note.body,
+            sources=note.sources,
+            expected_revisions={note.id: note.revision},
+        )
+    assert service.list_notes(PUBLIC) == [note]
+
+
 def test_invalid_read_id_does_not_become_a_path(service):
     with pytest.raises(MemoryNotFound, match="^memory not found$"):
         service.read(PUBLIC, "../../manifest.json")

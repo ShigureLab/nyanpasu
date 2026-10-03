@@ -36,13 +36,19 @@ class MemoryConflict(ValueError):
     """A write needs a fresh revision or an explicit merge."""
 
 
-def _strings(values: Sequence[str], field: str, *, casefold: bool = False) -> tuple[str, ...]:
+def _strings(
+    values: Sequence[str], field: str, *, casefold: bool = False, single_line: bool = False
+) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)):
         raise ValueError(f"{field} must be a list of strings")
+    if len(values) > 128:
+        raise ValueError(f"{field} must contain at most 128 strings")
     normalized = set()
     for value in values:
         if not isinstance(value, str) or not value.strip() or len(value) > 4096 or "\x00" in value:
             raise ValueError(f"{field} must contain nonempty strings of at most 4096 characters")
+        if single_line and any(c in value for c in "\r\n"):
+            raise ValueError(f"{field} must contain single-line strings")
         value = unicodedata.normalize("NFC", value).strip()
         normalized.add(value.casefold() if casefold else value)
     return tuple(sorted(normalized))
@@ -109,7 +115,7 @@ def _content(key: str, title: str, body: str, topics, applies_to, sources) -> di
         "key": key,
         "title": unicodedata.normalize("NFC", title).strip(),
         "body": _body(body),
-        "topics": _strings(topics, "topics", casefold=True),
+        "topics": _strings(topics, "topics", casefold=True, single_line=True),
         "applies_to": _strings(applies_to, "applies_to"),
         "sources": evidence,
     }
@@ -226,7 +232,7 @@ class MemoryService:
             raise ValueError("query must be text of at most 8192 characters")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        required_topics = set(_strings(topics, "topics", casefold=True))
+        required_topics = set(_strings(topics, "topics", casefold=True, single_line=True))
         terms = set(re.findall(r"\w+", unicodedata.normalize("NFC", query).casefold()))
         matches = []
         for note in self.list_notes(access):
