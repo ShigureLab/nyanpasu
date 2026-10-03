@@ -48,6 +48,80 @@ def test_seed_home_honors_explicit_config_locations(tmp_path):
     assert (native / "settings.json").read_text() == "{}"
 
 
+def test_explicit_home_template_supports_custom_native_directory_and_retains_refreshes(tmp_path):
+    template = tmp_path / "minimal-template"
+    relative = Path(".cc-mirror/codewiz-cc/config")
+    (template / relative).mkdir(parents=True)
+    (template / relative / "settings.json").write_text('{"provider":"codewiz"}')
+    (template / ".claude.json").write_text('{"hasCompletedOnboarding":true}')
+    operator = tmp_path / "operator"
+    operator.mkdir()
+    (operator / "settings.json").write_text('{"operator":"must not use"}')
+    (operator / "history.jsonl").write_text("private history")
+    home = tmp_path / "home"
+    native = seed_home(
+        home, "claude-code", {"CLAUDE_CONFIG_DIR": str(operator)}, native_directory=relative, template=template
+    )
+    assert native == home / relative
+    assert (native / "settings.json").read_text() == '{"provider":"codewiz"}'
+    assert (home / ".claude.json").read_text() == '{"hasCompletedOnboarding":true}'
+    assert not (native / "history.jsonl").exists()
+    assert native.stat().st_mode & 0o777 == 0o700
+    assert (native / "settings.json").stat().st_mode & 0o777 == 0o600
+    (native / "settings.json").write_text("refreshed")
+    seed_home(home, "claude-code", {}, native_directory=relative, template=template)
+    assert (native / "settings.json").read_text() == "refreshed"
+
+
+@pytest.mark.parametrize("position", ["template-root", "template-file", "target-parent", "target-file"])
+def test_home_template_rejects_source_and_target_symlinks(tmp_path, position):
+    template = tmp_path / "template"
+    (template / "config").mkdir(parents=True)
+    (template / "config" / "settings.json").write_text("new settings")
+    private = tmp_path / "private"
+    private.mkdir()
+    secret = private / "settings.json"
+    secret.write_text("secret")
+    home = tmp_path / "home"
+    home.mkdir()
+    if position == "template-root":
+        alias = tmp_path / "template-link"
+        alias.symlink_to(template, target_is_directory=True)
+        template = alias
+    elif position == "template-file":
+        (template / "config" / "settings.json").unlink()
+        (template / "config" / "settings.json").symlink_to(secret)
+    elif position == "target-parent":
+        (home / "config").symlink_to(private, target_is_directory=True)
+    else:
+        (home / "config").mkdir()
+        (home / "config" / "settings.json").symlink_to(secret)
+    with pytest.raises(ValueError, match="symlink"):
+        seed_home(home, "claude-code", {}, native_directory=Path("config"), template=template)
+    assert secret.read_text() == "secret"
+
+
+@pytest.mark.parametrize("relative", [Path("/operator/.codex"), Path("../operator"), Path()])
+def test_native_directory_cannot_escape_home(tmp_path, relative):
+    with pytest.raises(ValueError, match="native_directory"):
+        seed_home(tmp_path / "home", "codex", {}, native_directory=relative)
+
+
+def test_wrap_preserves_only_native_directories_inside_isolated_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    custom = home / ".cc-mirror" / "codewiz-cc" / "config"
+    _, env = ExecutionIsolation(home).wrap(
+        ["true"], cwd=workspace, env={"CLAUDE_CONFIG_DIR": str(custom), "CODEX_HOME": "/operator/codex"}
+    )
+    assert env["CLAUDE_CONFIG_DIR"] == str(custom)
+    assert env["CODEX_HOME"] == str(home / ".codex")
+    (home / "escape").symlink_to(tmp_path / "other-home", target_is_directory=True)
+    _, env = ExecutionIsolation(home).wrap(["true"], cwd=workspace, env={"CODEX_HOME": str(home / "escape" / "native")})
+    assert env["CODEX_HOME"] == str(home / ".codex")
+
+
 @pytest.mark.parametrize("link_directory", [True, False])
 def test_backend_symlinks_cannot_redirect_service_seeding(tmp_path, link_directory):
     source = tmp_path / "operator"
