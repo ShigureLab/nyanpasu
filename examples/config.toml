@@ -1,44 +1,80 @@
-enabled_plugins = ["github_reviewer", "github_pr_maker"]
-
 [server]
 host = "127.0.0.1"
 port = 8765
 # Set a random bearer token before exposing the service beyond localhost.
 # token = "replace-with-a-random-token"
-# NYANPASU_TOKEN overrides this value; omitting both keeps authentication disabled.
+# NYANPASU__SERVER__TOKEN overrides this value; omitting both keeps authentication disabled.
 
-[codex]
-bin = "codex"
-args = []
-command_timeout_seconds = 3600
+# A backend name identifies one worker process configuration. Multiple names may
+# share the same driver and use different credentials, profiles, or defaults.
+[backends.codex]
+driver = "codex"
+
+[backends.codex.process]
+command = ["codex"]
+pass_env = ["NYANPASU_GITHUB_TOKEN"]
+
+[backends.codex.defaults]
+# model = "your-codex-model"
+# reasoning = "high"
+
+[backends.codex.options]
 sandbox = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
-pass_env = ["NYANPASU_GITHUB_TOKEN"]
+rpc_timeout_seconds = 60
 
-[claude]
-bin = "claude"
-# Optional ordered fallback chain for generation and unavailable auto review.
-# Use provider-supported IDs; omitted reasoning_effort inherits the primary setting.
-# fallback_models = [{ model = "sonnet", reasoning_effort = "medium" }, "haiku"]
-# Defaults; use args = [] for older CLIs without these options.
-args = ["--permission-prompts", "none", "--system-prompt-snapshot", "off"]
-permission_mode = "auto"
-allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
+[backends.claude]
+driver = "claude-code"
+
+[backends.claude.process]
+command = ["claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off"]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
 
+[backends.claude.defaults]
+# model = "your-claude-model"
+# reasoning = "high"
+
+[backends.claude.options]
+permission_mode = "auto"
+allowed_tools = ["Read", "Grep", "Glob", "Bash(gh *)", "Bash(git diff *)"]
+# Optional Claude-native generation and auto-review fallback chain.
+# fallback_models = [{ model = "sonnet", reasoning = "medium" }, "haiku"]
+
+[tasks.defaults.execution]
+backend = "codex"
+
+[tasks.defaults.limits]
+turn_timeout_seconds = 3600
+
+# Route task kinds independently; request overrides take precedence.
+# Model/reasoning settings never carry over to a different backend name.
+# [tasks.kinds."github.review".execution]
+# backend = "claude"
+# model = "your-review-model"
+# reasoning = "high"
+
+[memory]
+enabled = true
+consolidate = true
+max_notes_per_search = 10
+# Memory is stored below NYANPASU_HOME/memory and shared across backend drivers.
+# Native Codex and Claude auto-memory is disabled only for Nyanpasu subprocesses.
+
 [runtime]
-backend = "codex" # Switching backends starts a new session on the next task after restart.
 concurrency = 4
 coalesce_window_seconds = 600
 clean_event_snapshots = true
+
+[plugins]
+enabled = ["github_reviewer", "github_pr_maker"]
 
 [integrations.github]
 token_env = "NYANPASU_GITHUB_TOKEN"
 git_author_name = "Nyanpasu"
 git_author_email = "nyanpasu@example.invalid"
 
-[plugins.github_reviewer]
+[plugins.settings.github_reviewer]
 agent_name = "Nyanpasu"
 github_login = "your-github-login"
 review_language = "Chinese"
@@ -49,21 +85,21 @@ poll_max_events_per_cycle = 0
 dry_run = false
 post_reviews = true
 
-[[plugins.github_reviewer.instruction_docs]]
+[[plugins.settings.github_reviewer.instruction_docs]]
 name = "SOUL.md"
 path = "/path/to/SOUL.md"
 
-[plugins.github_reviewer.repos."owner/repo"]
+[plugins.settings.github_reviewer.repos."owner/repo"]
 local_path = "/path/to/repo"
 github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
 
-[[plugins.github_reviewer.repos."owner/repo".instruction_docs]]
+[[plugins.settings.github_reviewer.repos."owner/repo".instruction_docs]]
 name = "AGENTS.md"
 path = "/path/to/repo/AGENTS.md"
 required = false
 
-[plugins.github_pr_maker]
+[plugins.settings.github_pr_maker]
 branch_prefix = "nyanpasu"
 default_base_branch = "main"
 dry_run = true
@@ -71,7 +107,7 @@ draft = false
 follow_up_enabled = true
 follow_up_interval_seconds = 600
 
-[plugins.github_pr_maker.repos."owner/repo"]
+[plugins.settings.github_pr_maker.repos."owner/repo"]
 local_path = "/path/to/repo"
 github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]

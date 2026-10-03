@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from nyanpasu.models import RunResult
+    from nyanpasu.targets import ExecutionTarget
 
 ExecutionStarted = Callable[[str, str | None], Awaitable[None]]
 
@@ -27,6 +28,7 @@ class ExecutionBackend(Protocol):
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult: ...

@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
-from nyanpasu.config import CodexConfig, EnvCommand, NyanpasuConfig
+from nyanpasu.config import (
+    CodexBackendConfig,
+    EnvCommand,
+    NyanpasuConfig,
+    ProcessConfig,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -20,23 +25,26 @@ def test_env_sources_override_inheritance_without_changing_command_environment(t
     monkeypatch.setenv("NOT_PASSED", "command-only")
     config = NyanpasuConfig(
         state_dir=tmp_path,
-        codex=CodexConfig(
-            pass_env=("GH_TOKEN",),
-            env={
-                "GH_TOKEN": "static-$NOT_PASSED",
-                "EMPTY": "",
-                "RESULT": EnvCommand(
-                    cmd=(
-                        sys.executable,
-                        "-c",
-                        "import os, sys; "
-                        "sys.stdout.write(os.getcwd() + '|' + os.environ['GH_TOKEN'] + '|' "
-                        "+ os.environ['NOT_PASSED'] + '|' + sys.argv[1] + '  \\r\\n')",
-                        "$(echo expanded)",
-                    )
-                ),
-            },
-        ),
+        backends={
+            "codex": CodexBackendConfig(
+                process=ProcessConfig(
+                    pass_env=("GH_TOKEN",),
+                    env={
+                        "GH_TOKEN": "static-$NOT_PASSED",
+                        "EMPTY": "",
+                        "RESULT": EnvCommand(
+                            cmd=(
+                                sys.executable,
+                                "-c",
+                                "import os, sys; sys.stdout.write(os.getcwd() + '|' + os.environ['GH_TOKEN'] + '|' + os.environ['NOT_PASSED'] + '|' + sys.argv[1] + '  \\r\\n')",
+                                "$(echo expanded)",
+                            )
+                        ),
+                    },
+                    command=("codex",),
+                )
+            )
+        },
     )
 
     env = safe_codex_env(config)
@@ -63,7 +71,15 @@ def test_command_failure_prevents_backend_creation(tmp_path: Path, monkeypatch, 
     monkeypatch.setenv("GH_TOKEN", "inherited-secret")
     config = NyanpasuConfig(
         state_dir=tmp_path,
-        codex=CodexConfig(pass_env=("GH_TOKEN",), env={"GH_TOKEN": EnvCommand(cmd=(sys.executable, "-c", script))}),
+        backends={
+            "codex": CodexBackendConfig(
+                process=ProcessConfig(
+                    pass_env=("GH_TOKEN",),
+                    env={"GH_TOKEN": EnvCommand(cmd=(sys.executable, "-c", script))},
+                    command=("codex",),
+                )
+            )
+        },
     )
     with pytest.raises(ValueError, match=f"codex.env.GH_TOKEN:.*{message}") as error:
         CodexAppServerBackend(config)
@@ -72,7 +88,14 @@ def test_command_failure_prevents_backend_creation(tmp_path: Path, monkeypatch, 
 
 def test_missing_command_prevents_backend_creation(tmp_path: Path) -> None:
     config = NyanpasuConfig(
-        state_dir=tmp_path, codex=CodexConfig(env={"GH_TOKEN": EnvCommand(cmd=(str(tmp_path / "missing"),))})
+        state_dir=tmp_path,
+        backends={
+            "codex": CodexBackendConfig(
+                process=ProcessConfig(
+                    env={"GH_TOKEN": EnvCommand(cmd=(str(tmp_path / "missing"),))}, command=("codex",)
+                )
+            )
+        },
     )
     with pytest.raises(ValueError, match=r"codex.env.GH_TOKEN:.*FileNotFoundError"):
         CodexAppServerBackend(config)
@@ -89,13 +112,22 @@ def test_command_timeout_is_bounded_and_does_not_expose_output(tmp_path: Path, m
     monkeypatch.setattr("nyanpasu.environment.subprocess.run", short_timeout)
     config = NyanpasuConfig(
         state_dir=tmp_path,
-        codex=CodexConfig(
-            env={
-                "GH_TOKEN": EnvCommand(
-                    cmd=(sys.executable, "-c", "import time; print('private-secret', flush=True); time.sleep(60)")
+        backends={
+            "codex": CodexBackendConfig(
+                process=ProcessConfig(
+                    env={
+                        "GH_TOKEN": EnvCommand(
+                            cmd=(
+                                sys.executable,
+                                "-c",
+                                "import time; print('private-secret', flush=True); time.sleep(60)",
+                            )
+                        )
+                    },
+                    command=("codex",),
                 )
-            }
-        ),
+            )
+        },
     )
     with pytest.raises(ValueError, match=r"codex.env.GH_TOKEN: command timed out after 10 seconds") as error:
         CodexAppServerBackend(config)
@@ -121,18 +153,22 @@ def test_backend_reuses_environment_across_restarts(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("GH_TOKEN", "initial")
     config = NyanpasuConfig(
         state_dir=tmp_path,
-        codex=CodexConfig(
-            bin=str(program),
-            env={
-                "GH_TOKEN": EnvCommand(
-                    cmd=(
-                        sys.executable,
-                        "-c",
-                        f"import os; open({str(counter)!r}, 'a').write('resolved\\n'); print(os.environ['GH_TOKEN'])",
-                    )
+        backends={
+            "codex": CodexBackendConfig(
+                process=ProcessConfig(
+                    env={
+                        "GH_TOKEN": EnvCommand(
+                            cmd=(
+                                sys.executable,
+                                "-c",
+                                f"import os; open({str(counter)!r}, 'a').write('resolved\\n'); print(os.environ['GH_TOKEN'])",
+                            )
+                        )
+                    },
+                    command=(str(program),),
                 )
-            },
-        ),
+            )
+        },
     )
     backend = CodexAppServerBackend(config)
     monkeypatch.setenv("GH_TOKEN", "changed")

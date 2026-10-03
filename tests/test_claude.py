@@ -10,14 +10,36 @@ from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.agent import AgentService
 from nyanpasu.claude import AutoReviewUnavailable, ClaudeBackend
-from nyanpasu.config import ClaudeConfig, NyanpasuConfig, RuntimeConfig, load_config
+from nyanpasu.config import (
+    ClaudeBackendConfig,
+    ClaudeOptions,
+    CodexBackendConfig,
+    ModelSettings,
+    NyanpasuConfig,
+    ProcessConfig,
+    RuntimeConfig,
+    TaskPolicy,
+    TasksConfig,
+    load_config,
+)
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride, ExecutionTarget
 from nyanpasu.transcript.claude import ClaudeHistorySource, claude_history
 from nyanpasu.web import create_app
 from tests.claude_source import SESSION, records, write_session
 from tests.session_source import MemorySessionSource, tool, turn
-from tests.test_agent import FakeWorktrees
+
+
+def _target(backend):
+    return ExecutionTarget(
+        backend="codex" if backend.config.driver == "codex" else "claude",
+        driver=backend.config.driver,
+        model=backend.config.defaults.model,
+        reasoning=backend.config.defaults.reasoning,
+        turn_timeout_seconds=3600,
+    )
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,8 +49,15 @@ if TYPE_CHECKING:
 def configured(tmp_path: Path):
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
-        runtime=RuntimeConfig(backend="claude"),
-        claude=ClaudeConfig(model="test-model", reasoning_effort="medium", allowed_tools=("Read",)),
+        runtime=RuntimeConfig(),
+        backends={
+            "claude": ClaudeBackendConfig(
+                defaults=ModelSettings(model="test-model", reasoning="medium"),
+                options=ClaudeOptions(allowed_tools=("Read",)),
+            ),
+            "codex": CodexBackendConfig(),
+        },
+        tasks=TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend="claude"))),
     )
 
 
@@ -57,8 +86,11 @@ def process(monkeypatch):
 async def test_session_resume_and_updated_instructions(configured: NyanpasuConfig, tmp_path: Path, process):
     backend = ClaudeBackend(configured)
     started = AsyncMock()
-    first = await backend.run_turn(cwd=tmp_path, prompt="first", thread_id=None, on_started=started)
+    first = await backend.run_turn(
+        execution=_target(backend), cwd=tmp_path, prompt="first", thread_id=None, on_started=started
+    )
     second = await backend.run_turn(
+        execution=_target(backend),
         cwd=tmp_path,
         prompt="second",
         thread_id=first.thread_id,
@@ -92,17 +124,24 @@ AUTO_REVIEW_ERROR = (
 async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per_model_effort(
     tmp_path, process, backup_effort
 ):
+    from tests.test_agent import FakeWorktrees
+
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        runtime=RuntimeConfig(backend="claude"),
-        claude=ClaudeConfig(
-            model="glm-5.3[1m]",
-            reasoning_effort="xhigh",
-            fallback_models=(
-                {"model": "glm-5.3-flash[1m]", "reasoning_effort": "medium"},
-                {"model": "deepseek-v4.1-flash-ali[1m]", "reasoning_effort": backup_effort},
+        runtime=RuntimeConfig(),
+        backends={
+            "claude": ClaudeBackendConfig(
+                defaults=ModelSettings(model="glm-5.3[1m]", reasoning="xhigh"),
+                options=ClaudeOptions(
+                    fallback_models=(
+                        {"model": "glm-5.3-flash[1m]", "reasoning": "medium"},
+                        {"model": "deepseek-v4.1-flash-ali[1m]", "reasoning": backup_effort},
+                    )
+                ),
             ),
-        ),
+            "codex": CodexBackendConfig(),
+        },
+        tasks=TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend="claude"))),
     )
     successful = process.side_effect
 
@@ -159,15 +198,24 @@ async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per
         assert agent.store.task_run("review").turn_id == result.turn_id
         backend = agent.backends.get("claude").execution
         assert isinstance(backend, ClaudeBackend)
-        assert backend.config == config.claude
+        assert backend.config == config.backends["claude"]
         app = create_app(config, agent=agent)
         async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
             runtime = (await client.get("/api/runtime")).json()
-        assert [model["model"] for model in runtime["fallback_models"]] == [
+        assert [model["model"] for model in runtime["backends"]["claude"]["fallback_models"]] == [
             "glm-5.3-flash[1m]",
             "deepseek-v4.1-flash-ali[1m]",
         ]
-        assert len([entry for entry in runtime["diagnostics"] if entry["target"] == "claude.model_fallback"]) == 2
+        assert (
+            len(
+                [
+                    entry
+                    for entry in runtime["backends"]["claude"]["diagnostics"]
+                    if entry["target"] == "claude.model_fallback"
+                ]
+            )
+            == 2
+        )
     finally:
         await agent.shutdown()
 
@@ -191,9 +239,19 @@ async def test_auto_review_fallback_skips_model_already_used_by_native_generatio
 
     process.side_effect = respond
     backend = ClaudeBackend(
-        configured.model_copy(update={"claude": ClaudeConfig(model="primary", fallback_models=("first", "second"))})
+        configured.model_copy(
+            update={
+                "backends": {
+                    **configured.backends,
+                    "claude": ClaudeBackendConfig(
+                        defaults=ModelSettings(model="primary"),
+                        options=ClaudeOptions(fallback_models=("first", "second")),
+                    ),
+                }
+            }
+        )
     )
-    result = await backend.run_turn(cwd=tmp_path, prompt="run", thread_id=None)
+    result = await backend.run_turn(execution=_target(backend), cwd=tmp_path, prompt="run", thread_id=None)
     assert result.final_message == "done" and process.await_count == 2
     last_argv = process.call_args_list[-1].args[0]
     assert last_argv[last_argv.index("--model") + 1] == "second"
@@ -204,14 +262,22 @@ async def test_auto_review_fallback_skips_model_already_used_by_native_generatio
 @pytest.mark.parametrize("fallback_models", [(), ("backup",)])
 @pytest.mark.parametrize("review_model", [None, "review-model"])
 async def test_exhausted_auto_review_models_fail_the_task(tmp_path, process, fallback_models, review_model):
+    from tests.test_agent import FakeWorktrees
+
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        runtime=RuntimeConfig(backend="claude"),
-        claude=ClaudeConfig(
-            model="primary",
-            fallback_models=fallback_models,
-            env={"CLAUDE_CODE_AUTO_MODE_MODEL": review_model} if review_model else {},
-        ),
+        runtime=RuntimeConfig(),
+        backends={
+            "claude": ClaudeBackendConfig(
+                process=ProcessConfig(
+                    env={"CLAUDE_CODE_AUTO_MODE_MODEL": review_model} if review_model else {}, command=("claude",)
+                ),
+                defaults=ModelSettings(model="primary"),
+                options=ClaudeOptions(fallback_models=fallback_models),
+            ),
+            "codex": CodexBackendConfig(),
+        },
+        tasks=TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend="claude"))),
     )
 
     async def respond(argv, *, input_text, received, **kwargs):
@@ -253,8 +319,17 @@ async def test_ordinary_tool_denials_do_not_switch_models(configured, tmp_path, 
         return await successful(argv, input_text=input_text, received=received, **kwargs)
 
     process.side_effect = respond
-    backend = ClaudeBackend(configured.model_copy(update={"claude": ClaudeConfig(fallback_models=("backup",))}))
-    result = await backend.run_turn(cwd=tmp_path, prompt="run", thread_id=None)
+    backend = ClaudeBackend(
+        configured.model_copy(
+            update={
+                "backends": {
+                    **configured.backends,
+                    "claude": ClaudeBackendConfig(options=ClaudeOptions(fallback_models=("backup",))),
+                }
+            }
+        )
+    )
+    result = await backend.run_turn(execution=_target(backend), cwd=tmp_path, prompt="run", thread_id=None)
     assert result.final_message == "done" and process.await_count == 1
     assert backend.runtime_info()["diagnostics"] == []
 
@@ -262,6 +337,8 @@ async def test_ordinary_tool_denials_do_not_switch_models(configured, tmp_path, 
 @pytest.mark.anyio
 @pytest.mark.parametrize("fail_before_start", [False, True])
 async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Path, process, fail_before_start):
+    from tests.test_agent import FakeWorktrees
+
     agent = AgentService(configured, worktrees=FakeWorktrees(tmp_path / "worktrees"))
     task = AgentTask(task_id="old", context_key="switch", action=TaskAction.RUN, prompt="inspect")
     agent.store.record_task(task)
@@ -319,11 +396,20 @@ async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeyp
     monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
     config_path = tmp_path / "config.toml"
     permission_setting = f'permission_mode = "{permission_mode}"\n' if permission_mode else ""
-    config_path.write_text(f'[claude]\nbin = "/opt/agent wrapper"\nargs = {json.dumps(args)}\n{permission_setting}')
+    config_path.write_text(
+        '[backends.claude]\ndriver = "claude-code"\n'
+        '[backends.codex]\ndriver = "codex"\n'
+        f"[backends.claude.process]\ncommand = {json.dumps(['/opt/agent wrapper', *args])}\n"
+        f"[backends.claude.options]\n{permission_setting}"
+    )
     backend = ClaudeBackend(load_config())
-    first = await backend.run_turn(cwd=tmp_path, prompt="first", thread_id=None)
+    first = await backend.run_turn(execution=_target(backend), cwd=tmp_path, prompt="first", thread_id=None)
     await backend.run_turn(
-        cwd=tmp_path, prompt="second", thread_id=first.thread_id, developer_instructions="updated instructions"
+        execution=_target(backend),
+        cwd=tmp_path,
+        prompt="second",
+        thread_id=first.thread_id,
+        developer_instructions="updated instructions",
     )
     for invocation, session_flag in zip(process.call_args_list, ("--session-id", "--resume"), strict=True):
         argv = invocation.args[0]
@@ -350,6 +436,8 @@ async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeyp
 async def test_failed_results_preserve_session_binding(
     configured: NyanpasuConfig, tmp_path: Path, process, result, error
 ):
+    from tests.test_agent import FakeWorktrees
+
     async def respond(argv, *, input_text, received, **kwargs):
         session = json.loads(input_text)["session_id"]
         await received({"type": "system", "subtype": "init", "session_id": session})
@@ -390,7 +478,15 @@ def test_environment_is_explicit(configured: NyanpasuConfig, monkeypatch):
 async def test_claude_dashboard_renders_native_tools_and_keeps_backend_namespaces(tmp_path: Path):
     home = tmp_path / "claude"
     path = write_session(home)
-    config = NyanpasuConfig(state_dir=tmp_path / "state", claude=ClaudeConfig(env={"CLAUDE_CONFIG_DIR": str(home)}))
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        backends={
+            "claude": ClaudeBackendConfig(
+                process=ProcessConfig(env={"CLAUDE_CONFIG_DIR": str(home)}, command=("claude",))
+            ),
+            "codex": CodexBackendConfig(),
+        },
+    )
     state = StateStore(config.db_path)
     for backend in ("codex", "claude"):
         state.record_task(AgentTask(task_id=backend, context_key=backend, action=TaskAction.RUN, prompt="inspect"))
@@ -511,3 +607,63 @@ def test_existing_database_migrates_to_codex(tmp_path: Path):
     context = state.get_context("old")
     assert context and context.backend == "codex"
     assert context.thread_id == "thread"
+
+
+@pytest.mark.anyio
+async def test_concurrent_turns_keep_independent_execution_targets(configured, tmp_path, process):
+    import asyncio
+
+    backend = ClaudeBackend(configured)
+    calls_ready = asyncio.Event()
+    requests = []
+    successful = process.side_effect
+
+    async def respond(argv, **kwargs):
+        requests.append((argv, kwargs["timeout"]))
+        if len(requests) == 2:
+            calls_ready.set()
+        await asyncio.wait_for(calls_ready.wait(), 1)
+        return await successful(argv, **kwargs)
+
+    process.side_effect = respond
+    targets = [
+        configured.resolve_execution(override=ExecutionOverride(model="first", reasoning="high")),
+        configured.resolve_execution(override=ExecutionOverride(model="second", reasoning="low")),
+    ]
+    await asyncio.gather(
+        *(
+            backend.run_turn(
+                cwd=tmp_path,
+                prompt="run",
+                thread_id=None,
+                execution=target.model_copy(update={"turn_timeout_seconds": 12 + index}),
+            )
+            for index, target in enumerate(targets)
+        )
+    )
+    assert [
+        (argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1], timeout) for argv, timeout in requests
+    ] == [("first", "high", 12), ("second", "low", 13)]
+    assert backend.config.defaults.model == "test-model"
+
+
+def test_native_auto_memory_is_disabled_only_for_worker(configured, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+    configured = configured.model_copy(
+        update={
+            "backends": {
+                **configured.backends,
+                "claude": ClaudeBackendConfig(
+                    process=ProcessConfig(
+                        command=("claude",),
+                        env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"},
+                    )
+                ),
+            }
+        }
+    )
+    backend = ClaudeBackend(configured)
+    assert backend.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+    import os
+
+    assert os.environ["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "0"

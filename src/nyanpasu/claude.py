@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from nyanpasu.config import ClaudeBackendConfig, ModelSettings
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, JsonProcessRunner
@@ -15,7 +16,8 @@ from nyanpasu.redaction import redact
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from nyanpasu.config import ClaudeConfig, NyanpasuConfig
+    from nyanpasu.config import FallbackModel, NyanpasuConfig
+    from nyanpasu.targets import ExecutionTarget
 
 
 class AutoReviewUnavailable(RuntimeError):
@@ -46,17 +48,34 @@ def auto_review_failure(event: dict) -> str | None:
 class ClaudeBackend:
     """One print-mode process per turn; Claude owns persistence and resume."""
 
-    def __init__(self, config: NyanpasuConfig):
-        self.config = config.claude
-        self.env = MappingProxyType(process_env(self.config, cwd=config.state_dir, backend="claude"))
+    def __init__(self, config: NyanpasuConfig, name: str = "claude"):
+        configured = config.backends[name]
+        if not isinstance(configured, ClaudeBackendConfig):
+            raise ValueError(f"backend {name} is not a Claude Code backend")
+        self.config = configured
+        env = process_env(configured.process, cwd=config.state_dir, backend="claude-code")
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        self.env = MappingProxyType(env)
         self._runner = JsonProcessRunner()
 
     def runtime_info(self) -> dict:
-        return self._runner.runtime_info()
+        return {
+            **self._runner.runtime_info(),
+            "fallback_models": [model.model_dump() for model in self.config.options.fallback_models],
+        }
 
-    def _argv(self, session_id: str, *, resume: bool, instructions: str, config: ClaudeConfig) -> list[str]:
+    def _argv(
+        self,
+        session_id: str,
+        *,
+        resume: bool,
+        instructions: str,
+        settings: ModelSettings,
+        fallbacks: tuple[FallbackModel, ...],
+    ) -> list[str]:
+        options = self.config.options
         argv = [
-            *config.command,
+            *self.config.process.command,
             "-p",
             "--input-format",
             "stream-json",
@@ -65,30 +84,30 @@ class ClaudeBackend:
             "--verbose",
             "--replay-user-messages",
             "--permission-mode",
-            config.permission_mode,
+            options.permission_mode,
             "--resume" if resume else "--session-id",
             session_id,
         ]
-        if config.model:
-            argv.extend(["--model", config.model])
-        if config.fallback_models:
-            argv.extend(["--fallback-model", ",".join(model.model for model in config.fallback_models)])
-        if any(model.reasoning_effort is not None for model in config.fallback_models):
+        if settings.model:
+            argv.extend(["--model", settings.model])
+        if fallbacks:
+            argv.extend(["--fallback-model", ",".join(model.model for model in fallbacks)])
+        if any(model.reasoning is not None for model in fallbacks):
             model_settings = {
-                model.model.removesuffix("[1m]"): {"effortLevel": model.reasoning_effort or config.reasoning_effort}
-                for model in config.fallback_models
-                if model.reasoning_effort is not None or config.reasoning_effort is not None
+                model.model.removesuffix("[1m]"): {"effortLevel": model.reasoning or settings.reasoning}
+                for model in fallbacks
+                if model.reasoning is not None or settings.reasoning is not None
             }
-            if config.model and config.reasoning_effort:
-                model_settings[config.model.removesuffix("[1m]")] = {"effortLevel": config.reasoning_effort}
-            settings: dict = {"modelSettings": model_settings}
-            if config.reasoning_effort:
-                settings["effortLevel"] = config.reasoning_effort
-            argv.extend(["--settings", json.dumps(settings)])
-        elif config.reasoning_effort:
-            argv.extend(["--effort", config.reasoning_effort])
-        if config.allowed_tools:
-            argv.extend(["--allowedTools", ",".join(config.allowed_tools)])
+            if settings.model and settings.reasoning:
+                model_settings[settings.model.removesuffix("[1m]")] = {"effortLevel": settings.reasoning}
+            native_settings: dict = {"modelSettings": model_settings}
+            if settings.reasoning:
+                native_settings["effortLevel"] = settings.reasoning
+            argv.extend(["--settings", json.dumps(native_settings)])
+        elif settings.reasoning:
+            argv.extend(["--effort", settings.reasoning])
+        if options.allowed_tools:
+            argv.extend(["--allowedTools", ",".join(options.allowed_tools)])
         if instructions:
             argv.extend(["--append-system-prompt", instructions])
         return argv
@@ -99,20 +118,26 @@ class ClaudeBackend:
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult:
-        choices = (self.config, *self.config.fallback_models)
+        choices = (
+            ModelSettings(model=execution.model, reasoning=execution.reasoning),
+            *self.config.options.fallback_models,
+        )
+        if any(choice.reasoning is not None for choice in choices[1:]) and execution.reasoning not in {
+            None,
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        }:
+            raise ValueError("Claude per-model fallback reasoning supports low, medium, high, and xhigh")
         index = 0
         while True:
             choice = choices[index]
-            config = self.config.model_copy(
-                update={
-                    "model": choice.model,
-                    "reasoning_effort": choice.reasoning_effort or self.config.reasoning_effort,
-                    "fallback_models": self.config.fallback_models[index:],
-                }
-            )
+            settings = ModelSettings(model=choice.model, reasoning=choice.reasoning or execution.reasoning)
             try:
                 return await self._run_turn(
                     cwd=cwd,
@@ -120,7 +145,9 @@ class ClaudeBackend:
                     thread_id=thread_id,
                     developer_instructions=developer_instructions,
                     on_started=on_started,
-                    config=config,
+                    settings=settings,
+                    fallbacks=self.config.options.fallback_models[index:],
+                    timeout=execution.turn_timeout_seconds,
                 )
             except AutoReviewUnavailable as exc:
                 # Changing generation models cannot recover a pinned classifier.
@@ -157,13 +184,15 @@ class ClaudeBackend:
         thread_id: str | None,
         developer_instructions: str,
         on_started: ExecutionStarted | None,
-        config: ClaudeConfig,
+        settings: ModelSettings,
+        fallbacks: tuple[FallbackModel, ...],
+        timeout: int,
     ) -> RunResult:
         session_id = str(UUID(thread_id)) if thread_id else str(uuid4())
         # The input message UUID is persisted by Claude, so task links survive restarts.
         turn_id = str(uuid4())
         result = None
-        active_model = config.model
+        active_model = settings.model
 
         async def received(event: dict) -> None:
             nonlocal result, active_model
@@ -184,7 +213,7 @@ class ClaudeBackend:
                 )
             elif event.get("type") == "result":
                 result = event
-            elif config.permission_mode == "auto" and (reason := auto_review_failure(event)):
+            elif self.config.options.permission_mode == "auto" and (reason := auto_review_failure(event)):
                 failure = AutoReviewUnavailable(session_id, active_model, reason)
                 self._runner.diagnostics.append(
                     {
@@ -198,11 +227,15 @@ class ClaudeBackend:
         try:
             returncode, stderr = await self._runner.run(
                 self._argv(
-                    session_id, resume=thread_id is not None, instructions=developer_instructions, config=config
+                    session_id,
+                    resume=thread_id is not None,
+                    instructions=developer_instructions,
+                    settings=settings,
+                    fallbacks=fallbacks,
                 ),
                 cwd=cwd,
                 env=self.env,
-                timeout=config.command_timeout_seconds,
+                timeout=timeout,
                 input_text=json.dumps(
                     {
                         "type": "user",

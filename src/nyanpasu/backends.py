@@ -29,14 +29,13 @@ class Backends:
 
     def get(self, name: str) -> Backend:
         if name not in self._instances:
-            if name == "codex":
-                codex = CodexAppServerBackend(self.config)
+            configured = self.config.backends[name]
+            if configured.driver == "codex":
+                codex = CodexAppServerBackend(self.config, name)
                 backend = Backend(codex, CodexHistorySource(codex))
-            elif name == "claude":
-                claude = ClaudeBackend(self.config)
-                backend = Backend(claude, ClaudeHistorySource(claude.env))
             else:
-                raise ValueError(f"unknown runtime backend: {name}")
+                claude = ClaudeBackend(self.config, name)
+                backend = Backend(claude, ClaudeHistorySource(claude.env))
             self._instances[name] = backend
         return self._instances[name]
 
@@ -46,8 +45,17 @@ class Backends:
     def runtime_info(self) -> dict:
         return {
             "backends": {
-                name: {"bin": self.config.process_config(name).bin, **backend.execution.runtime_info()}
-                for name, backend in self._instances.items()
+                name: {
+                    "driver": configured.driver,
+                    "bin": configured.process.command[0],
+                    "defaults": configured.defaults.model_dump(),
+                    **(
+                        self._instances[name].execution.runtime_info()
+                        if name in self._instances
+                        else {"connection": "idle", "diagnostics": []}
+                    ),
+                }
+                for name, configured in self.config.backends.items()
             }
         }
 

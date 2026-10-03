@@ -7,7 +7,23 @@ from typing import TYPE_CHECKING
 import pytest
 
 from nyanpasu.codex import CodexAppServerBackend, json_lines
-from nyanpasu.config import CodexConfig, NyanpasuConfig
+from nyanpasu.config import (
+    CodexBackendConfig,
+    NyanpasuConfig,
+    ProcessConfig,
+)
+from nyanpasu.targets import ExecutionTarget
+
+
+def _target(backend):
+    return ExecutionTarget(
+        backend="codex" if backend.config.driver == "codex" else "claude",
+        driver=backend.config.driver,
+        model=backend.config.defaults.model,
+        reasoning=backend.config.defaults.reasoning,
+        turn_timeout_seconds=3600,
+    )
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,7 +70,11 @@ for line in sys.stdin:
         sys.exit(2)
 """)
     program.chmod(0o755)
-    backend = CodexAppServerBackend(NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(bin=str(program))))
+    backend = CodexAppServerBackend(
+        NyanpasuConfig(
+            state_dir=tmp_path, backends={"codex": CodexBackendConfig(process=ProcessConfig(command=(str(program),)))}
+        )
+    )
     started = asyncio.Event()
     bindings = []
 
@@ -65,6 +85,7 @@ for line in sys.stdin:
 
     runner = asyncio.create_task(
         backend.run_turn(
+            execution=_target(backend),
             cwd=tmp_path,
             prompt="test",
             thread_id=None,

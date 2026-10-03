@@ -8,6 +8,7 @@ from collections import deque
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
+from nyanpasu.config import CodexBackendConfig
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.diagnostics import Diagnostic
+    from nyanpasu.targets import ExecutionTarget
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
 
@@ -29,9 +31,12 @@ class CodexSessionSource(Protocol):
 
 
 class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig) -> None:
-        self.config = config
-        self._env = MappingProxyType(safe_codex_env(config))
+    def __init__(self, config: NyanpasuConfig, name: str = "codex") -> None:
+        configured = config.backends[name]
+        if not isinstance(configured, CodexBackendConfig):
+            raise ValueError(f"backend {name} is not a Codex backend")
+        self.config = configured
+        self._env = MappingProxyType(safe_codex_env(config, name))
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -55,6 +60,7 @@ class CodexAppServerBackend:
         cwd: Path,
         prompt: str,
         thread_id: str | None,
+        execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult:
@@ -63,17 +69,17 @@ class CodexAppServerBackend:
             await self._ensure_started()
             thread_params: dict[str, Any] = {
                 "cwd": str(cwd),
-                "approvalPolicy": self.config.codex.approval_policy,
-                "approvalsReviewer": self.config.codex.approvals_reviewer,
-                "sandbox": self.config.codex.sandbox,
-                "model": self.config.codex.model,
+                "approvalPolicy": self.config.options.approval_policy,
+                "approvalsReviewer": self.config.options.approvals_reviewer,
+                "sandbox": self.config.options.sandbox,
+                "model": execution.model,
             }
             if thread_id:
                 thread_params["threadId"] = thread_id
             if developer_instructions:
                 thread_params["developerInstructions"] = developer_instructions
-            if self.config.codex.reasoning_effort:
-                thread_params["config"] = {"model_reasoning_effort": self.config.codex.reasoning_effort}
+            if execution.reasoning:
+                thread_params["config"] = {"model_reasoning_effort": execution.reasoning}
             thread = await self._request("thread/resume" if thread_id else "thread/start", thread_params)
             active_thread_id = str(thread["thread"]["id"])
             if on_started:
@@ -85,11 +91,11 @@ class CodexAppServerBackend:
                         "threadId": active_thread_id,
                         "input": [{"type": "text", "text": prompt, "text_elements": []}],
                         "cwd": str(cwd),
-                        "approvalPolicy": self.config.codex.approval_policy,
-                        "approvalsReviewer": self.config.codex.approvals_reviewer,
+                        "approvalPolicy": self.config.options.approval_policy,
+                        "approvalsReviewer": self.config.options.approvals_reviewer,
                         "sandboxPolicy": self._sandbox_policy(cwd),
-                        "model": self.config.codex.model,
-                        "effort": self.config.codex.reasoning_effort,
+                        "model": execution.model,
+                        "effort": execution.reasoning,
                     },
                 )
             )
@@ -108,9 +114,7 @@ class CodexAppServerBackend:
                 waiter = asyncio.get_running_loop().create_future()
                 self._turn_waiters[key] = waiter
                 try:
-                    completed = await asyncio.wait_for(
-                        asyncio.shield(waiter), timeout=self.config.codex.command_timeout_seconds
-                    )
+                    completed = await asyncio.wait_for(asyncio.shield(waiter), timeout=execution.turn_timeout_seconds)
                 except (asyncio.CancelledError, TimeoutError):
                     await self._interrupt_turn(key)
                     key = None
@@ -176,7 +180,9 @@ class CodexAppServerBackend:
                 return
             await self._reset_dead_process()
             self._proc = await asyncio.create_subprocess_exec(
-                *self.config.codex.command,
+                *self.config.process.command,
+                "-c",
+                "features.memories=false",
                 "app-server",
                 "--listen",
                 "stdio://",
@@ -210,7 +216,7 @@ class CodexAppServerBackend:
         request = {"id": request_id, "method": method, "params": params}
         try:
             await self._write(request)
-            return await asyncio.wait_for(future, self.config.codex.command_timeout_seconds)
+            return await asyncio.wait_for(future, self.config.options.rpc_timeout_seconds)
         finally:
             self._pending.pop(request_id, None)
 
@@ -393,7 +399,7 @@ class CodexAppServerBackend:
         return ""
 
     def _sandbox_policy(self, cwd: Path) -> dict[str, Any]:
-        if self.config.codex.sandbox == "workspace-write":
+        if self.config.options.sandbox == "workspace-write":
             return {
                 "type": "workspaceWrite",
                 "writableRoots": [str(cwd)],
@@ -401,7 +407,7 @@ class CodexAppServerBackend:
                 "excludeTmpdirEnvVar": False,
                 "excludeSlashTmp": False,
             }
-        if self.config.codex.sandbox == "read-only":
+        if self.config.options.sandbox == "read-only":
             return {"type": "readOnly", "networkAccess": True}
         return {"type": "dangerFullAccess"}
 
@@ -420,5 +426,5 @@ class CodexAppServerBackend:
         self._fail_pending(RuntimeError("codex app-server closed"))
 
 
-def safe_codex_env(config: NyanpasuConfig) -> dict[str, str]:
-    return process_env(config.codex, cwd=config.state_dir, backend="codex")
+def safe_codex_env(config: NyanpasuConfig, name: str = "codex") -> dict[str, str]:
+    return process_env(config.backends[name].process, cwd=config.state_dir, backend="codex")

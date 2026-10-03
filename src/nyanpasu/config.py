@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+from nyanpasu.targets import ExecutionOverride, ExecutionTarget
 
 DEFAULT_HOME = Path("~/.nyanpasu")
 CONFIG_FILE_NAME = "config.toml"
@@ -29,17 +32,9 @@ class ModelSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     model: str | None = None
-    reasoning_effort: str | None = None
+    reasoning: str | None = None
 
-    @field_validator("model", "reasoning_effort")
-    @classmethod
-    def _model_setting(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value or "\0" in value:
-            raise ValueError("model settings must be nonempty and contain no NUL")
-        return value
+    _settings = field_validator("model", "reasoning")(ExecutionOverride._nonempty.__func__)
 
 
 class FallbackModel(ModelSettings):
@@ -53,39 +48,24 @@ class FallbackModel(ModelSettings):
         return value
 
 
-class ProcessConfig(ModelSettings):
-    label: ClassVar[str] = "Agent"
+class ProcessConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
-    bin: str
-    args: tuple[str, ...] = ()
-    command_timeout_seconds: int = Field(default=60 * 60, gt=0)
+    command: tuple[str, ...] = Field(min_length=1)
     pass_env: tuple[str, ...] = ()
     env: dict[str, str | EnvCommand] = Field(default_factory=dict, repr=False)
 
-    @field_validator("bin")
+    @field_validator("command")
     @classmethod
-    def _executable(cls, value: str) -> str:
-        if not value.strip() or "\0" in value:
-            raise ValueError("bin must be a nonempty executable name or path without NUL")
-        path = Path(value).expanduser()
-        # Preserve executable symlinks (notably virtual-environment interpreters).
-        return str(path.absolute()) if os.sep in value or (os.altsep and os.altsep in value) else value
-
-    @field_validator("args")
-    @classmethod
-    def _arguments(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any("\0" in arg for arg in value):
-            raise ValueError("args must contain no NUL")
-        return value
-
-    @property
-    def command(self) -> tuple[str, ...]:
-        return (self.bin, *self.args)
-
-    @field_validator("pass_env", mode="before")
-    @classmethod
-    def _pass_env_tuple(cls, value: Any) -> tuple[str, ...]:
-        return _as_str_tuple(value)
+    def _command(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value[0].strip() or any("\0" in arg for arg in value):
+            raise ValueError("command requires a nonempty executable and arguments without NUL")
+        executable = value[0]
+        path = Path(executable).expanduser()
+        # Preserve executable symlinks, notably virtual-environment interpreters.
+        if os.sep in executable or (os.altsep and os.altsep in executable):
+            executable = str(path.absolute())
+        return (executable, *value[1:])
 
     @field_validator("env")
     @classmethod
@@ -98,23 +78,23 @@ class ProcessConfig(ModelSettings):
         return value
 
 
-class CodexConfig(ProcessConfig):
-    label: ClassVar[str] = "Codex"
-    bin: str = "codex"
+class CodexOptions(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     approval_policy: Literal["untrusted", "on-request", "never"] = "on-request"
     approvals_reviewer: Literal["user", "auto_review"] = "auto_review"
+    rpc_timeout_seconds: int = Field(default=60, gt=0)
 
 
-class ClaudeConfig(ProcessConfig):
-    label: ClassVar[str] = "Claude Code"
-    bin: str = "claude"
-    fallback_models: tuple[FallbackModel, ...] = Field(default=(), max_length=3)
-    args: tuple[str, ...] = ("--permission-prompts", "none", "--system-prompt-snapshot", "off")
+class ClaudeOptions(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     permission_mode: Literal["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] = (
         "auto"
     )
     allowed_tools: tuple[str, ...] = ()
+    fallback_models: tuple[FallbackModel, ...] = Field(default=(), max_length=3)
 
     @field_validator("fallback_models", mode="before")
     @classmethod
@@ -123,13 +103,71 @@ class ClaudeConfig(ProcessConfig):
             return tuple({"model": item} if isinstance(item, str) else item for item in value)
         return value
 
-    @model_validator(mode="after")
-    def _native_fallback_effort(self) -> ClaudeConfig:
-        if any(model.reasoning_effort is not None for model in self.fallback_models):
-            efforts = (self.reasoning_effort, *(model.reasoning_effort for model in self.fallback_models))
-            if any(effort not in {None, "low", "medium", "high", "xhigh"} for effort in efforts):
-                raise ValueError("Claude per-model fallback reasoning supports low, medium, high, and xhigh")
-        return self
+    @field_validator("fallback_models")
+    @classmethod
+    def _fallback_reasoning(cls, value: tuple[FallbackModel, ...]) -> tuple[FallbackModel, ...]:
+        if any(item.reasoning not in {None, "low", "medium", "high", "xhigh"} for item in value):
+            raise ValueError("Claude per-model fallback reasoning supports low, medium, high, and xhigh")
+        return value
+
+
+class CodexBackendConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    driver: Literal["codex"] = "codex"
+    process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(command=("codex",)))
+    defaults: ModelSettings = Field(default_factory=ModelSettings)
+    options: CodexOptions = Field(default_factory=CodexOptions)
+
+
+class ClaudeBackendConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    driver: Literal["claude-code"] = "claude-code"
+    process: ProcessConfig = Field(
+        default_factory=lambda: ProcessConfig(
+            command=("claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off")
+        )
+    )
+    defaults: ModelSettings = Field(default_factory=ModelSettings)
+    options: ClaudeOptions = Field(default_factory=ClaudeOptions)
+
+
+BackendConfig = Annotated[CodexBackendConfig | ClaudeBackendConfig, Field(discriminator="driver")]
+
+
+class TaskLimits(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    turn_timeout_seconds: int | None = Field(default=None, gt=0)
+
+
+class TaskPolicy(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    execution: ExecutionOverride = Field(default_factory=ExecutionOverride)
+    limits: TaskLimits = Field(default_factory=TaskLimits)
+
+
+class TasksConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    defaults: TaskPolicy = Field(
+        default_factory=lambda: TaskPolicy(
+            execution=ExecutionOverride(backend="codex"), limits=TaskLimits(turn_timeout_seconds=3600)
+        )
+    )
+    kinds: dict[str, TaskPolicy] = Field(default_factory=dict)
+
+
+class PluginsConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: tuple[str, ...] = ()
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = True
+    consolidate: bool = True
+    max_notes_per_search: int = Field(default=10, ge=1, le=100)
 
 
 class ServerConfig(BaseModel):
@@ -150,7 +188,6 @@ class ServerConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    backend: Literal["codex", "claude"] = "codex"
     concurrency: int = 4
     coalesce_window_seconds: int = 600
     context_lease_seconds: float = 2 * 60 * 60
@@ -164,34 +201,82 @@ class NyanpasuConfig(BaseModel):
 
     state_dir: Path = Field(default_factory=lambda: nyanpasu_home())
     server: ServerConfig = Field(default_factory=ServerConfig)
-    codex: CodexConfig = Field(default_factory=CodexConfig)
-    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    backends: dict[str, BackendConfig] = Field(
+        default_factory=lambda: {
+            "codex": CodexBackendConfig(),
+            "claude": ClaudeBackendConfig(),
+        }
+    )
+    tasks: TasksConfig = Field(default_factory=TasksConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     integrations: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    enabled_plugins: tuple[str, ...] = ()
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
 
     @property
     def enabled_plugin_ids(self) -> tuple[str, ...]:
-        return self.enabled_plugins or tuple(self.plugins)
+        return self.plugins.enabled
 
-    def process_config(self, backend: str | None = None) -> ProcessConfig:
-        name = backend or self.runtime.backend
-        if name == "codex":
-            return self.codex
-        if name == "claude":
-            return self.claude
-        raise ValueError(f"unknown runtime backend: {name}")
+    @property
+    def memory_dir(self) -> Path:
+        return self.state_dir / "memory"
+
+    @model_validator(mode="after")
+    def _execution_policies(self) -> NyanpasuConfig:
+        for name in self.backends:
+            if not name.strip():
+                raise ValueError("backend names must be nonempty")
+        self.resolve_execution()
+        for kind in self.tasks.kinds:
+            self.resolve_execution(kind)
+        return self
+
+    def resolve_execution(self, kind: str = "default", override: ExecutionOverride | None = None) -> ExecutionTarget:
+        policy = self.tasks.kinds.get(kind)
+        layers = [("tasks.defaults.execution", self.tasks.defaults.execution)]
+        if policy is not None:
+            layers.append((f"tasks.kinds.{kind}.execution", policy.execution))
+        if override is not None:
+            layers.append(("request.execution", override))
+        selected = "codex"
+        backend_source = "builtin"
+        annotated: list[tuple[str, str, ExecutionOverride]] = []
+        for source, layer in layers:
+            if layer.backend is not None:
+                selected = layer.backend
+                backend_source = source
+            if selected not in self.backends:
+                raise ValueError(f"unknown execution backend: {selected}")
+            annotated.append((selected, source, layer))
+        backend = self.backends[selected]
+        settings: dict[str, str | None] = {}
+        sources = {"backend": backend_source}
+        for field in ("model", "reasoning"):
+            value = getattr(backend.defaults, field)
+            sources[field] = f"backends.{selected}.defaults" if value is not None else "native"
+            for owner, source, layer in annotated:
+                if owner == selected and (candidate := getattr(layer, field)) is not None:
+                    value = candidate
+                    sources[field] = source
+            settings[field] = value
+        timeout = self.tasks.defaults.limits.turn_timeout_seconds or 3600
+        sources["turn_timeout_seconds"] = "tasks.defaults.limits"
+        if policy is not None and policy.limits.turn_timeout_seconds is not None:
+            timeout = policy.limits.turn_timeout_seconds
+            sources["turn_timeout_seconds"] = f"tasks.kinds.{kind}.limits"
+        return ExecutionTarget(
+            backend=selected,
+            driver=backend.driver,
+            model=settings["model"],
+            reasoning=settings["reasoning"],
+            turn_timeout_seconds=timeout,
+            sources=sources,
+        )
 
     @field_validator("state_dir", mode="before")
     @classmethod
     def _state_dir_path(cls, value: Any) -> Path:
         return Path(value).expanduser().resolve()
-
-    @field_validator("enabled_plugins", mode="before")
-    @classmethod
-    def _enabled_plugins_tuple(cls, value: Any) -> tuple[str, ...]:
-        return _as_str_tuple(value)
 
     @property
     def worktrees_dir(self) -> Path:
@@ -236,60 +321,48 @@ def ensure_state_dirs(config: NyanpasuConfig) -> None:
 
 
 def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
-    data = dict(raw)
-    data.setdefault("state_dir", nyanpasu_home())
-    server = dict(data.get("server") or {})
-    if host := os.getenv("NYANPASU_HOST"):
-        server["host"] = host
-    if port := os.getenv("NYANPASU_PORT"):
-        server["port"] = int(port)
-    if (token := os.getenv("NYANPASU_TOKEN")) is not None:
-        server["token"] = token
-    if server:
-        data["server"] = server
-    codex = dict(data.get("codex") or {})
-    env_codex = {
-        "NYANPASU_CODEX_BIN": "bin",
-        "NYANPASU_CODEX_MODEL": "model",
-        "NYANPASU_CODEX_REASONING_EFFORT": "reasoning_effort",
-        "NYANPASU_CODEX_SANDBOX": "sandbox",
-        "NYANPASU_CODEX_APPROVAL": "approval_policy",
-        "NYANPASU_CODEX_APPROVALS_REVIEWER": "approvals_reviewer",
-        "NYANPASU_COMMAND_TIMEOUT_SECONDS": "command_timeout_seconds",
+    """Use one nested namespace; each value is TOML or an unquoted string."""
+    legacy = {
+        "NYANPASU_HOST",
+        "NYANPASU_PORT",
+        "NYANPASU_TOKEN",
+        "NYANPASU_BACKEND",
+        "NYANPASU_PLUGINS",
+        "NYANPASU_COMMAND_TIMEOUT_SECONDS",
+        "NYANPASU_CODEX_BIN",
+        "NYANPASU_CODEX_MODEL",
+        "NYANPASU_CODEX_REASONING_EFFORT",
+        "NYANPASU_CODEX_SANDBOX",
+        "NYANPASU_CODEX_APPROVAL",
+        "NYANPASU_CODEX_APPROVALS_REVIEWER",
+        "NYANPASU_CLAUDE_BIN",
+        "NYANPASU_CLAUDE_MODEL",
+        "NYANPASU_CLAUDE_REASONING_EFFORT",
+        "NYANPASU_CLAUDE_PERMISSION_MODE",
+        "NYANPASU_CLAUDE_FALLBACK_MODELS",
     }
-    for env_name, field in env_codex.items():
-        value = os.getenv(env_name)
-        if value is not None:
-            codex[field] = int(value) if field == "command_timeout_seconds" else value
-    if codex:
-        data["codex"] = codex
-    claude = dict(data.get("claude") or {})
-    for suffix, field in {
-        "BIN": "bin",
-        "MODEL": "model",
-        "REASONING_EFFORT": "reasoning_effort",
-        "PERMISSION_MODE": "permission_mode",
-    }.items():
-        if (value := os.getenv(f"NYANPASU_CLAUDE_{suffix}")) is not None:
-            claude[field] = value
-    if (fallback_models := os.getenv("NYANPASU_CLAUDE_FALLBACK_MODELS")) is not None:
-        claude["fallback_models"] = _as_str_tuple(fallback_models)
-    if (timeout := os.getenv("NYANPASU_COMMAND_TIMEOUT_SECONDS")) is not None:
-        claude["command_timeout_seconds"] = int(timeout)
-    if claude:
-        data["claude"] = claude
-    if backend := os.getenv("NYANPASU_BACKEND"):
-        data["runtime"] = {**data.get("runtime", {}), "backend": backend}
-    if plugins := os.getenv("NYANPASU_PLUGINS"):
-        data["enabled_plugins"] = plugins
+    if obsolete := sorted(legacy.intersection(os.environ)):
+        raise ValueError(
+            "legacy configuration environment keys require migration to NYANPASU__: " + ", ".join(obsolete)
+        )
+    data = copy.deepcopy(raw)
+    data.setdefault("state_dir", nyanpasu_home())
+    for name, value in os.environ.items():
+        if not name.startswith("NYANPASU__"):
+            continue
+        path = name.removeprefix("NYANPASU__").lower().split("__")
+        if any(not part for part in path) or path[0] == "state_dir":
+            raise ValueError(f"invalid configuration environment key: {name}")
+        try:
+            parsed = tomllib.loads(f"value = {value}")["value"]
+        except tomllib.TOMLDecodeError:
+            parsed = value
+        if path[0] == "backends" and "backends" not in data:
+            data["backends"] = {"codex": {"driver": "codex"}, "claude": {"driver": "claude-code"}}
+        target = data
+        for part in path[:-1]:
+            target = target.setdefault(part, {})
+            if not isinstance(target, dict):
+                raise ValueError(f"configuration environment path crosses a value: {name}")
+        target[path[-1]] = parsed
     return data
-
-
-def _as_str_tuple(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return tuple(item.strip() for item in value.split(",") if item.strip())
-    if isinstance(value, list | tuple):
-        return tuple(str(item) for item in value)
-    raise ValueError("expected a string or list of strings")
