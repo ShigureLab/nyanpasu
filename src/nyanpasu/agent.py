@@ -925,6 +925,7 @@ class AgentService:
             same_input = checkpoint is not None and checkpoint.input_digest == digest
             cursor = checkpoint.cursor if same_input else 0
             previous = checkpoint if same_input else None
+            processed_sources = {item["reference"] for chunk in chunks[:cursor] for item in chunk}
             for index in range(cursor, len(chunks)):
                 result = await backend.run_turn(
                     cwd=cwd,
@@ -938,9 +939,7 @@ class AgentService:
                 if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                     raise asyncio.CancelledError
                 output = SourceSummaryOutput.model_validate_json(result.final_message)
-                permitted = {item["reference"] for item in chunks[index]} | set(previous.sources if previous else ())
-                if not set(output.sources) <= permitted:
-                    raise ValueError("source summary cites evidence not supplied to this extraction step")
+                processed_sources.update(item["reference"] for item in chunks[index])
                 checkpoint = await to_thread.run_sync(
                     functools.partial(
                         self.memory.checkpoint_source,
@@ -949,6 +948,7 @@ class AgentService:
                         input_digest=digest,
                         cursor=index + 1,
                         complete=index + 1 == len(chunks),
+                        sources=sorted(processed_sources),
                         expected_revision=checkpoint.revision if checkpoint is not None else None,
                         **output.model_dump(),
                     )

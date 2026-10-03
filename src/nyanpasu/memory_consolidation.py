@@ -24,7 +24,6 @@ class SourceSummaryOutput(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     body: str = Field(max_length=16_000)
     topics: list[Topic] = Field(max_length=32)
-    sources: list[Reference] = Field(max_length=128)
 
     @field_validator("title", "body")
     @classmethod
@@ -120,12 +119,16 @@ def extraction_prompt(source_id: str, previous: Any, chunk: list[dict[str, Any]]
             "title": previous.title,
             "body": previous.body,
             "topics": list(previous.topics),
-            "sources": list(previous.sources),
         }
         if previous is not None
         else None
     )
-    material = {"source_task_id": source_id, "previous_account": account, "final_chunk": final, "evidence": chunk}
+    material = {
+        "source_task_id": source_id,
+        "previous_account": account,
+        "final_chunk": final,
+        "evidence": [{key: value for key, value in item.items() if key != "reference"} for item in chunk],
+    }
     return """Write an updated source account from the previous account and this next ordered evidence chunk.
 Return only the JSON required by the output schema. This is background memory work;
 do not run tools, edit files, contact anyone, or continue the source task.
@@ -139,9 +142,9 @@ plans, interpretations and success claims are not evidence of user approval or o
 execution. Distinguish actual tool results from assistant proposals. Memory retrieved
 by the source task is background material, not new independent evidence.
 
-Use a concise title and a Markdown body of at most 16000 characters. Keep source
-references only from the previous account or the supplied evidence. Do not invent
-identifiers, broaden the audience, or copy secrets. Topics are retrieval labels.
+Use a concise title and a Markdown body of at most 16000 characters. Topics are
+retrieval labels. Return only title, body, and topics; the service records input
+provenance separately. Do not invent identifiers, broaden the audience, or copy secrets.
 An empty body is valid when nothing merits retention. Intermediate accounts are
 private checkpoints; the service publishes only after all chunks are processed.
 

@@ -8,16 +8,18 @@ Session transcripts and tool results remain the evidence for what happened. A su
 
 A successful root `run` with a configured contribution audience starts this pipeline:
 
-1. `memory_extraction` reads only the native turns bound to the completed source task. It processes evidence in source order, in bounded chunks, supplying the previous account with each chunk. The model returns a structured source summary; it does not call a memory write tool.
+1. `memory_extraction` reads only the native turns bound to the completed source task. It processes evidence in source order, in bounded chunks, supplying the previous account with each chunk. The model returns only a title, Markdown body, and topics; it does not select source references or call a memory write tool.
 2. The service validates each result and saves a checkpoint. The source task has a stable identity within its audience. Retrying resumes the committed input digest and cursor instead of adding another source. A partial replacement does not displace the last published account; an empty completed account records a no-content result without creating a searchable entry.
 3. After extraction completes, `memory_consolidation` reads source accounts from that contribution audience and updates its navigation. Large inputs are folded in bounded batches. The published document remains unchanged until all batches pass validation.
 4. The service validates the final navigation's size, source identities, and source revisions, then publishes it atomically. A model's statement that it saved something is never the commit boundary.
+
+The service records source references from every processed evidence chunk. These references identify the input material supplied to extraction, not individual citations proving each summary claim. On resume, the service reconstructs them from the processed input prefix instead of relying on references selected by an earlier model response. The model does not receive stored `sources` lists or evidence `reference` metadata.
 
 Both stages are ordinary tasks with frozen backend/model/reasoning settings, native history, status, and errors in the Dashboard. Completion and follow-up admission use the existing durable task queue. A failed navigation task retains the successfully extracted source. Interrupted extraction resumes its checkpoint; a failed task is visible for operator retry rather than silently marked successful. Waiting tasks, children, and memory tasks do not recursively initiate another extraction pipeline.
 
 Task IDs beginning with `memory:` are reserved for service-created maintenance. Ordinary tasks cannot claim these IDs; source IDs are hashed for generated extraction IDs so names containing `:navigation` cannot collide with another source's navigation task.
 
-Background models receive service-selected evidence and no task-control capability. The service validates and publishes their structured proposals. Structured output checks protect the format and references; they do not establish that every model interpretation is correct. Extraction instructions require confirmed decisions or actual tool evidence, retain applicability and uncertainty, and reject unsupported assistant claims.
+Background models receive service-selected evidence and no task-control capability. The service validates and publishes their structured proposals. Structured output checks protect the summary format and navigation references; they do not establish that every model interpretation is correct. Extraction instructions require confirmed decisions or actual tool evidence, retain applicability and uncertainty, and reject unsupported assistant claims.
 
 ## Retrying failed maintenance
 

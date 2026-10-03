@@ -8,8 +8,8 @@ import json
 import pytest
 
 from nyanpasu.memory import MemoryAccess, MemoryDenied, MemoryNotFound, MemoryService
-from nyanpasu.memory_consolidation import BLOCK_LIMIT, EVIDENCE_BUDGET, MEMORY_TASK_KINDS
-from nyanpasu.models import TaskStatus
+from nyanpasu.memory_consolidation import BLOCK_LIMIT, EVIDENCE_BUDGET, MEMORY_TASK_KINDS, input_digest
+from nyanpasu.models import TaskRunResult, TaskStatus
 from nyanpasu.task_control import MEMORY_NAVIGATION_BUDGET, call_control, navigation_context
 from tests.session_source import MemorySessionSource, tool, turn
 from tests.test_agent import FakeCodex
@@ -41,12 +41,11 @@ class MemoryModel(FakeCodex):
             return result.model_copy(update={"final_message": self.responses[number]})
         if extraction:
             previous = material["previous_account"] or {}
-            references = sorted(set(previous.get("sources", [])) | {item["reference"] for item in material["evidence"]})
+            snippets = [item["text"][:64] for item in material["evidence"]]
             output = {
                 "title": "Source task history",
-                "body": "Retained evidence: " + ", ".join(references),
+                "body": previous.get("body", "") + "\n" + "\n".join(snippets),
                 "topics": ["testing"],
-                "sources": references,
             }
         else:
             references = sorted(
@@ -127,7 +126,7 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
             checkpoint = agent.memory.source_state(access, "root")
             assert checkpoint is not None and checkpoint.complete
             recalled = agent.memory.read(access, checkpoint.id)
-            assert "verified-build" in recalled.body
+            assert "Build exited successfully" in recalled.body
             assert agent.memory.list_navigation(access)[-1].sources == (recalled.id,)
             assert {entry.task_id for entry in agent.store.recent_tasks()} == {
                 "root",
@@ -179,7 +178,7 @@ async def test_extraction_retains_ordered_bound_evidence_and_resumes_committed_c
         # The last verified evidence survives even after processing many earlier chunks.
         saved = agent.memory.source_state(ALICE, "source")
         assert saved is not None and saved.complete and saved.cursor > 2
-        assert "proof-0" in saved.body and "proof-5" in saved.body
+        assert "piece-0" in saved.body and "piece-5" in saved.body
         assert saved.id == checkpoint.id
         assert len(agent.memory.list_sources(ALICE)) == 1
     finally:
@@ -205,6 +204,98 @@ async def test_invalid_model_output_never_commits_a_source(tmp_path, response):
         assert agent.store.task_status("source") == "completed"
         assert agent.memory.source_state(PUBLIC, "source") is None
         assert agent.store.task_status(f"{SOURCE_EXTRACTION_ID}:navigation") is None
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_service_preserves_all_input_references_without_model_copying(tmp_path):
+    model = MemoryModel()
+    long_id = "call_4600894c412c44868c8833f3"
+    paths = "/workspace/review-output.md and /workspace/scope-review.md"
+    records = [tool(long_id, f"Read {paths}")]
+    records += [tool(f"call-{index}", f"Verified result {index}") for index in range(130)]
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", *records)]),
+    )
+    # The model can retain paths and even imperfect identifiers in prose; source
+    # metadata must come from the input records, not text it happens to produce.
+    prose = f"Read {paths}; the assistant mentioned call_4600894c412c44868c8833f."
+    model.responses[1] = json.dumps({"title": "Review history", "body": prose, "topics": ["review"]})
+    try:
+        await agent.run_now(task("source", memory=ALICE))
+        assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
+        saved = agent.memory.source_state(ALICE, "source")
+        assert saved is not None and saved.complete
+        expected = {f"codex:codex-session:turn-1:call-{index}" for index in range(130)}
+        expected |= {f"codex:codex-session:turn-1:{long_id}", "task:source"}
+        assert set(saved.sources) == expected
+        assert paths in saved.body
+        assert all(
+            "reference" not in item
+            for kind, material in model.events
+            if kind == "extraction"
+            for item in material["evidence"]
+        )
+        assert all(
+            "sources" not in (material["previous_account"] or {})
+            for kind, material in model.events
+            if kind == "extraction"
+        )
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_resume_reconstructs_provenance_missing_from_prior_checkpoint(tmp_path):
+    model = MemoryModel()
+    records = [tool(f"call-{index}", f"piece-{index}:" + "x" * 40_000) for index in range(8)]
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", *records)]),
+    )
+    request = agent._admit(task("source", memory=ALICE))
+    agent.store.record_task(request)
+    agent.store.bind_task_execution(request.task_id, "codex-session", "turn-1", "codex")
+    agent.store.mark_task_done(
+        TaskRunResult(
+            task_id=request.task_id,
+            status=TaskStatus.COMPLETED,
+            backend="codex",
+            thread_id="codex-session",
+            turn_id="turn-1",
+            final_message="done",
+        )
+    )
+    try:
+        chunks = await agent._source_chunks(request)
+        assert len(chunks) > 5
+        checkpoint = agent.memory.checkpoint_source(
+            ALICE,
+            request.task_id,
+            input_digest=input_digest({"format": 1, "chunks": chunks}),
+            cursor=5,
+            complete=False,
+            title="Earlier partial account",
+            body="Already processed five chunks",
+            topics=["review"],
+            sources=[],
+        )
+        assert checkpoint.sources == ("task:source",)
+        retry = await agent.rebuild_memory(request.task_id)
+        assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
+        extraction = [material for kind, material in model.events if kind == "extraction"]
+        assert len(extraction) == len(chunks) - 5
+        assert extraction[0]["previous_account"]["body"] == checkpoint.body
+        assert extraction[0]["evidence"][0]["text"] == chunks[5][0]["text"]
+        saved = agent.memory.source_state(ALICE, request.task_id)
+        assert saved is not None and saved.complete and saved.cursor == len(chunks)
+        assert set(saved.sources) == {"task:source"} | {
+            f"codex:codex-session:turn-1:call-{index}" for index in range(8)
+        }
     finally:
         await agent.shutdown()
 
