@@ -13,7 +13,7 @@ from loguru import logger
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
 from nyanpasu.migration import migrate_state as migrate_state_file
-from nyanpasu.models import AgentTask
+from nyanpasu.models import AgentTask, TaskStatus
 from nyanpasu.store import StateStore
 from nyanpasu.targets import ExecutionOverride
 from nyanpasu.task_control import call_control
@@ -142,6 +142,27 @@ def migrate_state(
         )
     except (ValueError, OSError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command()
+def memory_rebuild(source_task_id: str) -> None:
+    """Retry background memory for a completed task and wait for publication."""
+    configure_logging()
+    resolved = load_config()
+    ensure_state_dirs(resolved)
+
+    async def run() -> None:
+        agent = AgentService(resolved)
+        try:
+            task = await agent.rebuild_memory(source_task_id)
+            result = await agent.wait_for_memory(task.task_id)
+            typer.echo(result.model_dump_json())
+            if result.status is not TaskStatus.COMPLETED:
+                raise typer.Exit(1)
+        finally:
+            await agent.shutdown()
+
+    anyio.run(run)
 
 
 @app.command()

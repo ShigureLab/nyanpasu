@@ -86,9 +86,9 @@ async def test_root_completion_and_memory_admission_commit_or_rollback_together(
     )
     try:
         with sqlite3.connect(config.db_path) as conn:
-            conn.executescript("""
+            conn.executescript(f"""
                 CREATE TRIGGER reject_memory BEFORE INSERT ON task_runs
-                WHEN NEW.task_id = 'memory:root'
+                WHEN NEW.task_id = '{followup.task_id}'
                 BEGIN SELECT RAISE(ABORT, 'injected persistence failure'); END;
             """)
         with pytest.raises(sqlite3.IntegrityError, match="injected persistence failure"):

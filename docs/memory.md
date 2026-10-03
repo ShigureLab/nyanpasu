@@ -15,7 +15,19 @@ A successful root `run` with a configured contribution audience starts this pipe
 
 Both stages are ordinary tasks with frozen backend/model/reasoning settings, native history, status, and errors in the Dashboard. Completion and follow-up admission use the existing durable task queue. A failed navigation task retains the successfully extracted source. Interrupted extraction resumes its checkpoint; a failed task is visible for operator retry rather than silently marked successful. Waiting tasks, children, and memory tasks do not recursively initiate another extraction pipeline.
 
+Task IDs beginning with `memory:` are reserved for service-created maintenance. Ordinary tasks cannot claim these IDs; source IDs are hashed for generated extraction IDs so names containing `:navigation` cannot collide with another source's navigation task.
+
 Background models receive service-selected evidence and no task-control capability. The service validates and publishes their structured proposals. Structured output checks protect the format and references; they do not establish that every model interpretation is correct. Extraction instructions require confirmed decisions or actual tool evidence, retain applicability and uncertainty, and reject unsupported assistant claims.
+
+## Retrying failed maintenance
+
+To retry memory for a completed source task, including a failed navigation stage:
+
+```bash
+uv run nyanpasu memory-rebuild SOURCE_TASK_ID
+```
+
+The command records a new maintenance attempt and waits for its final stage. A completed extraction checkpoint skips extraction and rebuilds navigation only. Previous failed task records remain visible; the command exits unsuccessfully if publication fails.
 
 ## Storage and retrieval
 

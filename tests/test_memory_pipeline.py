@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 
 import pytest
@@ -13,6 +14,9 @@ from nyanpasu.task_control import MEMORY_NAVIGATION_BUDGET, call_control, naviga
 from tests.session_source import MemorySessionSource, tool, turn
 from tests.test_agent import FakeCodex
 from tests.test_hybrid_memory import ALICE, BOB, PUBLIC, config_for, make_agent, task
+
+ROOT_EXTRACTION_ID = f"memory:{hashlib.sha256(b'root').hexdigest()}"
+SOURCE_EXTRACTION_ID = f"memory:{hashlib.sha256(b'source').hexdigest()}"
 
 
 class MemoryModel(FakeCodex):
@@ -110,10 +114,10 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
         completed = await agent.run_now(task("root", kind="review", memory=access))
         assert completed.status is TaskStatus.COMPLETED
         if maintained:
-            last = await agent.wait_for_memory("memory:root")
+            last = await agent.wait_for_memory(ROOT_EXTRACTION_ID)
             assert last.status is TaskStatus.COMPLETED and last.kind == "memory_consolidation"
             assert [kind for kind, _ in model.events] == ["extraction", "navigation"]
-            extraction = agent.store.task_request("memory:root")
+            extraction = agent.store.task_request(ROOT_EXTRACTION_ID)
             assert extraction.memory == MemoryAccess((access.write_domain,), access.write_domain)
             assert extraction.execution is not None
             assert extraction.execution.backend == "cheap"
@@ -127,11 +131,11 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
             assert agent.memory.list_navigation(access)[-1].sources == (recalled.id,)
             assert {entry.task_id for entry in agent.store.recent_tasks()} == {
                 "root",
-                "memory:root",
-                "memory:root:navigation",
+                ROOT_EXTRACTION_ID,
+                f"{ROOT_EXTRACTION_ID}:navigation",
             }
         else:
-            assert agent.store.task_status("memory:root") is None
+            assert agent.store.task_status(ROOT_EXTRACTION_ID) is None
             assert model.events == []
         assert controls == ["root"]
         assert agent.store.unfinished_tasks() == []
@@ -151,7 +155,7 @@ async def test_extraction_retains_ordered_bound_evidence_and_resumes_committed_c
     agent = make_agent(config, cheap=model, source=source)
     try:
         await agent.run_now(task("source", memory=ALICE))
-        failed = await agent.wait_for_memory("memory:source")
+        failed = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert failed.status is TaskStatus.FAILED
         checkpoint = agent.memory.source_state(ALICE, "source")
         assert checkpoint is not None
@@ -196,11 +200,11 @@ async def test_invalid_model_output_never_commits_a_source(tmp_path, response):
     )
     try:
         await agent.run_now(task("source"))
-        result = await agent.wait_for_memory("memory:source")
+        result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert result.status is TaskStatus.FAILED
         assert agent.store.task_status("source") == "completed"
         assert agent.memory.source_state(PUBLIC, "source") is None
-        assert agent.store.task_status("memory:source:navigation") is None
+        assert agent.store.task_status(f"{SOURCE_EXTRACTION_ID}:navigation") is None
     finally:
         await agent.shutdown()
 
@@ -218,7 +222,7 @@ async def test_navigation_failure_retries_only_navigation_and_preserves_prior_su
     prior = publish_navigation(agent.memory, PUBLIC, f"[Older task](memory:{old.id})")
     try:
         await agent.run_now(task("source"))
-        failed = await agent.wait_for_memory("memory:source")
+        failed = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert failed.kind == "memory_consolidation" and failed.status is TaskStatus.FAILED
         unchanged = agent.memory.list_navigation(PUBLIC)[0]
         assert unchanged.revision == prior.revision and unchanged.stale
@@ -238,15 +242,27 @@ async def test_navigation_failure_retries_only_navigation_and_preserves_prior_su
 
 
 @pytest.mark.anyio
-async def test_restart_after_source_commit_recovers_without_regeneration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_id", [False, True])
+async def test_restart_after_source_commit_recovers_without_regeneration(tmp_path, monkeypatch, legacy_id):
     config = config_for(tmp_path, consolidate=True)
     model = MemoryModel()
     source = MemorySessionSource([turn("turn-1", tool("proof", "verified result"))])
     agent = make_agent(config, cheap=model, source=source)
     original_done = agent.store.mark_task_done
+    extraction_id = "memory:source" if legacy_id else SOURCE_EXTRACTION_ID
+    if legacy_id:
+        original_followup = agent._memory_followup
+
+        def legacy_followup(task):
+            followup = original_followup(task)
+            if followup is not None and followup.kind == "memory_extraction":
+                return followup.model_copy(update={"task_id": extraction_id})
+            return followup
+
+        monkeypatch.setattr(agent, "_memory_followup", legacy_followup)
 
     def stop_after_commit(result, **kwargs):
-        if result.task_id == "memory:source":
+        if result.task_id == extraction_id:
             raise asyncio.CancelledError
         return original_done(result, **kwargs)
 
@@ -255,7 +271,7 @@ async def test_restart_after_source_commit_recovers_without_regeneration(tmp_pat
         await agent.run_now(task("source"))
         for _ in range(200):
             checkpoint = agent.memory.source_state(PUBLIC, "source")
-            if checkpoint is not None and checkpoint.complete and agent.store.task_status("memory:source") == "queued":
+            if checkpoint is not None and checkpoint.complete and agent.store.task_status(extraction_id) == "queued":
                 break
             await asyncio.sleep(0.01)
         else:
@@ -266,7 +282,9 @@ async def test_restart_after_source_commit_recovers_without_regeneration(tmp_pat
     recovered = make_agent(config, cheap=model, source=source)
     try:
         await recovered.startup()
-        assert (await recovered.wait_for_memory("memory:source")).status is TaskStatus.COMPLETED
+        last = await recovered.wait_for_memory(extraction_id)
+        assert last.status is TaskStatus.COMPLETED
+        assert last.task_id == f"{extraction_id}:navigation"
         assert [kind for kind, _ in model.events] == ["extraction", "navigation"]
         assert len(recovered.memory.list_sources(PUBLIC)) == 1
     finally:
@@ -319,6 +337,50 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
         assert len(rendered) <= MEMORY_NAVIGATION_BUDGET
         assert {entry["domain"] for entry in json.loads(rendered)} == set(ALICE.read_domains)
         assert len(MemoryService(agent.config.memory_dir).list_sources(ALICE)) == 2
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["submit", "run_now"])
+async def test_ordinary_admission_cannot_claim_generated_memory_task_ids(tmp_path, operation):
+    model = FakeCodex()
+    agent = make_agent(config_for(tmp_path), codex=model)
+    claimed_id = "memory:source:navigation"
+    try:
+        with pytest.raises(MemoryDenied, match="reserved"):
+            await getattr(agent, operation)(task(claimed_id, memory=MemoryAccess()))
+        assert agent.store.task_status(claimed_id) is None
+        assert model.calls == []
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_source_names_cannot_collide_with_another_sources_navigation(tmp_path):
+    model = MemoryModel()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", tool("proof", "verified result"))]),
+    )
+    jobs = set()
+    try:
+        for source_id in ("source", "source:navigation"):
+            await agent.run_now(task(source_id))
+            extractions = [
+                item
+                for item in agent.store.recent_tasks()
+                if item.kind == "memory_extraction"
+                and agent.store.task_request(item.task_id).metadata["memory_source_task_id"] == source_id
+            ]
+            assert len(extractions) == 1
+            last = await agent.wait_for_memory(extractions[0].task_id)
+            assert last.status is TaskStatus.COMPLETED and last.kind == "memory_consolidation"
+            jobs.update((extractions[0].task_id, last.task_id))
+        assert len(jobs) == 4
+        assert {source.task_id for source in agent.memory.list_sources(PUBLIC)} == {"source", "source:navigation"}
+        assert [kind for kind, _ in model.events] == ["extraction", "navigation", "extraction", "navigation"]
     finally:
         await agent.shutdown()
 
@@ -420,7 +482,7 @@ async def test_navigation_consumes_the_whole_domain_in_bounded_batches(tmp_path)
     hidden = publish_source(agent.memory, PUBLIC, "outside-domain", body="PUBLIC HISTORY OUTSIDE MAINTENANCE DOMAIN")
     try:
         await agent.run_now(task("source", memory=ALICE))
-        assert (await agent.wait_for_memory("memory:source")).status is TaskStatus.COMPLETED
+        assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         batches = [material["source_accounts"] for kind, material in model.events if kind == "navigation"]
         assert len(batches) > 1
         seen = [source["id"] for batch in batches for source in batch]

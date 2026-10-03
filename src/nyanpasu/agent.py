@@ -215,8 +215,10 @@ class AgentService:
         self._post_process_hooks.setdefault(plugin_id, []).append(hook)
 
     def _admit(self, task: AgentTask, *, memory_job: bool = False) -> AgentTask:
-        if task.kind in MEMORY_TASK_KINDS and not memory_job:
-            raise MemoryDenied("memory task kinds are reserved for service-created background jobs")
+        if not memory_job and (task.kind in MEMORY_TASK_KINDS or task.task_id.startswith("memory:")):
+            raise MemoryDenied(
+                "memory task kinds and memory: task IDs are reserved for service-created background jobs"
+            )
         access = task.memory if self.config.memory.enabled else MemoryAccess()
         if any(domain != "public" for domain in access.read_domains) and self.config.server.token is None:
             raise ValueError("non-public memory requires authenticated service endpoints")
@@ -752,7 +754,12 @@ class AgentService:
                 task_id=f"{task.task_id}:navigation",
                 kind="memory_consolidation",
             )
-        return self._memory_task(task.task_id, domain, task_id=f"memory:{task.task_id}", kind="memory_extraction")
+        return self._memory_task(
+            task.task_id,
+            domain,
+            task_id=f"memory:{hashlib.sha256(task.task_id.encode()).hexdigest()}",
+            kind="memory_extraction",
+        )
 
     async def rebuild_memory(self, source_task_id: str) -> AgentTask:
         """Explicitly retry maintenance, preserving failed attempts and committed checkpoints."""
