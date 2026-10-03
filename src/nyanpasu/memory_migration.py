@@ -51,7 +51,7 @@ def migrate_memory(source: Path, destination: Path) -> dict[str, int]:
                 document = (
                     "Imported legacy memory; not independently reverified.\n\n"
                     "Original metadata:\n```json\n"
-                    + json.dumps(metadata, ensure_ascii=False, indent=2)
+                    + json.dumps(metadata, ensure_ascii=True, indent=2)
                     + "\n```\n\nOriginal content:\n"
                     + body
                 )

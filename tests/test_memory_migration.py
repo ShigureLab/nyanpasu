@@ -13,19 +13,20 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def legacy_note(root: Path, domain: str, note_id: str, body: str, *, title: str = "Earlier memory") -> Path:
+def legacy_note(root: Path, domain: str, note_id: str, body: str, **metadata_overrides: Any) -> Path:
     directory = root / hashlib.sha256(domain.encode()).hexdigest()
     (directory / "objects").mkdir(parents=True, exist_ok=True)
     metadata = {
         "id": note_id,
         "key": "legacy-fact",
-        "title": title,
+        "title": "Earlier memory",
         "topics": ["runtime"],
         "applies_to": ["repository:Example", "version:1"],
         "sources": ["task:original"],
         "updated_at": "2026-10-01T00:00:00+00:00",
         "merged_from": [],
     }
+    metadata.update(metadata_overrides)
     raw = ("---\n" + json.dumps(metadata) + "\n---\n\n" + body + "\n").encode()
     filename = f"{note_id}-{hashlib.sha256(raw).hexdigest()}.md"
     (directory / "objects" / filename).write_bytes(raw)
@@ -83,6 +84,26 @@ def test_import_normalizes_display_title_without_changing_legacy_evidence(tmp_pa
     metadata = json.loads(source.body.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert metadata["title"] == "Alpha\rBeta"
     assert f"Original content:\n{body}\n" in source.body
+    assert before == {
+        str(path.relative_to(original)): path.read_bytes() for path in original.rglob("*") if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+@pytest.mark.parametrize("field", ["title", "topics", "applies_to", "sources"])
+def test_import_preserves_unicode_line_separators_in_legacy_metadata(tmp_path, field, separator):
+    original, destination = tmp_path / "old", tmp_path / "new"
+    value = f"alpha{separator}beta"
+    legacy_note(original, "public", "1" * 32, "Original content.", **{field: value if field == "title" else [value]})
+    before = {str(path.relative_to(original)): path.read_bytes() for path in original.rglob("*") if path.is_file()}
+    raw = next(original.rglob("objects/*.md")).read_text()
+    original_metadata = json.loads(raw.removeprefix("---\n").split("\n---\n\n", 1)[0])
+
+    migrate_memory(original, destination)
+
+    [source] = MemoryService(destination).list_sources(MemoryAccess(("public",)))
+    imported_metadata = json.loads(source.body.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert imported_metadata == original_metadata
     assert before == {
         str(path.relative_to(original)): path.read_bytes() for path in original.rglob("*") if path.is_file()
     }
