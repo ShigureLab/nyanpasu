@@ -181,7 +181,15 @@ Old `[codex]`, `[claude]`, `runtime.backend`, `enabled_plugins`, and direct `plu
    | `NYANPASU_PLUGINS`                 | `NYANPASU__PLUGINS__ENABLED`, using a TOML array                            |
    | `NYANPASU_CODEX_BIN`               | `NYANPASU__BACKENDS__CODEX__PROCESS__COMMAND`, using the full command array |
 
-4. With the new configuration and environment installed, use `explain-target` to inspect routing. Run `uv run nyanpasu migrate-state "$NYANPASU_HOME/state.sqlite3"` against the stopped, backed-up state. Migration records historical native-home mappings and clears active context thread bindings; future work starts fresh isolated native sessions. Old conversations remain available through their historical references, provided their original native history files remain available.
+4. With the new configuration and environment installed, use `explain-target` to inspect routing. Migrate the stopped, backed-up state with explicit historical directories:
+
+   ```bash
+   uv run nyanpasu migrate-state "$NYANPASU_HOME/state.sqlite3" \
+     --native-home "codex=$HOME/.codex" \
+     --native-home "claude=$HOME/.claude"
+   ```
+
+   Supply each historical backend's actual history directory. A wrapper's configuration directory may link to history elsewhere; use the directory containing the real `projects` or `sessions` tree. Reader access is confined to that native directory by default; `--isolated-home backend=/absolute/path` explicitly changes its boundary when required. Migration clears active context thread bindings, so future work starts fresh isolated native sessions. Old conversations remain available through their historical references while their history files are retained.
 5. Restart, verify authentication and `/health`, inspect Runtime and the task queue, and run a bounded task through each configured driver.
 
 The configuration converter does not alter native CLI settings or import personal native memories into the shared corpus. Review task evidence through the normal [memory workflow](memory.md) before storing reusable knowledge.
