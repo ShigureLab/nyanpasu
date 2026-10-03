@@ -82,7 +82,7 @@ async def test_task_titles_agree_across_dashboard_tasks_sessions_and_tree(tmp_pa
 
 
 @pytest.mark.anyio
-async def test_sessions_sort_and_show_latest_native_activity_before_pagination(tmp_path: Path):
+async def test_session_list_uses_persisted_activity_and_reads_native_metadata_only_in_details(tmp_path: Path):
     config = NyanpasuConfig(state_dir=tmp_path / "state")
     state = StateStore(config.db_path)
     for index, backend in enumerate(("claude", "codex"), start=1):
@@ -116,26 +116,32 @@ async def test_sessions_sort_and_show_latest_native_activity_before_pagination(t
             assert "runtime" not in page["items"][0]
             return page["items"][0]
 
-        assert (await first_session())["session_id"] == SESSION
-        # New content in the older session, without a scheduler or task status update.
+        first = await first_session()
+        assert first["session_id"] == SESSION
+        assert datetime.fromisoformat(first["updated_at"]).timestamp() == 2
+        assert codex.calls == []
+        # Native-only activity does not open every historical profile or reorder the list.
         data.append(
             {**data[-1], "uuid": "new-message", "parentUuid": "claude-final", "timestamp": "2026-09-14T08:00:08+08:00"}
         )
         write_session(home, data)
-        latest = await first_session()
-        assert latest["session_id"] == "claude:" + SESSION
-        assert latest["updated_at"] == "2026-09-14T00:00:08+00:00"
-        detail = (await client.get("/api/sessions/" + latest["session_id"])).json()
-        assert detail["updated_at"] == latest["updated_at"]
+        codex.metadata["updatedAt"] = codex_time + 1
+        assert await first_session() == first
+        assert codex.calls == []
+        second = (await client.get("/api/sessions?offset=1&limit=1")).json()["items"][0]
+        assert second["session_id"] == "claude:" + SESSION
+        assert datetime.fromisoformat(second["updated_at"]).timestamp() == 1
+
+        detail = (await client.get("/api/sessions/" + second["session_id"])).json()
+        assert detail["updated_at"] == "2026-09-14T00:00:08+00:00"
         assert detail["runtime"]["backend"] == "claude"
         assert "history_error" not in detail
-        assert (await client.get("/api/sessions?offset=1&limit=1")).json()["items"][0]["session_id"] == SESSION
-
-        codex.metadata["updatedAt"] = codex_time + 1
-        latest = await first_session()
-        assert latest["session_id"] == SESSION
-        assert latest["updated_at"] == "2026-09-14T00:00:08.250000+00:00"
-        assert all(method == "read" for method, _, _ in codex.calls)
+        assert codex.calls == []
+        detail = (await client.get("/api/sessions/" + SESSION)).json()
+        assert detail["updated_at"] == "2026-09-14T00:00:08.250000+00:00"
+        assert codex.calls == [("read", SESSION, None)]
+        assert await first_session() == first
+        assert codex.calls == [("read", SESSION, None)]
 
         # A later task transition still counts, and missing history keeps task metadata visible.
         state.mark_task_failed("claude", "interrupted")

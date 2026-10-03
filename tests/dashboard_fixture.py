@@ -42,7 +42,7 @@ def fixture_app():
         action=TaskAction.RUN,
         prompt="Inspect session transcript rendering",
         metadata={"request": {"title": "Trace a running agent session"}},
-        memory=MemoryAccess(("public", "private:fixture")),
+        memory=MemoryAccess(("public", "private:fixture") if token else ("public",)),
     )
     state.record_task(task)
     state.mark_task_done(

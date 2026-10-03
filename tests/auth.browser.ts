@@ -120,3 +120,48 @@ test('temporary API failures preserve the dashboard shell and saved token', asyn
     await sidebar!.evaluate((element) => element === document.querySelector('.session-index')),
   ).toBe(true);
 });
+
+test('memory search shows merge evidence and only task-authorized private knowledge', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?view=memory');
+  await page.getByLabel('Access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
+  await expect(page.getByLabel('Memory topic').locator('option')).not.toContainText([
+    'private-topic',
+  ]);
+  await page.getByLabel('Memory topic').selectOption('python');
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  const note = page.getByRole('article', { name: 'Memory details' });
+  await expect(note).toContainText('repository:Relax');
+  await expect(note).toContainText('Use pytest and shared fixtures.');
+  await expect(note.getByRole('region', { name: 'Merged memories' }).locator('li')).toHaveCount(1);
+  await expect(
+    note
+      .locator('dl > div')
+      .filter({ has: page.getByText('Revision', { exact: true }) })
+      .locator('code'),
+  ).toHaveText(/^[a-f0-9]{64}$/);
+  await note.getByRole('button', { name: 'task:fixture-task', exact: true }).click();
+  await expect(page).toHaveURL(/task=fixture-task/);
+  await page.getByRole('button', { name: 'Inspect task memory', exact: false }).click();
+  await page.getByLabel('Memory topic').selectOption('private-topic');
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  await expect(note).toContainText("fixture task's private audience");
+  await page.getByRole('button', { name: 'Public memory', exact: true }).click();
+  await expect(page.locator('.memory-row')).toHaveCount(2);
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
+  await expect(note).not.toContainText("fixture task's private audience");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel('Search memory').fill('leases');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  await expect(note).toContainText('Check active task leases.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});

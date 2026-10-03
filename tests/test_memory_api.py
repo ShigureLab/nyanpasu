@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
-from nyanpasu.config import NyanpasuConfig
+from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.memory import MemoryAccess, MemoryService
 from nyanpasu.models import AgentTask, TaskAction
 from nyanpasu.plugins import PluginRegistry
@@ -26,7 +27,7 @@ def write_note(service, domain, key, *, topics=(), body=None):
 
 @pytest.mark.anyio
 async def test_memory_api_uses_public_or_persisted_task_capability(tmp_path):
-    config = NyanpasuConfig(state_dir=tmp_path)
+    config = NyanpasuConfig(state_dir=tmp_path, server=ServerConfig(token=SecretStr("operator-token")))
     memory = MemoryService(config.memory_dir)
     public = write_note(memory, "public", "public-guidance", topics=("tests",))
     own = write_note(memory, "private:alice", "alice-guidance", topics=("alice-topic",))
@@ -44,7 +45,9 @@ async def test_memory_api_uses_public_or_persisted_task_capability(tmp_path):
             )
         )
     app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
-    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test", headers={"Authorization": "Bearer operator-token"}
+    ) as client:
         # Domain/owner input is not an authorization surface, even with a valid note ID.
         page = (await client.get("/api/memory?domain=private:alice&owner=alice")).json()
         assert [note["id"] for note in page["items"]] == [public.id]

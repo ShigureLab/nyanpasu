@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from nyanpasu.config import NyanpasuConfig, ServerConfig
-from nyanpasu.models import AgentContext, AgentTask, TaskAction
+from nyanpasu.config import MemoryConfig, NyanpasuConfig, ServerConfig
+from nyanpasu.memory import MemoryAccess
+from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
-
-if TYPE_CHECKING:
-    from nyanpasu.models import TaskRunResult
 
 
 class FakeAgent:
@@ -216,3 +214,35 @@ async def test_runtime_exposes_configured_model_and_effort(tmp_path) -> None:
     )
     assert set(data["backends"]) == {"codex", "cheap"}
     assert data["backends"]["cheap"]["driver"] == "claude-code"
+
+
+@pytest.mark.parametrize("domain", ["private:alice", "shared:team"])
+@pytest.mark.parametrize("memory_enabled", [True, False])
+def test_tokenless_reopen_rejects_non_public_history_even_with_memory_disabled(tmp_path, domain, memory_enabled):
+    config = NyanpasuConfig(state_dir=tmp_path, server=ServerConfig(token=SecretStr("operator-token")))
+    store = StateStore(config.db_path)
+    store.record_task(
+        AgentTask(
+            task_id="historical-private-task",
+            context_key="private",
+            action=TaskAction.RUN,
+            prompt="private historical request",
+            execution=config.resolve_execution(),
+            memory=MemoryAccess(("public", domain)),
+        )
+    )
+    store.mark_task_done(
+        TaskRunResult(
+            task_id="historical-private-task",
+            status=TaskStatus.COMPLETED,
+            thread_id="private-session",
+            turn_id="private-turn",
+            final_message="private result",
+        )
+    )
+    # Authenticated operators can still reopen historical state.
+    create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
+    reopened = config.model_copy(update={"server": ServerConfig(), "memory": MemoryConfig(enabled=memory_enabled)})
+    # Refuse the whole application: task inputs and transcripts are private too.
+    with pytest.raises(ValueError, match="non-public history requires"):
+        create_app(reopened, agent=FakeAgent(), plugin_registry=PluginRegistry())

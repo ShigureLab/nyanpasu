@@ -157,13 +157,14 @@ class TranscriptReader:
         latest = next(task for task in reversed(tasks) if not task["coalesced_into"])
         updated_at = max(task["updated_at"] for task in tasks)
         runtime: dict[str, Any] = {"runtime": None}
-        try:
-            metadata = await self.sources(latest["session_backend"]).read_metadata(latest["session_thread_id"])
-            if metadata.updated_at is not None:
-                updated_at = max(updated_at, datetime.fromisoformat(metadata.updated_at).timestamp())
-            runtime["runtime"] = redact(metadata.model_dump())
-        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            runtime["history_error"] = str(exc)
+        if include_runtime:
+            try:
+                metadata = await self.sources(latest["session_backend"]).read_metadata(latest["session_thread_id"])
+                if metadata.updated_at is not None:
+                    updated_at = max(updated_at, datetime.fromisoformat(metadata.updated_at).timestamp())
+                runtime["runtime"] = redact(metadata.model_dump())
+            except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                runtime["history_error"] = str(exc)
         return {
             **task_execution(json.loads(latest["task_json"])),
             "session_id": session_id,
