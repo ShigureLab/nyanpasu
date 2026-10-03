@@ -1,6 +1,12 @@
-# Nyanpasu
+<p align="center">
+  <img src="frontend/dashboard/public/logo.png" alt="Nyanpasu logo" width="128" height="128" />
+</p>
 
-Nyanpasu is a plugin-oriented agent service. The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses native agent sessions per context, records state in SQLite, and runs the selected agent with explicit runtime settings.
+<h1 align="center">Nyanpasu</h1>
+
+<p align="center">A plugin-oriented agent service.</p>
+
+The core runtime is deliberately generic: it accepts events from plugins, turns them into `AgentTask` objects, prepares one reusable workspace per context, reuses native agent sessions per context, records state in SQLite, and runs the selected agent with explicit runtime settings.
 
 GitHub PR review is implemented by the `nyanpasu-github-reviewer` plugin, not by the core package. Shared GitHub helpers live in `nyanpasu-github` so GitHub-facing plugins can reuse repo config, workspace refs, webhook signatures, and agent task helpers without coupling those features to the core runtime.
 

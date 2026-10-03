@@ -150,6 +150,10 @@ small {
   background: var(--surface);
 }
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
   font-weight: 700;
   font-size: 18px;
   color: var(--text);
@@ -158,9 +162,10 @@ small {
   margin-right: 24px;
   white-space: nowrap;
 }
-.brand span {
-  color: var(--accent);
-  margin-right: 5px;
+.brand img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
 }
 .topbar nav {
   display: flex;
@@ -1128,6 +1133,10 @@ dd code {
   }
   .brand {
     font-size: 15px;
+  }
+  .brand img {
+    width: 30px;
+    height: 30px;
   }
   .topbar nav button {
     padding: 12px 6px;

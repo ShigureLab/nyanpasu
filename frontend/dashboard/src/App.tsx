@@ -92,7 +92,8 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="?view=sessions">
-          <span aria-hidden="true">✳</span> Nyanpasu
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" width="36" height="36" />
+          Nyanpasu
         </a>
         <nav aria-label="Main navigation">
           {['sessions', 'tasks', 'memory', 'plugins', 'runtime'].map((item) => (
