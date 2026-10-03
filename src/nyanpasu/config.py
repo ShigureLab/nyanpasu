@@ -123,7 +123,7 @@ class NativeHomeConfig(BaseModel):
     @classmethod
     def _relative_directory(cls, value: Path) -> Path:
         if value.is_absolute() or not value.parts or ".." in value.parts:
-            raise ValueError("native_directory must be a nonempty path within the isolated home")
+            raise ValueError("native_directory must be a nonempty path within the context home")
         return value
 
 
@@ -198,11 +198,6 @@ class MemoryConfig(BaseModel):
     max_notes_per_search: int = Field(default=10, ge=1, le=100)
 
 
-class IsolationConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    readonly_paths: tuple[Path, ...] = ()
-
-
 class ServerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
@@ -238,7 +233,6 @@ class NyanpasuConfig(BaseModel):
     tasks: TasksConfig = Field(default_factory=TasksConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
-    isolation: IsolationConfig = Field(default_factory=IsolationConfig)
     integrations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
 

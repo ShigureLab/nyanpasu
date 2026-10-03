@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import shutil
 import sqlite3
-import subprocess
 
 import pytest
 from typer.testing import CliRunner
 
 from nyanpasu.__main__ import app
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.isolation import ExecutionIsolation
 from nyanpasu.migration import migrate_state
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
@@ -173,33 +169,3 @@ def test_migration_cli_uses_explicit_paths_without_loading_execution_config(tmp_
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["tasks"] == 1
     assert StateStore(path).native_home("codex", "session").isolated_home == native
-
-
-def test_migrated_codex_native_directory_is_a_complete_tight_boundary(tmp_path):
-    if shutil.which("bwrap") is None:
-        pytest.skip("bubblewrap is not installed on this test host")
-    path = tmp_path / "state.db"
-    old_state(path)
-    native = tmp_path / "operator" / ".codex"
-    native.mkdir(parents=True)
-    (native / "allowed-history").write_text("native session")
-    private = native.parent / "private-memory"
-    private.write_text("must remain outside history reader")
-    migrate_state(path, native_homes={"codex": native}, isolated_homes={"codex": native})
-    location = StateStore(path).native_home("codex", "session")
-    workspace = tmp_path / "history-helper"
-    workspace.mkdir()
-    script = f"""
-import os, pathlib
-home = pathlib.Path(os.environ['CODEX_HOME'])
-assert home == pathlib.Path(os.environ['HOME'])
-assert (home / 'allowed-history').read_text() == 'native session'
-assert not pathlib.Path({str(private)!r}).exists()
-"""
-    command, env = ExecutionIsolation(home=location.isolated_home).wrap(
-        ["/usr/bin/python3", "-c", script],
-        cwd=workspace,
-        env={"PATH": os.defpath, "CODEX_HOME": str(location.native_home)},
-    )
-    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
-    assert result.returncode == 0, result.stderr

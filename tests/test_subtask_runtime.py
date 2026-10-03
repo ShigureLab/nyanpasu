@@ -188,7 +188,6 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
 @pytest.mark.anyio
 async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(tmp_path, monkeypatch):
     import shlex
-    import sys
     from pathlib import Path
 
     from nyanpasu.task_control import call_control
@@ -211,14 +210,11 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
         await agent.submit(_task("parent"))
         await started.wait()
         command = next(line for line in backend.instructions[0].splitlines() if line.startswith("Pipe a JSON"))
-        control = Path(shlex.split(command.split("request to: ")[1])[-2])
+        argv = shlex.split(command.split("request to: ")[1])
+        control = Path(argv[-2])
         capability = json.loads(control.read_text())
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "nyanpasu.task_control",
-            str(control),
-            "-",
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
         )

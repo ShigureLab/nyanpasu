@@ -13,6 +13,7 @@ from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
+from nyanpasu.native_home import native_env
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,14 +32,12 @@ class CodexSessionSource(Protocol):
 
 
 class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig, name: str = "codex", *, isolation=None, cwd: Path | None = None) -> None:
+    def __init__(self, config: NyanpasuConfig, name: str = "codex", *, home: Path | None = None) -> None:
         configured = config.backends[name]
         if not isinstance(configured, CodexBackendConfig):
             raise ValueError(f"backend {name} is not a Codex backend")
         self.config = configured
-        self._env = MappingProxyType(safe_codex_env(config, name))
-        self._isolation = isolation
-        self._cwd = cwd
+        self._env = MappingProxyType(safe_codex_env(config, name, home=home))
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -189,16 +188,12 @@ class CodexAppServerBackend:
                 "--listen",
                 "stdio://",
             ]
-            env = self._env
-            if self._isolation is not None:
-                argv, env = self._isolation.wrap(argv, cwd=self._cwd, env=env)
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=self._cwd,
+                env=self._env,
                 limit=SUBPROCESS_BUFFER_LIMIT,
                 start_new_session=os.name == "posix",
             )
@@ -435,5 +430,5 @@ class CodexAppServerBackend:
         self._fail_pending(RuntimeError("codex app-server closed"))
 
 
-def safe_codex_env(config: NyanpasuConfig, name: str = "codex") -> dict[str, str]:
-    return process_env(config.backends[name].process, cwd=config.state_dir, backend="codex")
+def safe_codex_env(config: NyanpasuConfig, name: str = "codex", *, home: Path | None = None) -> dict[str, str]:
+    return native_env(process_env(config.backends[name].process, cwd=config.state_dir, backend="codex"), home=home)

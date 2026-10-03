@@ -1,6 +1,6 @@
 # Configuration and execution targets
 
-Nyanpasu reads `$NYANPASU_HOME/config.toml`; `NYANPASU_HOME` defaults to `~/.nyanpasu`. Configuration, SQLite state, managed workspaces, isolated native homes, and memory live below that directory. `state_dir` is not configurable in TOML.
+Nyanpasu reads `$NYANPASU_HOME/config.toml`; `NYANPASU_HOME` defaults to `~/.nyanpasu`. Configuration, SQLite state, managed workspaces, separate native homes, and memory live below that directory. `state_dir` is not configurable in TOML.
 
 Start from [examples/config.toml](../examples/config.toml). The configuration separates responsibilities:
 
@@ -8,14 +8,13 @@ Start from [examples/config.toml](../examples/config.toml). The configuration se
 | -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | `backends.<name>.driver`   | Native adapter                                               | `codex` or `claude-code`; explicitly declare it for a configured backend |
 | `backends.<name>.process`  | Literal command, environment, and forwarded variables        | Driver command; empty `env` and `pass_env`                               |
-| `backends.<name>.home`     | Isolated native directory and optional curated home template | Driver directory; no template                                            |
+| `backends.<name>.home`     | Separate native directory and optional curated home template | Driver directory; no template                                            |
 | `backends.<name>.defaults` | Backend's model and reasoning preferences                    | Both unspecified                                                         |
 | `backends.<name>.options`  | Adapter-specific permission and protocol settings            | See below                                                                |
 | `tasks.defaults.execution` | Default task target                                          | `backend = "codex"`                                                      |
 | `tasks.defaults.limits`    | Default execution limits                                     | `turn_timeout_seconds = 3600`                                            |
 | `tasks.kinds.<kind>`       | Execution and limits for one task kind                       | Inherit applicable defaults                                              |
 | `runtime`                  | Scheduling and workspace cleanup                             | Four root slots; 600-second coalescing window                            |
-| `isolation.readonly_paths` | Explicit read-only grants for required tools and resources   | Empty                                                                    |
 | `memory`                   | Shared memory availability and consolidation                 | Enabled; consolidation enabled; at most 10 search results                |
 | `plugins.enabled`          | Plugins to start                                             | Empty                                                                    |
 | `plugins.settings.<id>`    | One plugin's configuration                                   | Empty                                                                    |
@@ -132,13 +131,15 @@ export NYANPASU__PLUGINS__ENABLED='["github_reviewer"]'
 
 Structural names are case-insensitive in the override path. A child-process environment key preserves its spelling: `NYANPASU__BACKENDS__CODEX__PROCESS__ENV__GH_PROMPT_DISABLED='"1"'` sets `GH_PROMPT_DISABLED`, not a lowercase variable. `NYANPASU_HOME` remains the dedicated home-directory setting. Old configuration environment variables are rejected, including `NYANPASU_TOKEN`; this prevents an obsolete authentication override from being silently ignored.
 
-## Linux execution isolation
+## Native session homes
 
-All execution backends require Linux and [bubblewrap](../DEPENDENCIES/bubblewrap.md), including Claude Code. Each context/backend/memory-audience combination gets its own native home. Native config and authentication are seeded separately from personal memories and conversation history. Nyanpasu disables Codex native memory and Claude auto-memory only for its worker processes; it does not modify the operator's normal CLI settings.
+Remove the former `[isolation]` table from existing configurations. Nyanpasu launches backend processes directly and no longer adds an outer filesystem sandbox.
 
-`backends.<name>.home.native_directory` locates native CLI state relative to the isolated `HOME`; defaults are `.codex` and `.claude`. It must stay within that home. Wrappers that hardcode another location need an explicit relative path, for example `.cc-mirror/codewiz-cc/config`.
+Each context/backend/memory-audience combination gets its own native home. Native config and authentication are seeded separately from personal memories and conversation history. Nyanpasu disables Codex native memory and Claude auto-memory only for its worker processes; it does not modify the operator's normal CLI settings.
 
-`backends.<name>.home.template` optionally points to an administrator-curated home tree containing only the configuration, authentication, and skills needed by that backend. Its layout is relative to `HOME`, including the selected native directory and any wrapper-specific files. Templates must contain real files and directories; symbolic links are rejected. A template supplies the complete seed and is not supplemented from the operator’s home. Never point it at a full personal home or copy personal memories, conversation histories, or the service's administrative credentials into it. Without a template, Nyanpasu seeds only the driver's supported configuration and authentication files. Existing isolated files are retained, including refreshed credentials; template changes require a fresh context or an explicit maintenance procedure.
+`backends.<name>.home.native_directory` locates native CLI state relative to the context `HOME`; defaults are `.codex` and `.claude`. It must stay within that home. Wrappers that hardcode another location need an explicit relative path, for example `.cc-mirror/codewiz-cc/config`.
+
+`backends.<name>.home.template` optionally points to an administrator-curated home tree containing only the configuration, authentication, and skills needed by that backend. Its layout is relative to `HOME`, including the selected native directory and any wrapper-specific files. Templates must contain real files and directories; symbolic links are rejected. A template supplies the complete seed and is not supplemented from the operator’s home. Never point it at a full personal home or copy personal memories, conversation histories, or the service's administrative credentials into it. Without a template, Nyanpasu seeds only the driver's supported configuration and authentication files. Existing context files are retained, including refreshed credentials; template changes require a fresh context or an explicit maintenance procedure.
 
 ```toml
 [backends.claude.home]
@@ -146,14 +147,7 @@ native_directory = ".claude"
 template = "/opt/nyanpasu-home-templates/claude"
 ```
 
-`isolation.readonly_paths` explicitly grants required executable, library, tool, and skill locations beyond the standard system directories. Grant the smallest relevant directories. Do not expose an entire user home, Nyanpasu state directory, another context's native home, or memory storage. A path grant makes files visible; the native CLI must also be configured to discover the intended skills and integrations.
-
-```toml
-[isolation]
-readonly_paths = ["/opt/nyanpasu-tools", "/opt/nyanpasu-skills"]
-```
-
-The workspace and isolated native home are writable; the task control capability is mounted for that turn. Networking remains available, so keep the service's administrative bearer token out of backend credentials and native configuration. Any non-public memory domain requires `server.token`; the service also refuses to expose existing non-public task history without authentication. A deployment must permit bubblewrap's namespaces and mounts; verify a real shell tool invocation under each configured driver before serving work.
+Keep the service's administrative bearer token out of backend credentials and native configuration. Non-public memory domains require `server.token`; the service also refuses to expose existing non-public task history without authentication. Memory permissions apply to service APIs and task-control requests. Backend processes run with the service user's filesystem access, subject to the native CLI's configured permissions.
 
 ## Migrating a previous installation
 
@@ -166,7 +160,7 @@ Old `[codex]`, `[claude]`, `runtime.backend`, `enabled_plugins`, and direct `plu
    uv run python scripts/migrate-config.py "$NYANPASU_HOME/config.toml" "$NYANPASU_HOME/config.next.toml"
    ```
 
-   The script never overwrites its destination and creates it with mode `0600`. It preserves the active backend's turn timeout. If an inactive backend had a different timeout, it reports that value so you can assign it to the appropriate task kinds. Inspect the generated file, prepare minimal native home templates where needed, add the required isolation paths, and replace the active configuration through your deployment procedure.
+   The script never overwrites its destination and creates it with mode `0600`. It preserves the active backend's turn timeout. If an inactive backend had a different timeout, it reports that value so you can assign it to the appropriate task kinds. Inspect the generated file, prepare minimal native home templates where needed, and replace the active configuration through your deployment procedure.
 
 3. Update the service environment. Common replacements are:
 
@@ -189,7 +183,7 @@ Old `[codex]`, `[claude]`, `runtime.backend`, `enabled_plugins`, and direct `plu
      --native-home "claude=$HOME/.claude"
    ```
 
-   Supply each historical backend's actual history directory. A wrapper's configuration directory may link to history elsewhere; use the directory containing the real `projects` or `sessions` tree. Reader access is confined to that native directory by default; `--isolated-home backend=/absolute/path` explicitly changes its boundary when required. Migration clears active context thread bindings, so future work starts fresh isolated native sessions. Old conversations remain available through their historical references while their history files are retained.
+   Supply each historical backend's actual history directory. A wrapper's configuration directory may link to history elsewhere; use the directory containing the real `projects` or `sessions` tree. Reader access is confined to that native directory by default; `--isolated-home backend=/absolute/path` explicitly changes its boundary when required. Migration clears active context thread bindings, so future work starts fresh native sessions. Old conversations remain available through their historical references while their history files are retained.
 
 5. Restart, verify authentication and `/health`, inspect Runtime and the task queue, and run a bounded task through each configured driver.
 

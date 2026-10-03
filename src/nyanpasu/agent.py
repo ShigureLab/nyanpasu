@@ -432,7 +432,6 @@ class AgentService:
         )
         if handoff_from is not None:
             prompt += await self._backend_handoff(handoff_from)
-        readable_artifacts = []
         if resumed := task.metadata.get("resumed_subtasks"):
             evidence = [
                 {
@@ -441,9 +440,6 @@ class AgentService:
                     "inputs": (await to_thread.run_sync(self.store.task_request, identity)).metadata.get("inputs"),
                 }
                 for identity in resumed
-            ]
-            readable_artifacts = [
-                Path(artifact["path"]) for item in evidence for artifact in (item["result"] or {}).get("artifacts", [])
             ]
             prompt += "\nSubtask results (verify evidence before using):\n" + json.dumps(evidence, ensure_ascii=False)
         if recovering:
@@ -479,8 +475,6 @@ class AgentService:
             if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 raise asyncio.CancelledError
 
-        from nyanpasu.isolation import ExecutionIsolation
-
         home_key = hashlib.sha256(json.dumps([task.context_key, backend_name, memory_key]).encode()).hexdigest()
         home = self.config.state_dir / "native" / home_key
         native_home = home / self.config.backends[backend_name].home.native_directory
@@ -495,17 +489,7 @@ class AgentService:
                     "native home configuration changed for this session; use its original configuration or a fresh context"
                 )
         async with self.control.turn(task.task_id) as control:
-            isolation = ExecutionIsolation(
-                home=home,
-                control_file=control.file,
-                control_socket=control.socket,
-                readonly_paths=(
-                    *self.config.isolation.readonly_paths,
-                    *readable_artifacts,
-                    *((event_worktree,) if event_worktree and event_worktree != context.session_worktree else ()),
-                ),
-            )
-            async with self.backends.turn(backend_name, isolation=isolation, cwd=context.session_worktree) as backend:
+            async with self.backends.turn(backend_name, home=home) as backend:
                 result = await backend.run_turn(
                     cwd=context.session_worktree,
                     prompt=prompt,

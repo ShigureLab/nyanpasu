@@ -43,7 +43,6 @@ class Completion(BaseModel):
 class TurnControl:
     prompt: str
     file: Path
-    socket: Path
 
 
 class TaskControl:
@@ -109,7 +108,7 @@ Cancel stops execution; retained workspaces and history are reclaimed by context
 Do not expose the control file or its contents, or include it in evidence. Only the root publishes externally.
 {memory_prompt}
 """
-            yield TurnControl(prompt, control, self.path)
+            yield TurnControl(prompt, control)
         finally:
             async with self._calls[token]:
                 self._tokens.pop(token, None)

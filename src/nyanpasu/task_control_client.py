@@ -6,11 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ISOLATED_PATH = Path("/run/nyanpasu-task-control.py")
-
 
 def command(control: Path) -> list[str]:
-    return [str(Path(sys.executable).resolve()), "-I", "-S", str(ISOLATED_PATH), str(control)]
+    return [str(Path(sys.executable).resolve()), "-I", "-S", str(Path(__file__).resolve()), str(control)]
 
 
 def call_control(control: Path, request: dict[str, Any]) -> dict[str, Any]:

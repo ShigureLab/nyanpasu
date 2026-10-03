@@ -11,6 +11,7 @@ from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, JsonProcessRunner
 from nyanpasu.models import RunResult
+from nyanpasu.native_home import native_env
 from nyanpasu.redaction import redact
 
 if TYPE_CHECKING:
@@ -48,13 +49,12 @@ def auto_review_failure(event: dict) -> str | None:
 class ClaudeBackend:
     """One print-mode process per turn; Claude owns persistence and resume."""
 
-    def __init__(self, config: NyanpasuConfig, name: str = "claude", *, isolation=None):
+    def __init__(self, config: NyanpasuConfig, name: str = "claude", *, home: Path | None = None):
         configured = config.backends[name]
         if not isinstance(configured, ClaudeBackendConfig):
             raise ValueError(f"backend {name} is not a Claude Code backend")
         self.config = configured
-        self._isolation = isolation
-        env = process_env(configured.process, cwd=config.state_dir, backend="claude-code")
+        env = native_env(process_env(configured.process, cwd=config.state_dir, backend="claude-code"), home=home)
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         self.env = MappingProxyType(env)
         self._runner = JsonProcessRunner()
@@ -232,14 +232,11 @@ class ClaudeBackend:
             settings=settings,
             fallbacks=fallbacks,
         )
-        env = self.env
-        if self._isolation is not None:
-            argv, env = self._isolation.wrap(argv, cwd=cwd, env=env)
         try:
             returncode, stderr = await self._runner.run(
                 argv,
                 cwd=cwd,
-                env=env,
+                env=self.env,
                 timeout=timeout,
                 input_text=json.dumps(
                     {

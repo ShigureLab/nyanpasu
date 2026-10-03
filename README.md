@@ -20,7 +20,7 @@ Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh
 
 ## Configuration
 
-Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, isolated native homes, and memory live below the same directory. `state_dir` is not a TOML option.
+Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, separate native homes, and memory live below the same directory. `state_dir` is not a TOML option.
 
 Backends have names and separate process settings, model defaults, and adapter options. Tasks select a backend independently, so Codex and Claude can run in the same service. Plugin activation lives under `plugins.enabled`, with plugin configuration under `plugins.settings.<id>`.
 
@@ -66,13 +66,13 @@ local_path = "/path/to/repo"
 base_branches = ["main"]
 ```
 
-Use the [complete example](examples/config.toml) and [configuration reference](docs/configuration.md) for credentials, environment commands, isolation paths, per-field defaults, and migration from the old layout. Old `[codex]`, `[claude]`, `runtime.backend`, and flat environment overrides require explicit migration.
+Use the [complete example](examples/config.toml) and [configuration reference](docs/configuration.md) for credentials, environment commands, native homes, per-field defaults, and migration from the old layout. Old `[codex]`, `[claude]`, `runtime.backend`, and flat environment overrides require explicit migration.
 
 Instruction documents such as `SOUL.md` and `AGENTS.md` remain task-scoped. Plugins attach them to a task; the runtime supplies them to that task's native session. Integration credentials under `integrations.github` serve plugin-side API calls. Agent-side GitHub commands also need credentials in the selected backend's `process.env` or `process.pass_env`.
 
 ## Runtime configuration
 
-All backends require Linux and [bubblewrap](DEPENDENCIES/bubblewrap.md). Each context has an isolated native home, with explicit read-only grants for the required tools and skills. Both native automatic memory systems are disabled for Nyanpasu workers; normal interactive CLI settings remain unchanged.
+Each context has a separate native home for backend configuration and session history. Both native automatic memory systems are disabled for Nyanpasu workers; normal interactive CLI settings remain unchanged.
 
 At admission, the service resolves and records a task's backend, model, reasoning, and timeout. Request overrides take precedence over kind-specific settings and defaults. A backend switch excludes model/reasoning settings belonging to other backend names. Queued and interrupted tasks retain their admitted target across configuration changes and resume their original native session and workspace. Newly admitted work uses the new settings. After an unclean exit, recovery waits for any remaining context lease to expire. Completed and failed tasks are not retried, and tasks from disabled plugins remain queued.
 

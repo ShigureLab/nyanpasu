@@ -54,7 +54,7 @@ write_domain = "private:engineering"
 
 To disable memory for a repository, supply its `.memory` table with `read_domains = []` and omit `write_domain`. To disable it service-wide, set `memory.enabled = false`. Setting `memory.consolidate = false` disables automatic maintenance tasks while retaining permitted interactive reads and writes.
 
-Audience capabilities are enforced at the service boundary, and native sessions are separated when the audience changes. All backends also use the [Linux execution isolation](configuration.md#linux-execution-isolation) boundary. Network access remains available; administrative service credentials must not be exposed to a worker.
+Audience capabilities are enforced at the service boundary, and native sessions are separated when the audience changes. These checks apply to service APIs and task-control requests; backend processes retain the service user's filesystem access. Administrative service credentials must not be exposed to a worker.
 
 ## Task operations
 

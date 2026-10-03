@@ -83,12 +83,6 @@ backend = "claude"
 [tasks.kinds.memory_consolidation.limits]
 turn_timeout_seconds = 900
 
-[isolation]
-# Every backend requires Linux and /usr/bin/bwrap. Grant only required tool/skill
-# directories outside the standard system directories. Never grant all of HOME.
-# readonly_paths = ["/opt/nyanpasu-tools", "/opt/nyanpasu-skills"]
-readonly_paths = []
-
 [memory]
 enabled = true
 consolidate = true

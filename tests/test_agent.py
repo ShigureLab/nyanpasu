@@ -47,7 +47,6 @@ class FakeCodex:
         prompt: str,
         thread_id: str | None,
         execution: ExecutionTarget,
-        isolation=None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult:
@@ -128,7 +127,6 @@ class SlowCodex(FakeCodex):
         prompt: str,
         thread_id: str | None,
         execution: ExecutionTarget,
-        isolation=None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult:
@@ -142,7 +140,6 @@ class SlowCodex(FakeCodex):
             prompt=prompt,
             thread_id=thread_id,
             execution=execution,
-            isolation=isolation,
             developer_instructions=developer_instructions,
             on_started=on_started,
         )
@@ -160,7 +157,6 @@ class CancellableCodex(FakeCodex):
         prompt: str,
         thread_id: str | None,
         execution: ExecutionTarget,
-        isolation=None,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
     ) -> RunResult:
