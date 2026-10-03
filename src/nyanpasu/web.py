@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Protocol
@@ -197,7 +198,7 @@ def memory_router(config: NyanpasuConfig, reader: TranscriptReader, memory: Memo
             row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "Task not found")
-        return AgentTask.model_validate_json(row["task_json"]).memory
+        return AgentTask.model_validate(json.loads(row["task_json"])).memory
 
     @router.get("", response_model=MemoryPage)
     def search_memory(

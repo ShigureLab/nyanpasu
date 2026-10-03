@@ -6,7 +6,7 @@ from pydantic import SecretStr
 
 from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.memory import MemoryAccess, MemoryService
-from nyanpasu.models import AgentTask, TaskAction
+from nyanpasu.models import AgentTask, TaskAction, WorkspaceRef
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
@@ -41,7 +41,8 @@ def publish_navigation(service, domain, *, body=None):
 
 
 @pytest.mark.anyio
-async def test_memory_api_scopes_sources_and_navigation_to_persisted_task_capability(tmp_path):
+@pytest.mark.parametrize("with_workspace", [False, True], ids=["no-workspace", "workspace"])
+async def test_memory_api_scopes_sources_and_navigation_to_persisted_task_capability(tmp_path, with_workspace):
     config = NyanpasuConfig(state_dir=tmp_path, server=ServerConfig(token=SecretStr("operator-token")))
     memory = MemoryService(config.memory_dir)
     public = publish_source(memory, "public", "public-guidance", topics=("tests",))
@@ -51,6 +52,11 @@ async def test_memory_api_scopes_sources_and_navigation_to_persisted_task_capabi
     own_navigation = publish_navigation(memory, "private:alice", body="ALICE_PRIVATE_NAVIGATION")
     other_navigation = publish_navigation(memory, "private:bob", body="BOB_PRIVATE_NAVIGATION")
     store = StateStore(config.db_path)
+    workspace = None
+    if with_workspace:
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir()
+        workspace = WorkspaceRef(key="checkout", local_path=workspace_path)
     for task_id, access in [("private-task", MemoryAccess(("public", "private:alice"))), ("no-memory", MemoryAccess())]:
         store.record_task(
             AgentTask(
@@ -60,11 +66,14 @@ async def test_memory_api_scopes_sources_and_navigation_to_persisted_task_capabi
                 prompt="Inspect source summaries",
                 execution=config.resolve_execution(),
                 memory=access,
+                workspace=workspace,
             )
         )
     app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
     async with AsyncClient(
-        transport=ASGITransport(app), base_url="http://test", headers={"Authorization": "Bearer operator-token"}
+        transport=ASGITransport(app, raise_app_exceptions=False),
+        base_url="http://test",
+        headers={"Authorization": "Bearer operator-token"},
     ) as client:
         assert (await client.get("/api/memory", headers={"Authorization": ""})).status_code == 401
         # User-controlled domain/owner values cannot grant access to either document type.
@@ -83,6 +92,7 @@ async def test_memory_api_scopes_sources_and_navigation_to_persisted_task_capabi
         for source in (own, other):
             assert (await client.get(f"/api/memory/{source.id}?domain={source.domain}")).status_code == 404
         authorized = await client.get("/api/memory?task_id=private-task")
+        assert authorized.status_code == 200
         assert {source["id"] for source in authorized.json()["items"]} == {public.id, own.id}
         assert {navigation["id"] for navigation in authorized.json()["navigation"]} == {
             public_navigation.id,
