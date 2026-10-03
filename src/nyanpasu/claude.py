@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from nyanpasu.config import ClaudeBackendConfig, ModelSettings
@@ -73,6 +73,7 @@ class ClaudeBackend:
         instructions: str,
         settings: ModelSettings,
         fallbacks: tuple[FallbackModel, ...],
+        output_schema: dict[str, Any] | None = None,
     ) -> list[str]:
         options = self.config.options
         argv = [
@@ -111,6 +112,8 @@ class ClaudeBackend:
             argv.extend(["--allowedTools", ",".join(options.allowed_tools)])
         if instructions:
             argv.extend(["--append-system-prompt", instructions])
+        if output_schema is not None:
+            argv.extend(["--json-schema", json.dumps(output_schema)])
         return argv
 
     async def run_turn(
@@ -122,6 +125,7 @@ class ClaudeBackend:
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         choices = (
             ModelSettings(model=execution.model, reasoning=execution.reasoning),
@@ -149,6 +153,7 @@ class ClaudeBackend:
                     settings=settings,
                     fallbacks=self.config.options.fallback_models[index:],
                     timeout=execution.turn_timeout_seconds,
+                    output_schema=output_schema,
                 )
             except AutoReviewUnavailable as exc:
                 # Changing generation models cannot recover a pinned classifier.
@@ -188,6 +193,7 @@ class ClaudeBackend:
         settings: ModelSettings,
         fallbacks: tuple[FallbackModel, ...],
         timeout: int,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         session_id = str(UUID(thread_id)) if thread_id else str(uuid4())
         # The input message UUID is persisted by Claude, so task links survive restarts.
@@ -231,6 +237,7 @@ class ClaudeBackend:
             instructions=developer_instructions,
             settings=settings,
             fallbacks=fallbacks,
+            output_schema=output_schema,
         )
         try:
             returncode, stderr = await self._runner.run(
@@ -260,9 +267,15 @@ class ClaudeBackend:
         if returncode or result.get("is_error") or result.get("subtype") != "success":
             reason = result.get("result") or "; ".join(result.get("errors", [])) or stderr or result.get("subtype")
             raise RuntimeError(f"Claude run failed: {redact(reason)}")
-        if not isinstance(result.get("result"), str):
+        if output_schema is not None:
+            if "structured_output" not in result:
+                raise RuntimeError("Claude success result is missing its structured output")
+            final_message = json.dumps(result["structured_output"], ensure_ascii=False)
+        elif not isinstance(result.get("result"), str):
             raise RuntimeError("Claude success result is missing its message")
-        return RunResult(thread_id=session_id, turn_id=turn_id, final_message=result["result"])
+        else:
+            final_message = result["result"]
+        return RunResult(thread_id=session_id, turn_id=turn_id, final_message=final_message)
 
     async def cleanup_thread(self, thread_id: str) -> None:
         # There is no archive RPC. Keep Claude's history available after task cleanup.

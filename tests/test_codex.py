@@ -193,6 +193,30 @@ def test_app_server_server_requests_are_answered_for_daemon_mode(tmp_path: Path)
     ]
 
 
+def test_structured_output_schema_reaches_codex_turn(tmp_path: Path) -> None:
+    backend = RecordingAppServerBackend(NyanpasuConfig(state_dir=tmp_path / "state"))
+    schema = {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+
+    async def run():
+        backend._completed_turns[("thread-1", "turn-1")] = {
+            "threadId": "thread-1",
+            "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": '{"summary":"verified"}'}]},
+        }
+        return await backend.run_turn(
+            execution=_target(backend), cwd=tmp_path, prompt="extract", thread_id=None, output_schema=schema
+        )
+
+    result = asyncio.run(run())
+    assert backend.requests[1][1]["outputSchema"] == schema
+    assert "outputSchema" not in backend.requests[0][1]
+    assert result.final_message == '{"summary":"verified"}'
+
+
 class RecordingAppServerBackend(CodexAppServerBackend):
     def __init__(self, config: NyanpasuConfig) -> None:
         super().__init__(config)

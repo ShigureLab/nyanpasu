@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -49,6 +49,7 @@ class FakeCodex:
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         self.executions.append(execution)
         self.prompts.append(prompt)
@@ -129,6 +130,7 @@ class SlowCodex(FakeCodex):
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         if not self.calls:
             self.started.set()
@@ -142,6 +144,7 @@ class SlowCodex(FakeCodex):
             execution=execution,
             developer_instructions=developer_instructions,
             on_started=on_started,
+            output_schema=output_schema,
         )
 
 
@@ -159,6 +162,7 @@ class CancellableCodex(FakeCodex):
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         _ = cwd, prompt, thread_id
         self.started.set()

@@ -132,6 +132,40 @@ AUTO_REVIEW_ERROR = (
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("structured", [True, False])
+async def test_structured_output_uses_validated_result_field(configured, tmp_path, process, structured):
+    schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+
+    async def respond(argv, *, input_text, received, **kwargs):
+        message = json.loads(input_text)
+        event = {
+            "type": "result",
+            "subtype": "success",
+            "session_id": message["session_id"],
+            "is_error": False,
+            "result": "A summary was generated.",
+        }
+        if structured:
+            event["structured_output"] = {"summary": "Verified evidence."}
+        await received(event)
+        return 0, ""
+
+    process.side_effect = respond
+    backend = ClaudeBackend(configured)
+    invocation = backend.run_turn(
+        execution=_target(backend), cwd=tmp_path, prompt="extract", thread_id=None, output_schema=schema
+    )
+    if structured:
+        result = await invocation
+        assert json.loads(result.final_message) == {"summary": "Verified evidence."}
+    else:
+        with pytest.raises(RuntimeError, match="missing its structured output"):
+            await invocation
+    argv = process.call_args.args[0]
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == schema
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("backup_effort", ["high", None])
 async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per_model_effort(
     tmp_path, process, backup_effort

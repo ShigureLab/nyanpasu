@@ -64,6 +64,7 @@ class CodexAppServerBackend:
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult:
         key: tuple[str, str] | None = None
         try:
@@ -97,6 +98,7 @@ class CodexAppServerBackend:
                         "sandboxPolicy": self._sandbox_policy(cwd),
                         "model": execution.model,
                         "effort": execution.reasoning,
+                        **({"outputSchema": output_schema} if output_schema is not None else {}),
                     },
                 )
             )

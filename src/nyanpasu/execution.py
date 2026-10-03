@@ -31,6 +31,7 @@ class ExecutionBackend(Protocol):
         execution: ExecutionTarget,
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> RunResult: ...
 
     async def cleanup_thread(self, thread_id: str) -> None: ...
