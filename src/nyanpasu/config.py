@@ -13,6 +13,8 @@ from nyanpasu.targets import ExecutionOverride, ExecutionTarget
 
 DEFAULT_HOME = Path("~/.nyanpasu")
 CONFIG_FILE_NAME = "config.toml"
+CODEX_COMMAND = ("codex",)
+CLAUDE_COMMAND = ("claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off")
 
 
 class EnvCommand(BaseModel):
@@ -115,25 +117,35 @@ class CodexBackendConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     driver: Literal["codex"] = "codex"
-    process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(command=("codex",)))
+    process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(command=CODEX_COMMAND))
     defaults: ModelSettings = Field(default_factory=ModelSettings)
     options: CodexOptions = Field(default_factory=CodexOptions)
+
+    @field_validator("process", mode="before")
+    @classmethod
+    def _process_defaults(cls, value: Any) -> Any:
+        return {"command": CODEX_COMMAND, **value} if isinstance(value, dict) else value
 
 
 class ClaudeBackendConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     driver: Literal["claude-code"] = "claude-code"
-    process: ProcessConfig = Field(
-        default_factory=lambda: ProcessConfig(
-            command=("claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off")
-        )
-    )
+    process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(command=CLAUDE_COMMAND))
     defaults: ModelSettings = Field(default_factory=ModelSettings)
     options: ClaudeOptions = Field(default_factory=ClaudeOptions)
 
+    @field_validator("process", mode="before")
+    @classmethod
+    def _process_defaults(cls, value: Any) -> Any:
+        return {"command": CLAUDE_COMMAND, **value} if isinstance(value, dict) else value
+
 
 BackendConfig = Annotated[CodexBackendConfig | ClaudeBackendConfig, Field(discriminator="driver")]
+
+
+def default_backends() -> dict[str, BackendConfig]:
+    return {"codex": CodexBackendConfig(), "claude": ClaudeBackendConfig()}
 
 
 class TaskLimits(BaseModel):
@@ -201,12 +213,7 @@ class NyanpasuConfig(BaseModel):
 
     state_dir: Path = Field(default_factory=lambda: nyanpasu_home())
     server: ServerConfig = Field(default_factory=ServerConfig)
-    backends: dict[str, BackendConfig] = Field(
-        default_factory=lambda: {
-            "codex": CodexBackendConfig(),
-            "claude": ClaudeBackendConfig(),
-        }
-    )
+    backends: dict[str, BackendConfig] = Field(default_factory=default_backends)
     tasks: TasksConfig = Field(default_factory=TasksConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
@@ -350,7 +357,10 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
     for name, value in os.environ.items():
         if not name.startswith("NYANPASU__"):
             continue
-        path = name.removeprefix("NYANPASU__").lower().split("__")
+        parts = name.removeprefix("NYANPASU__").split("__")
+        path = [part.lower() for part in parts]
+        if len(path) >= 5 and path[0] == "backends" and path[2:4] == ["process", "env"]:
+            path[4] = parts[4]  # Child process environment names are case-sensitive.
         if any(not part for part in path) or path[0] == "state_dir":
             raise ValueError(f"invalid configuration environment key: {name}")
         try:
@@ -358,7 +368,7 @@ def _merge_env(raw: dict[str, Any]) -> dict[str, Any]:
         except tomllib.TOMLDecodeError:
             parsed = value
         if path[0] == "backends" and "backends" not in data:
-            data["backends"] = {"codex": {"driver": "codex"}, "claude": {"driver": "claude-code"}}
+            data["backends"] = {name: {"driver": backend.driver} for name, backend in default_backends().items()}
         target = data
         for part in path[:-1]:
             target = target.setdefault(part, {})

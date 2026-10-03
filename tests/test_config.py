@@ -289,3 +289,24 @@ def test_compact_execution_target(value, expected):
 def test_compact_target_rejects_missing_and_ambiguous_fields(value):
     with pytest.raises(ValueError):
         ExecutionOverride.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    ("name", "driver", "command"),
+    [
+        ("codex", "codex", ("codex",)),
+        ("review", "claude-code", ("claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off")),
+    ],
+)
+def test_partial_process_configuration_preserves_driver_command_defaults(tmp_path, monkeypatch, name, driver, command):
+    monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        f'[backends.{name}]\ndriver = "{driver}"\n'
+        f'[backends.{name}.process]\npass_env = ["KEY"]\n'
+        f'[tasks.defaults.execution]\nbackend = "{name}"\n'
+    )
+    monkeypatch.setenv(f"NYANPASU__BACKENDS__{name.upper()}__PROCESS__ENV__KEY", "literal-secret")
+    configured = load_config().backends[name].process
+    assert configured.command == command
+    assert configured.pass_env == ("KEY",)
+    assert configured.env == {"KEY": "literal-secret"}
