@@ -118,6 +118,10 @@ def create_app(
     app.state.agent = resolved_agent
     runtime.app = app
     state_store = StateStore(resolved_config.db_path)
+    if resolved_config.server.token is None and state_store.has_restricted_memory():
+        raise ValueError("non-public history requires authenticated service endpoints")
+    if owned_backends is not None:
+        owned_backends.register_session_locator(state_store.native_home)
     reader = TranscriptReader(state_store.db_path, session_sources)
 
     protected = APIRouter(dependencies=[Depends(require_server_token)])

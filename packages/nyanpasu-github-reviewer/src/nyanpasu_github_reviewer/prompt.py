@@ -10,7 +10,7 @@ from nyanpasu_github_reviewer.models import ReviewTrigger
 from nyanpasu_github_reviewer.scope import review_source
 
 if TYPE_CHECKING:
-    from nyanpasu.config import ProcessConfig
+    from nyanpasu.targets import ExecutionTarget
     from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, ReviewEvent
 
 INSTRUCTIONS_DIR = Path(__file__).with_name("instructions")
@@ -58,7 +58,7 @@ def build_review_prompt(
     pr: PullRequestRef,
     worktree: str,
     *,
-    runtime: ProcessConfig,
+    runtime: ExecutionTarget,
     triggers: tuple[ReviewTrigger, ...],
     has_session: bool = False,
     previous_task_head: str | None = None,
@@ -93,9 +93,9 @@ def build_review_prompt(
     return "\n".join(lines) + "\n"
 
 
-def disclosure_footer(runtime: ProcessConfig) -> str:
+def disclosure_footer(runtime: ExecutionTarget) -> str:
     description = escape(
-        " ".join(value for value in (runtime.model or runtime.label, runtime.reasoning_effort) if value)
+        " ".join(value for value in (runtime.model or f"{runtime.backend} CLI default", runtime.reasoning) if value)
     )
     return (
         '<div align="right">\n'

@@ -48,11 +48,12 @@ def auto_review_failure(event: dict) -> str | None:
 class ClaudeBackend:
     """One print-mode process per turn; Claude owns persistence and resume."""
 
-    def __init__(self, config: NyanpasuConfig, name: str = "claude"):
+    def __init__(self, config: NyanpasuConfig, name: str = "claude", *, isolation=None):
         configured = config.backends[name]
         if not isinstance(configured, ClaudeBackendConfig):
             raise ValueError(f"backend {name} is not a Claude Code backend")
         self.config = configured
+        self._isolation = isolation
         env = process_env(configured.process, cwd=config.state_dir, backend="claude-code")
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         self.env = MappingProxyType(env)
@@ -224,17 +225,21 @@ class ClaudeBackend:
                 )
                 raise failure
 
+        argv = self._argv(
+            session_id,
+            resume=thread_id is not None,
+            instructions=developer_instructions,
+            settings=settings,
+            fallbacks=fallbacks,
+        )
+        env = self.env
+        if self._isolation is not None:
+            argv, env = self._isolation.wrap(argv, cwd=cwd, env=env)
         try:
             returncode, stderr = await self._runner.run(
-                self._argv(
-                    session_id,
-                    resume=thread_id is not None,
-                    instructions=developer_instructions,
-                    settings=settings,
-                    fallbacks=fallbacks,
-                ),
+                argv,
                 cwd=cwd,
-                env=self.env,
+                env=env,
                 timeout=timeout,
                 input_text=json.dumps(
                     {

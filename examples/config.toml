@@ -130,7 +130,7 @@ github_remote = "https://github.com/owner/repo.git"
 base_branches = ["main"]
 # Default access reads public + shared:github:owner/repo, writes only that shared
 # audience. Set memory = { read_domains = [] } here to disable memory for this repo.
-# Private audiences require server.token; see docs/memory.md before widening access.
+# Non-public audiences require server.token; see docs/memory.md before widening access.
 
 [[plugins.settings.github_reviewer.repos."owner/repo".instruction_docs]]
 name = "AGENTS.md"

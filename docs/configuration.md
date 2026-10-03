@@ -153,7 +153,7 @@ template = "/opt/nyanpasu-home-templates/claude"
 readonly_paths = ["/opt/nyanpasu-tools", "/opt/nyanpasu-skills"]
 ```
 
-The workspace and isolated native home are writable; the task control capability is mounted for that turn. Networking remains available, so keep the service's administrative bearer token out of backend credentials and native configuration. Private memory requires `server.token`. A deployment must permit bubblewrap's namespaces and mounts; verify a real shell tool invocation under each configured driver before serving work.
+The workspace and isolated native home are writable; the task control capability is mounted for that turn. Networking remains available, so keep the service's administrative bearer token out of backend credentials and native configuration. Any non-public memory domain requires `server.token`; the service also refuses to expose existing non-public task history without authentication. A deployment must permit bubblewrap's namespaces and mounts; verify a real shell tool invocation under each configured driver before serving work.
 
 ## Migrating a previous installation
 

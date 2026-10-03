@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import json
 import os
 import time
@@ -16,6 +17,7 @@ from loguru import logger
 
 from nyanpasu.backends import Backends
 from nyanpasu.git_ops import WorktreeManager
+from nyanpasu.memory import MemoryAccess, MemoryService
 from nyanpasu.models import (
     AgentContext,
     AgentTask,
@@ -56,6 +58,8 @@ class AgentService:
         self.store = store or StateStore(config.db_path)
         self.worktrees = worktrees or WorktreeManager(config)
         self.backends = backends or Backends(config)
+        self.backends.register_session_locator(self.store.native_home)
+        self.memory = MemoryService(config.state_dir / "memory")
         self.control = TaskControl(self)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
         self._context_locks: dict[str, asyncio.Lock] = {}
@@ -86,9 +90,6 @@ class AgentService:
                     )
                     continue
                 self._preparer_for(task)
-                await to_thread.run_sync(
-                    self.store.update_pending_task_backend, task.task_id, self.config.runtime.backend
-                )
                 self._schedule(task)
                 logger.info("task recovery scheduled task_id={} context={}", task.task_id, task.context_key)
 
@@ -133,6 +134,7 @@ class AgentService:
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
         async with self._submit_lock:
+            task = self._admit(task)
             logger.info(
                 "task submit received task_id={} action={} context={}",
                 task.task_id,
@@ -145,7 +147,6 @@ class AgentService:
                 functools.partial(
                     self.store.enqueue_task,
                     task,
-                    default_backend=self.config.runtime.backend,
                     coalesce_since=coalesce_since,
                 )
             )
@@ -177,15 +178,14 @@ class AgentService:
             return {"accepted": True, "task_id": task.task_id, "action": task.action.value}
 
     async def run_now(self, task: AgentTask) -> TaskRunResult:
+        task = self._admit(task)
         logger.info(
             "task run_now received task_id={} action={} context={}",
             task.task_id,
             task.action.value,
             task.context_key,
         )
-        is_new = await to_thread.run_sync(
-            functools.partial(self.store.record_task, task, default_backend=self.config.runtime.backend)
-        )
+        is_new = await to_thread.run_sync(self.store.record_task, task)
         if not is_new:
             logger.info("task run_now duplicate task_id={} key={}", task.task_id, task.key)
             raise ValueError(f"duplicate task id or dedupe key: {task.key}")
@@ -202,6 +202,17 @@ class AgentService:
 
     def add_post_process_hook(self, plugin_id: str, hook: PostProcessHook) -> None:
         self._post_process_hooks.setdefault(plugin_id, []).append(hook)
+
+    def _admit(self, task: AgentTask) -> AgentTask:
+        access = task.memory if self.config.memory.enabled else MemoryAccess()
+        if any(domain != "public" for domain in access.read_domains) and self.config.server.token is None:
+            raise ValueError("non-public memory requires authenticated service endpoints")
+        return task.model_copy(
+            update={
+                "execution": self.config.resolve_execution(task.kind, task.execution_override),
+                "memory": access,
+            }
+        )
 
     async def _complete_ignored_task(self, task: AgentTask) -> TaskRunResult:
         result = TaskRunResult(
@@ -312,15 +323,14 @@ class AgentService:
         if root not in self._admitted_roots:
             raise ValueError("parent root is not executing on this service")
         parent = await to_thread.run_sync(self.store.task_request, parent_id)
-        if parent.workspace is None:
-            raise ValueError("subtasks require a configured repository workspace")
         child = await to_thread.run_sync(self.store.existing_subtask, parent_id, request)
         if child is None:
             plugin_id = parent.metadata.get("plugin_id", parent.metadata.get("source_plugin_id"))
             preparer = self._subtask_preparers.get(plugin_id)
             prepared = await preparer(parent, request) if preparer else request
+            execution = self.config.resolve_execution(prepared.kind, prepared.execution)
             child = await to_thread.run_sync(
-                functools.partial(self.store.create_subtask, parent_id, request, prepared=prepared)
+                functools.partial(self.store.create_subtask, parent_id, request, prepared=prepared, execution=execution)
             )
         if await to_thread.run_sync(self.store.task_is_active, child.task_id):
             self._schedule(child)
@@ -363,8 +373,18 @@ class AgentService:
         started_at = time.monotonic()
         existing = await to_thread.run_sync(self.store.get_context, task.context_key)
         recovering = record.thread_id is not None
-        backend_name = self.config.runtime.backend
+        assert task.execution is not None
+        execution = task.execution
+        backend_name = execution.backend
+        if self.config.backends[backend_name].driver != execution.driver:
+            raise ValueError("admitted execution driver differs from backend configuration")
         resuming = recovering and record.backend == backend_name
+        memory_key = hashlib.sha256(json.dumps(task.memory.to_dict(), sort_keys=True).encode()).hexdigest()
+        if existing and existing.memory_key != memory_key:
+            if recovering or existing.memory_key:
+                raise RuntimeError("Memory access changed for an existing context; use a fresh context key")
+            existing = replace_context(existing, thread_id=None, memory_key=memory_key)
+        handoff_from = existing if existing and existing.backend != backend_name and existing.thread_id else None
         if existing and existing.backend != backend_name:
             existing = replace_context(existing, backend=backend_name, thread_id=None, revision=None)
         # Keep the old session's backend identity until the replacement session starts.
@@ -394,9 +414,9 @@ class AgentService:
             context, event_worktree = await self._prepare_workspace(task, existing)
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
-        context = replace_context(context, backend=backend_name)
+        context = replace_context(context, backend=backend_name, memory_key=memory_key)
         if context.session_worktree is None:
-            context = replace_context(context, session_worktree=Path.cwd())
+            raise RuntimeError("task workspace was not prepared")
         logger.info(
             "task started task_id={} context={} thread_id={} workspace={} workspace_policy={}",
             task.task_id,
@@ -410,6 +430,9 @@ class AgentService:
             event_worktree=event_worktree,
             session_worktree=context.session_worktree,
         )
+        if handoff_from is not None:
+            prompt += await self._backend_handoff(handoff_from)
+        readable_artifacts = []
         if resumed := task.metadata.get("resumed_subtasks"):
             evidence = [
                 {
@@ -418,6 +441,9 @@ class AgentService:
                     "inputs": (await to_thread.run_sync(self.store.task_request, identity)).metadata.get("inputs"),
                 }
                 for identity in resumed
+            ]
+            readable_artifacts = [
+                Path(artifact["path"]) for item in evidence for artifact in (item["result"] or {}).get("artifacts", [])
             ]
             prompt += "\nSubtask results (verify evidence before using):\n" + json.dumps(evidence, ensure_ascii=False)
         if recovering:
@@ -439,20 +465,55 @@ class AgentService:
         async def on_started(thread_id: str, turn_id: str | None) -> None:
             await to_thread.run_sync(
                 functools.partial(
-                    self.store.bind_task_execution, task.task_id, thread_id, turn_id, backend_name, context=context
+                    self.store.bind_task_execution,
+                    task.task_id,
+                    thread_id,
+                    turn_id,
+                    backend_name,
+                    context=context,
+                    native_home=native_home,
+                    isolated_home=home,
+                    driver=execution.driver,
                 )
             )
             if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 raise asyncio.CancelledError
 
-        async with self.control.turn(task.task_id) as control_prompt:
-            result = await self.backends.get(backend_name).execution.run_turn(
-                cwd=context.session_worktree or Path.cwd(),
-                prompt=prompt,
-                developer_instructions=self._runtime_instructions(task) + control_prompt,
-                thread_id=context.thread_id,
-                on_started=on_started,
+        from nyanpasu.isolation import ExecutionIsolation
+
+        home_key = hashlib.sha256(json.dumps([task.context_key, backend_name, memory_key]).encode()).hexdigest()
+        home = self.config.state_dir / "native" / home_key
+        native_home = home / self.config.backends[backend_name].home.native_directory
+        if context.thread_id is not None:
+            location = await to_thread.run_sync(self.store.native_home, backend_name, context.thread_id)
+            if (
+                location.native_home != native_home
+                or location.isolated_home != home
+                or location.driver != execution.driver
+            ):
+                raise ValueError(
+                    "native home configuration changed for this session; use its original configuration or a fresh context"
+                )
+        async with self.control.turn(task.task_id) as control:
+            isolation = ExecutionIsolation(
+                home=home,
+                control_file=control.file,
+                control_socket=control.socket,
+                readonly_paths=(
+                    *self.config.isolation.readonly_paths,
+                    *readable_artifacts,
+                    *((event_worktree,) if event_worktree and event_worktree != context.session_worktree else ()),
+                ),
             )
+            async with self.backends.turn(backend_name, isolation=isolation, cwd=context.session_worktree) as backend:
+                result = await backend.run_turn(
+                    cwd=context.session_worktree,
+                    prompt=prompt,
+                    developer_instructions=self._runtime_instructions(task) + control.prompt,
+                    thread_id=context.thread_id,
+                    on_started=on_started,
+                    execution=execution,
+                )
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
         context = replace_context(
@@ -468,6 +529,9 @@ class AgentService:
                 result.turn_id,
                 backend_name,
                 context=context,
+                native_home=native_home,
+                isolated_home=home,
+                driver=execution.driver,
             )
         )
         pending = [
@@ -488,10 +552,13 @@ class AgentService:
             event_worktree=event_worktree,
             session_worktree=context.session_worktree,
         )
-        if not await to_thread.run_sync(self.store.mark_task_done, run_result):
+        followup = None if waiting else self._memory_followup(task)
+        if not await to_thread.run_sync(functools.partial(self.store.mark_task_done, run_result, followup=followup)):
             return None
         if waiting:
             return run_result
+        if followup is not None:
+            self._schedule(await to_thread.run_sync(self.store.task_request, followup.task_id))
         logger.info(
             "task finished task_id={} context={} thread_id={} turn_id={} elapsed_sec={:.2f}",
             task.task_id,
@@ -513,7 +580,8 @@ class AgentService:
             context = await to_thread.run_sync(self.worktrees.prepare_context, task, existing)
             if existing is None:
                 # Resource ownership must survive a backend failing before on_started.
-                context = replace_context(context, backend=self.config.runtime.backend)
+                assert task.execution is not None
+                context = replace_context(context, backend=task.execution.backend)
                 await to_thread.run_sync(self.store.upsert_context, context)
             event_worktree = None
             if task.workspace_policy == "event_snapshot":
@@ -560,6 +628,7 @@ class AgentService:
                     )
 
     async def _cleanup_context(self, task: AgentTask) -> TaskRunResult:
+        assert task.execution is not None
         logger.info("task cleanup started task_id={} context={}", task.task_id, task.context_key)
         await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
         context = await to_thread.run_sync(self.store.get_context, task.context_key)
@@ -576,7 +645,7 @@ class AgentService:
         result = TaskRunResult(
             task_id=task.task_id,
             status=TaskStatus.COMPLETED,
-            backend=context.backend if context else self.config.runtime.backend,
+            backend=context.backend if context else task.execution.backend,
             thread_id=context.thread_id if context else None,
             turn_id=None,
             final_message="",
@@ -596,7 +665,7 @@ class AgentService:
         context = await to_thread.run_sync(self.store.get_context, key)
         if context is not None:
             if context.thread_id:
-                await self.backends.get(context.backend).execution.cleanup_thread(context.thread_id)
+                await self.backends.cleanup_session(context.backend, context.thread_id)
             await to_thread.run_sync(self.worktrees.remove_worktree, workspace, context.session_worktree)
         for record in await to_thread.run_sync(self.store.tasks_for_scope, key, generation):
             if record.event_worktree:
@@ -611,6 +680,12 @@ class AgentService:
             await hook(task, result)
 
     async def _prepare_task(self, task: AgentTask, context: AgentContext | None) -> AgentTask:
+        if task.kind == "memory_consolidation":
+            if not self.config.memory.enabled or not self.config.memory.consolidate:
+                return task.model_copy(
+                    update={"action": TaskAction.IGNORED, "prompt": "Memory consolidation is disabled."}
+                )
+            return await self._prepare_memory_task(task)
         preparer = self._preparer_for(task)
         if preparer is None:
             return task
@@ -620,6 +695,93 @@ class AgentService:
         return prepared.model_copy(
             update={"metadata": {**prepared.metadata, "coalesced_task_ids": [item.task_id for item in coalesced]}}
         )
+
+    def _memory_followup(self, task: AgentTask) -> AgentTask | None:
+        if (
+            not self.config.memory.enabled
+            or not self.config.memory.consolidate
+            or task.kind == "memory_consolidation"
+            or task.action is not TaskAction.RUN
+            or task.spawned_by_task_id is not None
+            or task.memory.write_domain is None
+        ):
+            return None
+        domain_key = hashlib.sha256(json.dumps(task.memory.to_dict(), sort_keys=True).encode()).hexdigest()[:24]
+        return self._admit(
+            AgentTask(
+                task_id=f"memory:{task.task_id}",
+                kind="memory_consolidation",
+                action=TaskAction.RUN,
+                context_key=f"memory:{domain_key}",
+                prompt="Consolidate verified reusable knowledge from the source task.",
+                memory=task.memory,
+                metadata={"memory_source_task_id": task.task_id, "request": {"title": "Consolidate memory"}},
+            )
+        )
+
+    async def _backend_handoff(self, previous: AgentContext) -> str:
+        assert previous.thread_id is not None
+        history = await self.backends.source(previous.backend).read_session(previous.thread_id)
+        messages = [
+            {
+                "turn_id": turn.id,
+                "item_id": item.id,
+                "text": "\n".join(block.text for block in item.presentation.blocks)[:8_000],
+            }
+            for turn in history.turns[-2:]
+            for item in turn.items
+            if item.presentation.kind == "message"
+        ][-3:]
+        return (
+            "\n\nBackend handoff: this is a new native session. The workspace is preserved. "
+            "Earlier assistant statements below are context, not verified evidence. "
+            "Check the current workspace and actual tool results before relying on them.\n"
+            + json.dumps(
+                {
+                    "backend": previous.backend,
+                    "session": previous.thread_id,
+                    "previous_revision": previous.revision,
+                    "messages": messages,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    async def _prepare_memory_task(self, task: AgentTask) -> AgentTask:
+        from nyanpasu.memory_consolidation import consolidation_prompt
+
+        source_id = task.metadata["memory_source_task_id"]
+        source = await to_thread.run_sync(self.store.task_request, source_id)
+        result = await to_thread.run_sync(self.store.task_run, source_id)
+        if source.memory != task.memory or result.status is not TaskStatus.COMPLETED:
+            raise ValueError("memory source must be completed with the same access policy")
+        if result.thread_id is None:
+            raise ValueError("memory source has no native session")
+        bindings = await to_thread.run_sync(self.store.task_turns, source_id)
+        sessions = {}
+        evidence = []
+        for binding in bindings:
+            key = (binding["backend"], binding["thread_id"])
+            if key not in sessions:
+                sessions[key] = await self.backends.source(key[0]).read_session(key[1])
+            turns = [turn for turn in sessions[key].turns if turn.id == binding["turn_id"]]
+            if not turns:
+                raise ValueError("memory source turn is unavailable")
+            for turn in turns:
+                for item in turn.items:
+                    evidence.append(
+                        {
+                            "kind": item.presentation.kind,
+                            "title": item.presentation.title,
+                            "state": item.presentation.state,
+                            "reference": f"{key[0]}:{key[1]}:{turn.id}:{item.id}",
+                            "blocks": [b.text for b in item.presentation.blocks],
+                        }
+                    )
+        if not evidence:
+            raise ValueError("memory source has no readable evidence")
+        prompt = consolidation_prompt(source_id, source.prompt, evidence)
+        return task.model_copy(update={"prompt": prompt})
 
     def _preparer_for(self, task: AgentTask) -> TaskPreparer | None:
         plugin_id = task.metadata.get("plugin_id")

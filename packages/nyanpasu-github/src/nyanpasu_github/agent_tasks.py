@@ -83,12 +83,15 @@ def branch_agent_task(
     branch_context: GitHubBranchTaskContext,
     metadata: dict[str, Any],
     dedupe_key: str | None = None,
+    kind: str = "default",
 ) -> AgentTask:
     return AgentTask(
         task_id=task_id,
         action=TaskAction.RUN,
         context_key=context_key,
         prompt=prompt,
+        kind=kind,
+        memory=branch_context.settings.memory_access(branch_context.repo),
         developer_instructions=developer_instructions,
         workspace=branch_context.workspace,
         instruction_docs=branch_context.instruction_docs,

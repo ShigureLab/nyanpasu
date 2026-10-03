@@ -31,12 +31,14 @@ class CodexSessionSource(Protocol):
 
 
 class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig, name: str = "codex") -> None:
+    def __init__(self, config: NyanpasuConfig, name: str = "codex", *, isolation=None, cwd: Path | None = None) -> None:
         configured = config.backends[name]
         if not isinstance(configured, CodexBackendConfig):
             raise ValueError(f"backend {name} is not a Codex backend")
         self.config = configured
         self._env = MappingProxyType(safe_codex_env(config, name))
+        self._isolation = isolation
+        self._cwd = cwd
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -179,17 +181,24 @@ class CodexAppServerBackend:
             if self._proc is not None and self._proc.returncode is None:
                 return
             await self._reset_dead_process()
-            self._proc = await asyncio.create_subprocess_exec(
+            argv = [
                 *self.config.process.command,
                 "-c",
                 "features.memories=false",
                 "app-server",
                 "--listen",
                 "stdio://",
+            ]
+            env = self._env
+            if self._isolation is not None:
+                argv, env = self._isolation.wrap(argv, cwd=self._cwd, env=env)
+            self._proc = await asyncio.create_subprocess_exec(
+                *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._env,
+                env=env,
+                cwd=self._cwd,
                 limit=SUBPROCESS_BUFFER_LIMIT,
                 start_new_session=os.name == "posix",
             )

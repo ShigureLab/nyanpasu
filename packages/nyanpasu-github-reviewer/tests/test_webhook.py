@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.agent import AgentService
-from nyanpasu.config import NyanpasuConfig, PluginsConfig, ServerConfig
+from nyanpasu.config import MemoryConfig, NyanpasuConfig, PluginsConfig, ServerConfig
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
@@ -71,6 +71,7 @@ def test_verify_signature_rejects_invalid_signature() -> None:
 async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secret) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
+        memory=MemoryConfig(enabled=False),
         server=ServerConfig(token=SecretStr(server_token) if server_token else None),
         integrations={"github": {"token": "webhook-token"}},
         plugins=PluginsConfig(
@@ -140,6 +141,7 @@ async def test_webhook_and_polling_enqueue_same_event_once(
     repo = "ExampleOrg/ExampleRepo"
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
+        memory=MemoryConfig(enabled=False),
         plugins=PluginsConfig(
             enabled=("github_reviewer",),
             settings={

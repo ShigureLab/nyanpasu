@@ -12,8 +12,11 @@ from loguru import logger
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
+from nyanpasu.environment import process_env
+from nyanpasu.migration import migrate_state as migrate_state_file
 from nyanpasu.models import AgentTask
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride
 from nyanpasu.task_control import call_control
 from nyanpasu.web import create_app
 
@@ -41,11 +44,26 @@ def serve() -> None:
 
 
 @app.command()
-def run_task(path: Annotated[PathArgument, typer.Argument(help="Path to a JSON task file.")]) -> None:
+def run_task(
+    path: Annotated[PathArgument, typer.Argument(help="Path to a JSON task file.")],
+    backend: str | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    target: str | None = None,
+) -> None:
     configure_logging()
     resolved = load_config()
     ensure_state_dirs(resolved)
     task = _task_from_json(json.loads(path.read_text(encoding="utf-8")))
+    if target is not None:
+        task = task.model_copy(update={"execution_override": ExecutionOverride.model_validate(target)})
+    overrides = {
+        key: value
+        for key, value in {"backend": backend, "model": model, "reasoning": reasoning}.items()
+        if value is not None
+    }
+    if overrides:
+        task = task.model_copy(update={"execution_override": task.execution_override.model_copy(update=overrides)})
 
     async def run() -> None:
         agent = AgentService(resolved)
@@ -83,6 +101,32 @@ def status(limit: int = 20) -> None:
             ensure_ascii=False,
         )
     )
+
+
+@app.command()
+def explain_target(
+    kind: str = "default", backend: str | None = None, model: str | None = None, reasoning: str | None = None
+) -> None:
+    """Show the configured execution target and the source of each field."""
+    target = load_config().resolve_execution(kind, ExecutionOverride(backend=backend, model=model, reasoning=reasoning))
+    typer.echo(target.model_dump_json(indent=2))
+
+
+@app.command()
+def migrate_state(path: Annotated[PathArgument, typer.Argument(help="Backed-up, idle SQLite state file.")]) -> None:
+    """Migrate pre-hybrid state explicitly. Stop the service and retain a backup first."""
+    try:
+        config = load_config()
+        homes = {}
+        for name, backend in config.backends.items():
+            env = process_env(backend.process, cwd=config.state_dir, backend=backend.driver)
+            field, directory = (
+                ("CODEX_HOME", ".codex") if backend.driver == "codex" else ("CLAUDE_CONFIG_DIR", ".claude")
+            )
+            homes[name] = Path(env.get(field, str(Path(env.get("HOME", str(Path.home()))) / directory)))
+        typer.echo(json.dumps(migrate_state_file(path, native_homes=homes)))
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 @app.command()

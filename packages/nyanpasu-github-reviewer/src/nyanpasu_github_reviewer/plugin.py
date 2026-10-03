@@ -14,6 +14,7 @@ from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_f
 from nyanpasu_github.workspace import pull_request_workspace_ref
 
 from nyanpasu.git_ops import safe_slug
+from nyanpasu.memory import MemoryAccess
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
@@ -149,6 +150,10 @@ class GitHubReviewerPlugin:
             prompt = cleanup_prompt(pr)
         return AgentTask(
             task_id=event.delivery_id,
+            kind="github_reviewer.review",
+            memory=self.config.repos[pr.repo].memory_access(pr.repo)
+            if pr and pr.repo in self.config.repos
+            else MemoryAccess(),
             action=task_action,
             context_key=context_key,
             prompt=prompt,
@@ -240,10 +245,12 @@ class GitHubReviewerPlugin:
         # The independent designer's prompt contains requirements only, not author paths.
         return prepared.model_copy(
             update={
+                "kind": request.kind if request.kind != "subtask" else f"github_reviewer.{request.purpose}",
+                "memory_enabled": request.memory_enabled and request.purpose != "independent-design",
                 "inputs": {
                     **prepared.inputs,
                     "review_scope": {"inventory_id": plan.inventory_id, "files": files},
-                }
+                },
             }
         )
 
@@ -331,6 +338,7 @@ class GitHubReviewerPlugin:
                 }
             )
         workspace = self._workspace_for_pr(pr)
+        assert task.execution is not None
         metadata["review_inventory"] = build_inventory(
             self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
         )
@@ -349,7 +357,7 @@ class GitHubReviewerPlugin:
                     self.config,
                     pr,
                     "{{NYANPASU_WORKTREE}}",
-                    runtime=self.runtime.config.process_config(),
+                    runtime=task.execution,
                     triggers=triggers,
                     has_session=bool(context and context.thread_id),
                     previous_task_head=context.revision if context else None,

@@ -3,11 +3,42 @@ from __future__ import annotations
 import json
 from typing import Any
 
+EVIDENCE_BUDGET = 96_000
+BLOCK_LIMIT = 8_000
+REQUEST_LIMIT = 16_000
+
+
+def bounded_evidence(evidence: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Keep recent evidence with explicit truncation; never manufacture a summary."""
+    selected = []
+    used = 0
+    truncated = False
+    for item in reversed(evidence):
+        if item.get("kind") == "reasoning":
+            continue
+        blocks = [str(block) for block in item.get("blocks", [])]
+        clipped = any(len(block) > BLOCK_LIMIT for block in blocks)
+        candidate = {**item, "blocks": [block[:BLOCK_LIMIT] for block in blocks], "truncated": clipped}
+        size = len(json.dumps(candidate, ensure_ascii=False))
+        if used + size > EVIDENCE_BUDGET:
+            truncated = True
+            continue
+        selected.append(candidate)
+        used += size
+        truncated = truncated or clipped
+    return list(reversed(selected)), truncated
+
 
 def consolidation_prompt(source_id: str, source_prompt: str, evidence: list[dict[str, Any]]) -> str:
     """Build a bounded memory task without granting any additional capability."""
+    evidence, truncated = bounded_evidence(evidence)
     material = json.dumps(
-        {"source_task_id": source_id, "source_request": source_prompt, "evidence": evidence},
+        {
+            "source_task_id": source_id,
+            "source_request": source_prompt[:REQUEST_LIMIT],
+            "truncated": truncated or len(source_prompt) > REQUEST_LIMIT,
+            "evidence": evidence,
+        },
         ensure_ascii=False,
         indent=2,
     )

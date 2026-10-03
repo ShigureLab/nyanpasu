@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 class FakeCodex:
     def __init__(self, *, new_session_id: str = "thread-1") -> None:
         self.new_session_id = new_session_id
+        self.sessions: dict[Path, str] = {}
         self.calls: list[tuple[Path, str | None]] = []
         self.prompts: list[str] = []
         self.instructions: list[str] = []
@@ -54,10 +55,14 @@ class FakeCodex:
         self.prompts.append(prompt)
         self.instructions.append(developer_instructions)
         self.calls.append((cwd, thread_id))
+        if thread_id is None:
+            thread_id = self.sessions.setdefault(
+                cwd, self.new_session_id if not self.sessions else f"{self.new_session_id}-{len(self.sessions) + 1}"
+            )
         if on_started:
-            await on_started(thread_id or self.new_session_id, "turn-1")
+            await on_started(thread_id, "turn-1")
         return RunResult(
-            thread_id=thread_id or self.new_session_id,
+            thread_id=thread_id,
             turn_id="turn-1",
             final_message="done",
         )
@@ -165,10 +170,21 @@ class CancellableCodex(FakeCodex):
         raise AssertionError("unreachable")
 
 
+def _native_binding(config: NyanpasuConfig, task: AgentTask) -> dict:
+    assert task.execution is not None
+    key = hashlib.sha256(json.dumps([task.context_key, task.execution.backend, _memory_key(task)]).encode()).hexdigest()
+    home = config.state_dir / "native" / key
+    return {
+        "native_home": home / config.backends[task.execution.backend].home.native_directory,
+        "isolated_home": home,
+        "driver": task.execution.driver,
+    }
+
+
 def _config(tmp_path: Path, *, concurrency: int = 4) -> NyanpasuConfig:
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
-        memory=MemoryConfig(consolidate=False),
+        memory=MemoryConfig(enabled=False, consolidate=False),
         runtime=RuntimeConfig(
             concurrency=concurrency,
             coalesce_window_seconds=600,
@@ -337,6 +353,7 @@ async def test_waiting_context_does_not_consume_execution_capacity(tmp_path: Pat
     class GatedCodex(FakeCodex):
         async def run_turn(self, **kwargs):
             name = kwargs["prompt"]
+            kwargs["thread_id"] = kwargs["thread_id"] or f"thread-{name}"
             result = await super().run_turn(**kwargs)
             started[name].set()
             await release[name].wait()
@@ -650,7 +667,9 @@ async def test_interrupted_start_keeps_admitted_backend_after_default_changes(tm
         revision=None,
     )
     store.record_task(task)
-    store.bind_task_execution(task.task_id, "old-claude-session", "old-turn", "claude", context=context)
+    store.bind_task_execution(
+        task.task_id, "old-claude-session", "old-turn", "claude", context=context, **_native_binding(config, task)
+    )
     started = asyncio.Event()
 
     class InterruptedStart(FakeCodex):
@@ -727,7 +746,9 @@ async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backen
         workspace_key=None,
         revision=None,
     )
-    state.bind_task_execution(task.task_id, "original-session", "old-turn", "claude", context=context)
+    state.bind_task_execution(
+        task.task_id, "original-session", "old-turn", "claude", context=context, **_native_binding(config, task)
+    )
     state.try_acquire_context_lease(task.context_key, owner_id="previous-process", task_id=task.task_id, ttl_seconds=60)
     backend = FakeCodex()
     agent = AgentService(

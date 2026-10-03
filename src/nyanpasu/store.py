@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from nyanpasu.models import (
@@ -17,6 +17,7 @@ from nyanpasu.models import (
     DashboardSnapshot,
     DashboardTaskItem,
     DashboardTotals,
+    NativeSessionLocation,
     SubtaskRequest,
     TaskAction,
     TaskRunResult,
@@ -25,6 +26,10 @@ from nyanpasu.models import (
     json_dumps,
 )
 from nyanpasu.presentation import task_title
+from nyanpasu.schema import initialize
+
+if TYPE_CHECKING:
+    from nyanpasu.targets import ExecutionTarget
 
 # A coalesced task is executed by its parent; do not maintain a second backend binding.
 TASK_RUNS = """
@@ -50,128 +55,17 @@ class StateStore:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS agent_contexts (
-                    context_key TEXT PRIMARY KEY,
-                    thread_id TEXT,
-                    session_worktree TEXT,
-                    workspace_key TEXT,
-                    revision TEXT,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                );
+            initialize(conn)
 
-                CREATE TABLE IF NOT EXISTS task_runs (
-                    task_id TEXT PRIMARY KEY,
-                    dedupe_key TEXT,
-                    context_key TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    event_worktree TEXT,
-                    thread_id TEXT,
-                    turn_id TEXT,
-                    task_json TEXT NOT NULL,
-                    coalesced_into TEXT,
-                    error TEXT,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_dedupe_key
-                ON task_runs(dedupe_key)
-                WHERE dedupe_key IS NOT NULL;
-
-                CREATE TABLE IF NOT EXISTS context_leases (
-                    context_key TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    acquired_at REAL NOT NULL,
-                    heartbeat_at REAL NOT NULL,
-                    expires_at REAL NOT NULL
-                );
-                """
-            )
-            conn.execute("BEGIN IMMEDIATE")
-            self._remove_conversation_copies(conn)
-            for table in ("agent_contexts", "task_runs"):
-                columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-                if "backend" not in columns:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN backend TEXT NOT NULL DEFAULT 'codex'")
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
-            for name, definition in {
-                "spawned_by_task_id": "TEXT",
-                "context_generation": "INTEGER NOT NULL DEFAULT 1",
-                "wait_for": "TEXT",
-                "subtask_result": "TEXT",
-            }.items():
-                if name not in columns:
-                    conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {definition}")
-            conn.execute("""CREATE TABLE IF NOT EXISTS context_scopes (
-                context_key TEXT PRIMARY KEY, generation INTEGER NOT NULL,
-                lifecycle TEXT NOT NULL DEFAULT 'active',
-                parent_context_key TEXT, parent_generation INTEGER
-            )""")
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(subtask_requests)")}
-            if "parent_context_key" in columns:
-                conn.execute("ALTER TABLE subtask_requests RENAME TO legacy_subtask_requests")
-            conn.execute("""CREATE TABLE IF NOT EXISTS subtask_requests (
-                parent_task_id TEXT NOT NULL,
-                request_key TEXT NOT NULL, request_json TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (parent_task_id, request_key)
-            )""")
-            if "parent_context_key" in columns:
-                conn.execute("""INSERT INTO subtask_requests
-                    SELECT r.spawned_by_task_id,s.request_key,s.request_json,s.task_id
-                    FROM legacy_subtask_requests s JOIN task_runs r ON r.task_id=s.task_id""")
-                conn.execute("DROP TABLE legacy_subtask_requests")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_spawned_by ON task_runs(spawned_by_task_id)")
-            conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
-                SELECT context_key, 1 FROM agent_contexts""")
-            conn.execute("""INSERT OR IGNORE INTO context_scopes (context_key, generation)
-                SELECT context_key, 1 FROM task_runs WHERE status IN ('queued', 'running', 'waiting')""")
-
-    @staticmethod
-    def _remove_conversation_copies(conn: sqlite3.Connection) -> None:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
-        if "result_json" not in columns:
-            return
-        if "coalesced_into" not in columns:
-            conn.execute("ALTER TABLE task_runs ADD COLUMN coalesced_into TEXT")
-        conn.execute("UPDATE task_runs SET coalesced_into=json_extract(result_json,'$.coalesced_into')")
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if "transcript_tasks" in tables:
-            conn.execute("""
-                UPDATE task_runs SET
-                    thread_id=coalesce(thread_id, (
-                        SELECT s.thread_id FROM transcript_tasks t
-                        JOIN transcript_sessions s USING(session_id) WHERE t.task_id=task_runs.task_id
-                    )),
-                    turn_id=coalesce(turn_id, (
-                        SELECT t.turn_id FROM transcript_tasks t WHERE t.task_id=task_runs.task_id
-                    ))
-            """)
-        conn.execute("ALTER TABLE task_runs DROP COLUMN result_json")
-        for table in (
-            "transcript_events",
-            "transcript_entries",
-            "transcript_changes",
-            "transcript_chunks",
-            "transcript_contents",
-            "transcript_tasks",
-            "transcript_sessions",
-            "transcript_imports",
-        ):
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
-
-    def record_task(self, task: AgentTask, *, default_backend: str = "codex") -> bool:
-        accepted, _ = self.enqueue_task(task, default_backend=default_backend)
+    def record_task(self, task: AgentTask) -> bool:
+        accepted, _ = self.enqueue_task(task)
         return accepted
 
-    def enqueue_task(
-        self, task: AgentTask, *, default_backend: str = "codex", coalesce_since: float | None = None
-    ) -> tuple[bool, str | None]:
+    def enqueue_task(self, task: AgentTask, *, coalesce_since: float | None = None) -> tuple[bool, str | None]:
         """Record and optionally merge a task before another worker can claim either task."""
+        if task.execution is None:
+            raise ValueError("task execution must be resolved before admission")
+        execution = task.execution
         now = time.time()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -185,7 +79,7 @@ class StateStore:
             if task.spawned_by_task_id is not None:
                 raise ValueError("child tasks must be created through create_subtask")
             task = task.model_copy(update={"context_generation": scope.generation})
-            backend = default_backend
+            backend = execution.backend
             if task.action is TaskAction.CLEANUP:
                 context = conn.execute(
                     "SELECT backend FROM agent_contexts WHERE context_key=?", (task.context_key,)
@@ -234,6 +128,13 @@ class StateStore:
             ):
                 return True, None
             queued = AgentTask.model_validate(json.loads(row["task_json"]))
+            assert queued.execution is not None
+            if (
+                queued.kind != task.kind
+                or queued.execution.model_dump(exclude={"sources"}) != execution.model_dump(exclude={"sources"})
+                or queued.memory != task.memory
+            ):
+                return True, None
             if queued.coalesce_key != task.coalesce_key or queued.metadata.get("plugin_id") != task.metadata.get(
                 "plugin_id"
             ):
@@ -321,7 +222,12 @@ class StateStore:
         return AgentTask.model_validate(json.loads(previous["task_json"]))
 
     def create_subtask(
-        self, parent_id: str, request: SubtaskRequest, *, prepared: SubtaskRequest | None = None
+        self,
+        parent_id: str,
+        request: SubtaskRequest,
+        *,
+        execution: ExecutionTarget,
+        prepared: SubtaskRequest | None = None,
     ) -> AgentTask:
         """Create ownership and execution together; retries cannot leave an orphan."""
         with self._connect() as conn:
@@ -348,6 +254,10 @@ class StateStore:
                 action=TaskAction.RUN,
                 context_key=f"{original.context_key}/subtask/{task_id}",
                 prompt=request.prompt,
+                kind=request.kind,
+                execution_override=request.execution,
+                execution=execution,
+                memory=original.memory if request.memory_enabled else type(original.memory)(),
                 developer_instructions=request.developer_instructions,
                 workspace=workspace,
                 workspace_mode=request.workspace_mode,
@@ -376,7 +286,7 @@ class StateStore:
                     child.model_dump_json(),
                     now,
                     now,
-                    parent["backend"],
+                    execution.backend,
                     parent_id,
                 ),
             )
@@ -547,14 +457,6 @@ class StateStore:
             [(time.time(), identity) for identity in ids],
         )
 
-    def update_pending_task_backend(self, task_id: str, backend: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """UPDATE task_runs SET backend=? WHERE task_id=?
-                   AND status IN ('queued', 'running') AND thread_id IS NULL""",
-                (backend, task_id),
-            )
-
     def update_task_input(self, task: AgentTask) -> None:
         with self._connect() as conn:
             # Persist the execution request so an interrupted turn can resume with the same instructions.
@@ -571,6 +473,9 @@ class StateStore:
         backend: str = "codex",
         *,
         context: AgentContext | None = None,
+        native_home: Path | None = None,
+        isolated_home: Path | None = None,
+        driver: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -586,10 +491,52 @@ class StateStore:
                 "UPDATE task_runs SET backend=?,thread_id=?,turn_id=coalesce(?,turn_id),updated_at=? WHERE task_id=?",
                 (backend, thread_id, turn_id, time.time(), task_id),
             )
+            if turn_id is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_turns VALUES (?,?,?,?,?)",
+                    (task_id, backend, thread_id, turn_id, time.time()),
+                )
+            if native_home is not None:
+                assert isolated_home is not None and driver is not None
+                existing = conn.execute(
+                    "SELECT home_dir, isolated_home, driver FROM native_sessions WHERE backend=? AND thread_id=?",
+                    (backend, thread_id),
+                ).fetchone()
+                if existing is not None and (existing["home_dir"], existing["isolated_home"], existing["driver"]) != (
+                    str(native_home),
+                    str(isolated_home),
+                    driver,
+                ):
+                    raise ValueError("native session is already registered in another home")
+                conn.execute(
+                    "INSERT OR IGNORE INTO native_sessions VALUES (?,?,?,?,?)",
+                    (backend, thread_id, str(native_home), str(isolated_home), driver),
+                )
             if context is not None:
                 self._upsert_context(conn, replace_context(context, thread_id=thread_id))
 
-    def mark_task_done(self, result: TaskRunResult) -> bool:
+    def task_turns(self, task_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM task_turns WHERE task_id=? ORDER BY started_at,turn_id", (task_id,)
+                )
+            ]
+
+    def native_home(self, backend: str, thread_id: str) -> NativeSessionLocation:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT home_dir, isolated_home, driver FROM native_sessions WHERE backend=? AND thread_id=?",
+                (backend, thread_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError("native session is not registered")
+        return NativeSessionLocation(
+            native_home=Path(row["home_dir"]), isolated_home=Path(row["isolated_home"]), driver=row["driver"]
+        )
+
+    def mark_task_done(self, result: TaskRunResult, *, followup: AgentTask | None = None) -> bool:
         return self._update_task(
             result.task_id,
             result.status,
@@ -599,6 +546,7 @@ class StateStore:
             event_worktree=result.event_worktree,
             error=result.error,
             final_message=result.final_message,
+            followup=followup,
         )
 
     def mark_task_failed(self, task_id: str, error: str) -> None:
@@ -646,7 +594,7 @@ class StateStore:
             row = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at
+                    created_at, updated_at, task_json
                 FROM ({TASK_RUNS}) WHERE dedupe_key = ?
                 """,
                 (dedupe_key,),
@@ -673,7 +621,7 @@ class StateStore:
             values.append(since)
         sql = f"""
             SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                created_at, updated_at
+                created_at, updated_at, task_json
             FROM ({TASK_RUNS})
             WHERE {" AND ".join(where)}
             ORDER BY created_at ASC
@@ -816,7 +764,7 @@ class StateStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision
+                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision, memory_key
                 FROM agent_contexts WHERE context_key = ?
                 """,
                 (context_key,),
@@ -830,6 +778,7 @@ class StateStore:
             session_worktree=Path(row["session_worktree"]) if row["session_worktree"] else None,
             workspace_key=row["workspace_key"],
             revision=row["revision"],
+            memory_key=row["memory_key"],
         )
 
     def upsert_context(self, context: AgentContext) -> None:
@@ -842,15 +791,16 @@ class StateStore:
         conn.execute(
             """
             INSERT INTO agent_contexts (
-                context_key, backend, thread_id, session_worktree, workspace_key, revision, created_at, updated_at
+                context_key, backend, thread_id, session_worktree, workspace_key, revision, memory_key, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(context_key) DO UPDATE SET
                 backend = excluded.backend,
                 thread_id = excluded.thread_id,
                 session_worktree = excluded.session_worktree,
                 workspace_key = excluded.workspace_key,
                 revision = excluded.revision,
+                memory_key = excluded.memory_key,
                 updated_at = excluded.updated_at
             """,
             (
@@ -860,6 +810,7 @@ class StateStore:
                 str(context.session_worktree) if context.session_worktree else None,
                 context.workspace_key,
                 context.revision,
+                context.memory_key,
                 now,
                 now,
             ),
@@ -875,7 +826,7 @@ class StateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision
+                SELECT context_key, backend, thread_id, session_worktree, workspace_key, revision, memory_key
                 FROM agent_contexts ORDER BY context_key
                 """
             ).fetchall()
@@ -887,16 +838,26 @@ class StateStore:
                 session_worktree=Path(row["session_worktree"]) if row["session_worktree"] else None,
                 workspace_key=row["workspace_key"],
                 revision=row["revision"],
+                memory_key=row["memory_key"],
             )
             for row in rows
         ]
+
+    def has_restricted_memory(self) -> bool:
+        with self._connect() as conn:
+            return (
+                conn.execute("""SELECT 1 FROM task_runs,
+                json_each(json_extract(task_json, '$.memory.read_domains')) domain
+                WHERE domain.value <> 'public' LIMIT 1""").fetchone()
+                is not None
+            )
 
     def recent_tasks(self, limit: int = 20) -> list[TaskRunSummary]:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at, spawned_by_task_id, context_generation
+                    created_at, updated_at, spawned_by_task_id, context_generation, task_json
                 FROM ({TASK_RUNS}) ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -985,6 +946,7 @@ class StateStore:
         turn_id: str | None = None,
         error: str | None = None,
         final_message: str | None = None,
+        followup: AgentTask | None = None,
     ) -> bool:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
@@ -1008,6 +970,7 @@ class StateStore:
             values.append(turn_id)
         values.append(task_id)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             updated = conn.execute(
                 f"""UPDATE task_runs SET {", ".join(updates)} WHERE task_id = ? AND status <> 'cancelled'
                     AND (action IN ('cleanup','ignored') OR EXISTS (
@@ -1019,6 +982,29 @@ class StateStore:
             if status is TaskStatus.FAILED and updated.rowcount:
                 # A restart must never see a failed owner with active descendants.
                 self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
+            if updated.rowcount and status is TaskStatus.COMPLETED and followup is not None:
+                if followup.execution is None:
+                    raise ValueError("followup execution must be resolved before admission")
+                followup_backend = followup.execution.backend
+                scope = self._ensure_scope(conn, followup.context_key, reopen=True)
+                followup = followup.model_copy(update={"context_generation": scope.generation})
+                now = time.time()
+                conn.execute(
+                    """INSERT INTO task_runs
+                    (task_id,dedupe_key,context_key,action,status,backend,task_json,created_at,updated_at,context_generation)
+                    VALUES (?,?,?,?,'queued',?,?,?,?,?) ON CONFLICT(task_id) DO NOTHING""",
+                    (
+                        followup.task_id,
+                        followup.dedupe_key,
+                        followup.context_key,
+                        followup.action.value,
+                        followup_backend,
+                        followup.model_dump_json(),
+                        now,
+                        now,
+                        scope.generation,
+                    ),
+                )
             return bool(updated.rowcount)
 
 
@@ -1027,7 +1013,8 @@ def replace_context(context: AgentContext, **changes: Any) -> AgentContext:
 
 
 def _task_summary_from_row(row: sqlite3.Row) -> TaskRunSummary:
-    return TaskRunSummary.model_validate(dict(row))
+    task = json.loads(row["task_json"])
+    return TaskRunSummary.model_validate({**dict(row), "kind": task["kind"], "execution": task["execution"]})
 
 
 def _dashboard_task_from_row(row: sqlite3.Row, *, now: float) -> DashboardTaskItem:

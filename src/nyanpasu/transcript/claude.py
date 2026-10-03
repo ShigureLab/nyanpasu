@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import io
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -9,6 +10,7 @@ from uuid import UUID
 import anyio.to_thread as to_thread
 
 from nyanpasu.redaction import redact
+from nyanpasu.safe_files import open_regular_file
 from nyanpasu.transcript.content import content
 from nyanpasu.transcript.history import HistoryItem, HistoryTurn, SessionHistory, SessionMetadata
 from nyanpasu.transcript.models import EntryUpdate
@@ -18,10 +20,11 @@ if TYPE_CHECKING:
 
 
 class ClaudeHistorySource:
-    def __init__(self, env: Mapping[str, str]):
+    def __init__(self, env: Mapping[str, str], *, root: Path | None = None):
         self.projects = (
             Path(env.get("CLAUDE_CONFIG_DIR", str(Path(env.get("HOME", str(Path.home()))) / ".claude"))) / "projects"
         )
+        self.root = root or self.projects.parent
 
     async def read_session(self, thread_id: str) -> SessionHistory:
         return await to_thread.run_sync(self._read, thread_id)
@@ -41,7 +44,10 @@ class ClaudeHistorySource:
         if len(paths) != 1:
             raise RuntimeError("Claude session history is missing or ambiguous")
         records = []
-        with paths[0].open(encoding="utf-8") as stream:
+        with (
+            open_regular_file(self.root, paths[0].resolve(strict=True).relative_to(self.root)) as raw,
+            io.TextIOWrapper(raw, encoding="utf-8") as stream,
+        ):
             for line in stream:
                 try:
                     record = json.loads(line)
@@ -262,6 +268,22 @@ def claude_history(session_id: str, records: list[dict[str, Any]]) -> SessionHis
         for block in message_blocks(record)
         if block.get("type") == "tool_result"
     }
+    # Parallel tools have sibling result records. The final conversation leaf
+    # need not descend from every sibling, but the tool call itself is on-chain.
+    tool_parents = {
+        block["id"]: record["uuid"]
+        for record in chain
+        for block in message_blocks(record)
+        if block.get("type") == "tool_use"
+    }
+    for record in records:
+        if record.get("isSidechain"):
+            continue
+        for block in message_blocks(record):
+            if block.get("type") == "tool_result" and tool_parents.get(block["tool_use_id"]) == record.get(
+                "parentUuid"
+            ):
+                results.setdefault(block["tool_use_id"], (block, record))
     turns: dict[str, list[HistoryItem]] = {}
     turn_id = None
     for record in chain:
