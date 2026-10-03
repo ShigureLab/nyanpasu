@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from nyanpasu import task_control_client
+from nyanpasu.config import ProcessConfig
+from nyanpasu.environment import process_env
 from nyanpasu.isolation import ExecutionIsolation, seed_home
 
 
@@ -174,6 +177,39 @@ def test_missing_isolator_fails_closed(tmp_path, monkeypatch):
         ExecutionIsolation(tmp_path / "home").wrap(["true"], cwd=tmp_path / "workspace", env={})
 
 
+@pytest.mark.parametrize("backend", ["codex", "claude-code"])
+@pytest.mark.parametrize("source", ["pass_env", "env"])
+def test_explicit_backend_credentials_survive_without_service_configuration(tmp_path, monkeypatch, backend, source):
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
+    credential = {"NYANPASU_GITHUB_TOKEN": "agent-credential"}
+    administrative = {
+        "NYANPASU_HOME": "/operator/service",
+        "NYANPASU_TOKEN": "old-admin-token",
+        "NYANPASU__SERVER__TOKEN": "admin-token",
+        "NYANPASU__BACKENDS__CODEX__PROCESS__ENV__SECRET": "service-config",
+    }
+    for key, value in {**credential, **administrative, "NYANPASU_NOT_GRANTED": "not-authorized"}.items():
+        monkeypatch.setenv(key, value)
+    granted = {**credential, **administrative}
+    configured = (
+        ProcessConfig(command=("true",), pass_env=tuple(granted))
+        if source == "pass_env"
+        else ProcessConfig(command=("true",), env=granted)
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "isolated"
+    _, isolated = ExecutionIsolation(home).wrap(
+        ["true"], cwd=workspace, env=process_env(configured, cwd=tmp_path, backend=backend)
+    )
+    assert isolated["NYANPASU_GITHUB_TOKEN"] == "agent-credential"
+    assert not set(administrative).intersection(isolated)
+    assert "NYANPASU_NOT_GRANTED" not in isolated
+    assert isolated["HOME"] == str(home)
+    assert isolated["CODEX_HOME"] == str(home / ".codex")
+    assert isolated["CLAUDE_CONFIG_DIR"] == str(home / ".claude")
+
+
 def test_readonly_grants_reject_broad_home_and_service_parents(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
     service = tmp_path / "service"
@@ -306,6 +342,75 @@ else:
 """
     assert _run(ExecutionIsolation(tmp_path / "home", readonly_paths=(tool,)), workspace, script) == {"readonly": True}
     assert tool.read_text() == "operator supplied tool"
+
+
+def test_real_control_client_uses_only_its_runtime_and_current_capability(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    control = controls / "current.json"
+    socket_path = controls / "socket"
+    control.write_text(json.dumps({"token": "current-token", "socket": str(socket_path)}))
+    peer = controls / "other.json"
+    peer.write_text("peer-secret")
+    private = tmp_path / "service-secret"
+    private.write_text("operator-secret")
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(socket_path))
+    listener.listen()
+    listener.settimeout(20)
+    received = []
+
+    def respond():
+        try:
+            connection, _ = listener.accept()
+            with connection, connection.makefile("rb") as stream:
+                received.append(json.loads(stream.readline()))
+                connection.sendall(b'{"ok":true,"result":{"authorized":true}}\n')
+        except (TimeoutError, OSError):
+            return
+
+    thread = threading.Thread(target=respond, daemon=True)
+    thread.start()
+    # The advertised CLI must run without importing the service or its editable
+    # virtualenv. Only its own script is bound at the fixed /run path.
+    checkout = Path(__file__).resolve().parents[1]
+    forbidden = [
+        str(private),
+        str(peer),
+        str(checkout / "src/nyanpasu/task_control.py"),
+        str(checkout / ".venv/pyvenv.cfg"),
+    ]
+    script = f"""
+import json, os, pathlib, subprocess
+assert all(not pathlib.Path(path).exists() for path in {forbidden!r})
+client = pathlib.Path({str(task_control_client.ISOLATED_PATH)!r})
+try:
+    client.write_text('overwritten')
+except OSError:
+    pass
+else:
+    raise AssertionError('client mount was writable')
+# A granted PYTHONPATH must not make the helper import workspace-controlled code.
+pathlib.Path('json.py').write_text("raise RuntimeError('untrusted import')")
+result = subprocess.run(
+    {[*task_control_client.command(control), "-"]!r},
+    input='{{"action":"inspect"}}', text=True, capture_output=True,
+    env={{**os.environ, 'PYTHONPATH': os.getcwd()}}, timeout=10,
+)
+assert result.returncode == 0, result.stderr
+print(result.stdout)
+"""
+    try:
+        observed = _run(ExecutionIsolation(tmp_path / "home", control, socket_path), workspace, script)
+        assert observed == {"authorized": True}
+        assert received == [{"action": "inspect", "token": "current-token"}]
+        assert private.read_text() == "operator-secret"
+        assert peer.read_text() == "peer-secret"
+    finally:
+        listener.close()
+        thread.join(timeout=1)
 
 
 def test_nested_backend_sandbox_can_map_its_uid_without_exposing_host_files(tmp_path):

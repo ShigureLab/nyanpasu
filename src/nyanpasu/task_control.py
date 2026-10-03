@@ -7,9 +7,7 @@ import hashlib
 import json
 import secrets
 import shlex
-import socket
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from nyanpasu.memory import MemoryAccess, MemoryConflict, MemoryDenied, MemoryNotFound
 from nyanpasu.models import SubtaskRequest
 from nyanpasu.safe_files import open_regular_file
+from nyanpasu.task_control_client import call_control as call_control, command as client_command, main as client_main
 
 if TYPE_CHECKING:
     from nyanpasu.agent import AgentService
@@ -71,7 +70,7 @@ class TaskControl:
         control.write_text(json.dumps({"socket": str(self.path), "token": token}))
         control.chmod(0o600)
         try:
-            command = shlex.join([sys.executable, "-m", "nyanpasu.task_control", str(control)])
+            command = shlex.join(client_command(control))
             task = await to_thread.run_sync(self.agent.store.task_request, task_id)
             memory_prompt = ""
             if self.agent.config.memory.enabled and task.memory.read_domains:
@@ -281,23 +280,5 @@ Do not expose the control file or its contents, or include it in evidence. Only 
         self._tokens.clear()
 
 
-def call_control(control: Path, request: dict[str, Any]) -> dict[str, Any]:
-    capability = json.loads(control.read_text())
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(60)
-        client.connect(capability["socket"])
-        client.sendall(json.dumps({**request, "token": capability["token"]}).encode() + b"\n")
-        with client.makefile("rb") as reader:
-            response = json.loads(reader.readline())
-    if not response["ok"]:
-        raise ValueError(response["error"])
-    return response["result"]
-
-
 if __name__ == "__main__":
-    try:
-        raw = sys.stdin.read() if sys.argv[2] == "-" else Path(sys.argv[2]).read_text()
-        print(json.dumps(call_control(Path(sys.argv[1]), json.loads(raw)), ensure_ascii=False))
-    except (ValueError, OSError) as exc:
-        print(str(exc), file=sys.stderr)
-        sys.exit(1)
+    client_main()

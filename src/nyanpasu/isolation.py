@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from nyanpasu import task_control_client
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -34,6 +37,17 @@ _BROAD_PATHS = frozenset(
 def _absolute(path: Path) -> Path:
     # Collapse '..' while preserving executable/virtualenv symlink paths.
     return Path(os.path.abspath(Path(path).expanduser()))  # noqa: PTH100
+
+
+def _control_runtime_paths() -> tuple[Path, ...]:
+    # Use the base interpreter and its stdlib, never the service's virtualenv.
+    paths = {Path(value).resolve() for value in (sys.executable, sys.base_prefix, sys.base_exec_prefix)}
+    return tuple(
+        path
+        for path in sorted(paths)
+        if not any(path.is_relative_to(system.resolve()) for system in _SYSTEM_DIRECTORIES)
+        and not any(path != parent and path.is_relative_to(parent) for parent in paths)
+    )
 
 
 def _native_home(home: Path, driver: str, directory: Path | None = None) -> Path:
@@ -172,7 +186,7 @@ class ExecutionIsolation:
             _absolute(Path(env.get("CLAUDE_CONFIG_DIR", str(original_home / ".claude")))),
         }
         extra_paths = []
-        for path in self.readonly_paths:
+        for path in (*self.readonly_paths, *(_control_runtime_paths() if controls else ())):
             path = _absolute(path)
             resolved = path.resolve()
             if resolved in {item.resolve() for item in _BROAD_PATHS | native_homes | {original_home}}:
@@ -221,8 +235,18 @@ class ExecutionIsolation:
         )
         for path in (*extra_paths, *controls):
             command.extend(("--ro-bind", str(path), str(path)))
+        if controls:
+            command.extend(
+                ("--ro-bind", str(Path(task_control_client.__file__).resolve()), str(task_control_client.ISOLATED_PATH))
+            )
         command.extend(("--chdir", str(cwd), "--", *argv))
-        isolated_env = {key: value for key, value in env.items() if not key.startswith("NYANPASU_")}
+        # process_env already selects explicit backend credentials. Only the
+        # service's own configuration namespace must never cross this boundary.
+        isolated_env = {
+            key: value
+            for key, value in env.items()
+            if key not in {"NYANPASU_HOME", "NYANPASU_TOKEN"} and not key.startswith("NYANPASU__")
+        }
         for key, default in (("CODEX_HOME", ".codex"), ("CLAUDE_CONFIG_DIR", ".claude")):
             requested = Path(env.get(key, str(home / default)))
             isolated_env[key] = str(
