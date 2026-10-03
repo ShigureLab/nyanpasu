@@ -100,7 +100,7 @@ def _body(text: str) -> str:
 def _content(key: str, title: str, body: str, topics, applies_to, sources) -> dict[str, Any]:
     if not isinstance(key, str) or len(key) > 160 or not _KEY.fullmatch(key):
         raise ValueError("key must be a lowercase slug of at most 160 characters (letters, digits, '.', '_', '-')")
-    if not isinstance(title, str) or not title.strip() or len(title) > 512 or "\n" in title or "\x00" in title:
+    if not isinstance(title, str) or not title.strip() or len(title) > 512 or any(c in title for c in "\r\n\x00"):
         raise ValueError("title must be one nonempty line of at most 512 characters")
     evidence = _strings(sources, "sources")
     if not evidence:
@@ -427,7 +427,7 @@ class MemoryService:
         # Only the manifest is a commit boundary. Index/garbage maintenance must
         # not turn an already successful write into an apparent failed write.
         try:
-            self._index(directory, notes)
+            self._index(directory, notes, filenames)
             live = set(filenames.values())
             for path in objects.glob("*.md"):
                 if path.name not in live:
@@ -435,7 +435,7 @@ class MemoryService:
         except OSError:
             logger.warning("Memory was committed, but derived index/garbage maintenance failed", exc_info=True)
 
-    def _index(self, directory: Path, notes: dict[str, MemoryNote]) -> None:
+    def _index(self, directory: Path, notes: dict[str, MemoryNote], filenames: dict[str, str]) -> None:
         lines = [
             "# Memory index",
             "",
@@ -444,13 +444,11 @@ class MemoryService:
         ]
         for note in sorted(notes.values(), key=lambda item: item.key):
             title = note.title.replace("[", "\\[").replace("]", "\\]")
-            lines.append(
-                f"- [{title}](objects/{note.id}-{note.revision}.md) — `{note.key}`; topics: {', '.join(note.topics)}"
-            )
+            lines.append(f"- [{title}](objects/{filenames[note.id]}) — `{note.key}`; topics: {', '.join(note.topics)}")
         self._atomic_write(directory / "index.md", ("\n".join(lines) + "\n").encode())
 
     def rebuild_index(self, access: MemoryAccess) -> None:
         domain = self._write_domain(access)
         with self._locked(domain, write=True) as directory:
-            _, notes = self._load(directory, domain)
-            self._index(directory, notes)
+            manifest, notes = self._load(directory, domain)
+            self._index(directory, notes, manifest["notes"])

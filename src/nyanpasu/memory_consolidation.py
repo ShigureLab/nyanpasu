@@ -27,9 +27,10 @@ Admission rules:
   assistant summary alone is insufficient. A missing tool result remains unknown.
 - The supplied material may cover only part of the source task. Never infer what
   happened in omitted turns. If support is insufficient, do not write that claim.
-- Preserve source references, including task:{source_id} and specific evidence
-  locations where available. Do not copy secrets, access tokens, or private text
-  into a broader audience. Topics aid retrieval; they do not change permissions.
+- Preserve source references, including the task: reference for source_task_id in
+  the JSON material and specific evidence locations where available. Do not copy
+  secrets, access tokens, or private text into a broader audience. Topics aid
+  retrieval; they do not change permissions.
 
 Deduplication and updates:
 1. Identify a small number of reusable conclusions. Use memory.search and
