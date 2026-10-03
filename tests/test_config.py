@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from nyanpasu.config import (
+    ClaudeBackendConfig,
     ClaudeOptions,
     EnvCommand,
     ModelSettings,
@@ -18,10 +19,13 @@ def test_server_token_from_config_and_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("NYANPASU_HOME", str(tmp_path))
     (tmp_path / "config.toml").write_text('[server]\ntoken = "file-secret"\n')
     config = load_config()
+    assert config.server.token is not None
     assert config.server.token.get_secret_value() == "file-secret"
     assert "file-secret" not in repr(config) and "file-secret" not in config.model_dump_json()
     monkeypatch.setenv("NYANPASU__SERVER__TOKEN", "env-secret")
-    assert load_config().server.token.get_secret_value() == "env-secret"
+    overridden = load_config()
+    assert overridden.server.token is not None
+    assert overridden.server.token.get_secret_value() == "env-secret"
     monkeypatch.setenv("NYANPASU__SERVER__TOKEN", "")
     with pytest.raises(ValueError, match="nonempty bearer token"):
         load_config()
@@ -232,6 +236,7 @@ def test_explicit_migration_preserves_nested_plugin_settings_and_active_executio
     spec = importlib.util.spec_from_file_location(
         "migrate_config", Path(__file__).parents[1] / "scripts/migrate-config.py"
     )
+    assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     raw = {
@@ -263,7 +268,9 @@ def test_explicit_migration_preserves_nested_plugin_settings_and_active_executio
         7200,
     )
     assert config.backends["claude"].process.command == ("/opt/claude wrapper",)
-    assert config.backends["claude"].options.fallback_models[0].reasoning == "medium"
+    claude = config.backends["claude"]
+    assert isinstance(claude, ClaudeBackendConfig)
+    assert claude.options.fallback_models[0].reasoning == "medium"
     assert config.enabled_plugin_ids == ("github_reviewer",)
     assert config.plugins.settings == raw["plugins"]
     assert raw["runtime"]["backend"] == "claude"  # Input is not mutated.

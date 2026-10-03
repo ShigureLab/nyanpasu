@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from nyanpasu.agent import AgentService
+from nyanpasu.backends import Backend, Backends
 from nyanpasu.claude import AutoReviewUnavailable, ClaudeBackend
 from nyanpasu.config import (
     ClaudeBackendConfig,
@@ -58,6 +59,17 @@ def configured(tmp_path: Path):
             "codex": CodexBackendConfig(),
         },
         tasks=TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend="claude"))),
+    )
+
+
+def _agent(config: NyanpasuConfig, tmp_path: Path) -> AgentService:
+    from tests.test_agent import FakeWorktrees
+
+    claude = ClaudeBackend(config)
+    return AgentService(
+        config,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=Backends(config, {"claude": Backend(claude, ClaudeHistorySource(claude.env))}),
     )
 
 
@@ -124,8 +136,6 @@ AUTO_REVIEW_ERROR = (
 async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per_model_effort(
     tmp_path, process, backup_effort
 ):
-    from tests.test_agent import FakeWorktrees
-
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         runtime=RuntimeConfig(),
@@ -163,7 +173,7 @@ async def test_auto_review_unavailable_resumes_in_order_with_same_safety_and_per
         return await successful(argv, input_text=input_text, received=received, **kwargs)
 
     process.side_effect = respond
-    agent = AgentService(config, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    agent = _agent(config, tmp_path)
     try:
         result = await agent.run_now(
             AgentTask(task_id="review", context_key="review", action=TaskAction.RUN, prompt="run")
@@ -262,8 +272,6 @@ async def test_auto_review_fallback_skips_model_already_used_by_native_generatio
 @pytest.mark.parametrize("fallback_models", [(), ("backup",)])
 @pytest.mark.parametrize("review_model", [None, "review-model"])
 async def test_exhausted_auto_review_models_fail_the_task(tmp_path, process, fallback_models, review_model):
-    from tests.test_agent import FakeWorktrees
-
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         runtime=RuntimeConfig(),
@@ -295,7 +303,7 @@ async def test_exhausted_auto_review_models_fail_the_task(tmp_path, process, fal
         pytest.fail("unavailable classifiers must never be treated as successful completion")
 
     process.side_effect = respond
-    agent = AgentService(config, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    agent = _agent(config, tmp_path)
     try:
         with pytest.raises(AutoReviewUnavailable, match="classifier unavailable"):
             await agent.run_now(AgentTask(task_id="failed", context_key="review", action=TaskAction.RUN, prompt="run"))
@@ -337,9 +345,7 @@ async def test_ordinary_tool_denials_do_not_switch_models(configured, tmp_path, 
 @pytest.mark.anyio
 @pytest.mark.parametrize("fail_before_start", [False, True])
 async def test_backend_switch_never_resumes_old_thread(configured, tmp_path: Path, process, fail_before_start):
-    from tests.test_agent import FakeWorktrees
-
-    agent = AgentService(configured, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    agent = _agent(configured, tmp_path)
     task = AgentTask(task_id="old", context_key="switch", action=TaskAction.RUN, prompt="inspect")
     agent.store.record_task(
         task.model_copy(update={"execution": configured.resolve_execution(override=ExecutionOverride(backend="codex"))})
@@ -438,8 +444,6 @@ async def test_configured_args_replace_optional_defaults(tmp_path: Path, monkeyp
 async def test_failed_results_preserve_session_binding(
     configured: NyanpasuConfig, tmp_path: Path, process, result, error
 ):
-    from tests.test_agent import FakeWorktrees
-
     async def respond(argv, *, input_text, received, **kwargs):
         session = json.loads(input_text)["session_id"]
         await received({"type": "system", "subtype": "init", "session_id": session})
@@ -457,7 +461,7 @@ async def test_failed_results_preserve_session_binding(
         return 0, ""
 
     process.side_effect = respond
-    agent = AgentService(configured, worktrees=FakeWorktrees(tmp_path / "worktrees"))
+    agent = _agent(configured, tmp_path)
     try:
         with pytest.raises(RuntimeError, match=error):
             await agent.run_now(AgentTask(task_id="failed", context_key="test", action=TaskAction.RUN, prompt="run"))

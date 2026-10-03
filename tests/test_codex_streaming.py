@@ -51,8 +51,10 @@ async def test_jsonl_handles_split_unicode_bad_lines_and_missing_newline():
 @pytest.mark.anyio
 async def test_app_server_streams_and_reports_eof_without_waiting_for_timeout(tmp_path: Path):
     program = tmp_path / "app-server"
+    release_exit = tmp_path / "release-exit"
     program.write_text(f"""#!{sys.executable}
 import sys,json,time
+from pathlib import Path
 def send(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
     request=json.loads(line)
@@ -66,7 +68,7 @@ for line in sys.stdin:
         response=json.loads(sys.stdin.readline())
         assert response=={{"id":900,"result":{{"decision":"decline"}}}}
         sys.stderr.write("stderr flood\\n"*30000);sys.stderr.flush()
-        time.sleep(0.3)
+        while not Path({str(release_exit)!r}).exists(): time.sleep(0.01)
         sys.exit(2)
 """)
     program.chmod(0o755)
@@ -93,9 +95,10 @@ for line in sys.stdin:
         )
     )
     try:
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started.wait(), 5)
         assert not runner.done()
         assert bindings == [("thread", None), ("thread", "turn")]
+        release_exit.touch()
         with pytest.raises(RuntimeError, match="closed its output"):
             await asyncio.wait_for(runner, 3)
         assert backend.diagnostics
