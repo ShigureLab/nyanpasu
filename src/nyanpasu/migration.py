@@ -23,11 +23,16 @@ def _kind(task: dict) -> str:
     return "default"
 
 
-def migrate_state(path: Path, *, native_homes: dict[str, Path]) -> dict[str, int]:
+def migrate_state(
+    path: Path, *, native_homes: dict[str, Path], isolated_homes: dict[str, Path] | None = None
+) -> dict[str, int]:
     """One-time migration from the pre-hybrid schema, with no runtime fallback.
 
     The caller stops admissions and backs up SQLite before this operation. Only
-    session/turn references are migrated; conversation text stays native.
+    session/turn references are migrated; conversation text stays native. Supply
+    the actual native history directories, which can differ from wrapper config
+    directories. Reader boundaries default to those exact directories, never
+    their parent HOME; isolated_homes permits explicit per-backend boundaries.
     """
     conn = sqlite3.connect(f"file:{path.resolve()}?mode=rw", uri=True, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -70,13 +75,17 @@ def migrate_state(path: Path, *, native_homes: dict[str, Path]) -> dict[str, int
             backend = session["backend"]
             if backend not in native_homes:
                 raise ValueError(f"native home must be specified for historical backend {backend}")
+            native_home = native_homes[backend].resolve()
+            isolated_home = (isolated_homes or {}).get(backend, native_home).resolve()
+            if not native_home.is_relative_to(isolated_home):
+                raise ValueError(f"native home must be inside its isolated home for historical backend {backend}")
             conn.execute(
                 "INSERT INTO native_sessions VALUES (?,?,?,?,?)",
                 (
                     backend,
                     session["thread_id"],
-                    str(native_homes[backend].resolve()),
-                    str(native_homes[backend].resolve().parent),
+                    str(native_home),
+                    str(isolated_home),
                     {"codex": "codex", "claude": "claude-code"}[backend],
                 ),
             )

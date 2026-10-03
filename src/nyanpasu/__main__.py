@@ -12,7 +12,6 @@ from loguru import logger
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
-from nyanpasu.environment import process_env
 from nyanpasu.migration import migrate_state as migrate_state_file
 from nyanpasu.models import AgentTask
 from nyanpasu.store import StateStore
@@ -113,18 +112,34 @@ def explain_target(
 
 
 @app.command()
-def migrate_state(path: Annotated[PathArgument, typer.Argument(help="Backed-up, idle SQLite state file.")]) -> None:
+def migrate_state(
+    path: Annotated[PathArgument, typer.Argument(help="Backed-up, idle SQLite state file.")],
+    native_home: Annotated[
+        list[str], typer.Option(help="Historical backend=/absolute/native/history/directory; repeat per backend.")
+    ],
+    isolated_home: Annotated[
+        list[str] | None, typer.Option(help="Optional backend=/absolute/reader/root; defaults to its native directory.")
+    ] = None,
+) -> None:
     """Migrate pre-hybrid state explicitly. Stop the service and retain a backup first."""
+
+    def locations(values: list[str]) -> dict[str, Path]:
+        result = {}
+        for value in values:
+            backend, separator, directory = value.partition("=")
+            if not separator or not backend or not Path(directory).is_absolute() or backend in result:
+                raise ValueError("home mappings require one backend=/absolute/directory entry per backend")
+            result[backend] = Path(directory)
+        return result
+
     try:
-        config = load_config()
-        homes = {}
-        for name, backend in config.backends.items():
-            env = process_env(backend.process, cwd=config.state_dir, backend=backend.driver)
-            field, directory = (
-                ("CODEX_HOME", ".codex") if backend.driver == "codex" else ("CLAUDE_CONFIG_DIR", ".claude")
+        typer.echo(
+            json.dumps(
+                migrate_state_file(
+                    path, native_homes=locations(native_home), isolated_homes=locations(isolated_home or [])
+                )
             )
-            homes[name] = Path(env.get(field, str(Path(env.get("HOME", str(Path.home()))) / directory)))
-        typer.echo(json.dumps(migrate_state_file(path, native_homes=homes)))
+        )
     except (ValueError, OSError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
