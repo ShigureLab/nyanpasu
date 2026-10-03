@@ -1004,6 +1004,7 @@ dd code {
   align-items: center;
   gap: 12px;
   margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 .toolbar input {
   width: 340px;
@@ -1087,6 +1088,8 @@ dd code {
   border-radius: 8px;
   padding: 20px;
   background: var(--surface);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .runtime-cards span {
   color: var(--muted);
@@ -1403,4 +1406,94 @@ dd code {
 }
 .status.cancelled {
   color: var(--muted);
+}
+
+.execution-summary {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin-top: 6px;
+}
+.execution-details {
+  margin-top: 20px;
+}
+.execution-details h3 {
+  margin-bottom: 8px;
+}
+.execution-policies details {
+  border: 1px solid var(--line);
+  padding: 12px 16px;
+  margin: 8px 0;
+  background: var(--surface);
+}
+.execution-policies .execution-summary {
+  display: inline;
+}
+.execution-activity,
+.memory-domains {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+.execution-activity button,
+.memory-domains span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.memory-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr);
+  gap: 24px;
+}
+.memory-list,
+.memory-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.memory-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  width: 100%;
+  padding: 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+}
+.memory-row.selected {
+  box-shadow: inset 3px 0 var(--accent);
+  background: var(--subtle-surface);
+}
+.memory-row span,
+.memory-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.memory-note {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.memory-sources,
+.memory-note code,
+.memory-context code {
+  overflow-wrap: anywhere;
+}
+.memory-context {
+  align-items: baseline;
+}
+@media (max-width: 780px) {
+  .memory-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .memory-search input {
+    width: 100%;
+  }
 }

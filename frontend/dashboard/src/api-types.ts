@@ -15,6 +15,8 @@ export interface TranscriptContract {
   task_tree: SessionTaskTree;
   search: SearchResults;
   content: ContentPage;
+  memory: MemoryPage;
+  memory_note: MemoryNote;
   [k: string]: unknown;
 }
 export interface SessionPage {
@@ -25,6 +27,8 @@ export interface SessionPage {
   [k: string]: unknown;
 }
 export interface Session {
+  kind: string;
+  execution: ExecutionTarget | null;
   session_id: string;
   context_key: string;
   title: string;
@@ -41,12 +45,27 @@ export interface Session {
   previous_session_id: string | null;
   [k: string]: unknown;
 }
+/**
+ * Resolved execution intent, frozen when a task is admitted.
+ */
+export interface ExecutionTarget {
+  backend: string;
+  driver: 'codex' | 'claude-code';
+  model?: string | null;
+  reasoning?: string | null;
+  turn_timeout_seconds: number;
+  sources?: {
+    [k: string]: string;
+  };
+}
 export interface Coverage {
   source_truncated: boolean;
   redacted: boolean;
   [k: string]: unknown;
 }
 export interface SessionDetail {
+  kind: string;
+  execution: ExecutionTarget | null;
   session_id: string;
   context_key: string;
   title: string;
@@ -68,6 +87,8 @@ export interface SessionDetail {
   [k: string]: unknown;
 }
 export interface Turn {
+  kind: string;
+  execution: ExecutionTarget | null;
   task_id: string;
   turn_id: string | null;
   title: string;
@@ -97,6 +118,8 @@ export interface TaskPage {
   [k: string]: unknown;
 }
 export interface Task {
+  kind: string;
+  execution: ExecutionTarget | null;
   task_id: string;
   context_key: string;
   status: string;
@@ -114,6 +137,8 @@ export interface Task {
   [k: string]: unknown;
 }
 export interface TaskDetail {
+  kind: string;
+  execution: ExecutionTarget | null;
   task_id: string;
   context_key: string;
   status: string;
@@ -145,9 +170,12 @@ export interface TaskDetail {
   [k: string]: unknown;
 }
 export interface TaskChild {
+  kind: string;
+  execution: ExecutionTarget | null;
   task_id: string;
   status: string;
   context_key: string;
+  backend: string;
   [k: string]: unknown;
 }
 export interface TaskEvidence {
@@ -250,9 +278,12 @@ export interface TaskLink {
   [k: string]: unknown;
 }
 export interface TaskTreeNode {
+  kind: string;
+  execution: ExecutionTarget | null;
   task_id: string;
   session_id: string | null;
   title: string;
+  backend: string;
   purpose: string | null;
   status: string;
   created_at: string;
@@ -290,5 +321,51 @@ export interface ContentPage {
   offset: number;
   next_offset: number | null;
   recorded_bytes: number;
+  [k: string]: unknown;
+}
+export interface MemoryPage {
+  enabled: boolean;
+  count: number;
+  domains: MemoryDomain[];
+  topics: MemoryTopic[];
+  items: MemorySummary[];
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface MemoryDomain {
+  id: string;
+  count: number;
+  [k: string]: unknown;
+}
+export interface MemoryTopic {
+  name: string;
+  count: number;
+  [k: string]: unknown;
+}
+export interface MemorySummary {
+  id: string;
+  domain: string;
+  key: string;
+  title: string;
+  topics: string[];
+  applies_to: string[];
+  sources: string[];
+  revision: string;
+  updated_at: string;
+  merged_from: string[];
+  [k: string]: unknown;
+}
+export interface MemoryNote {
+  id: string;
+  domain: string;
+  key: string;
+  title: string;
+  body: string;
+  topics: string[];
+  applies_to: string[];
+  sources: string[];
+  revision: string;
+  updated_at: string;
+  merged_from?: string[];
   [k: string]: unknown;
 }

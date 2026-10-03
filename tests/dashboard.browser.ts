@@ -857,3 +857,90 @@ test('session tabs preserve reading state during background updates and share co
     page.getByText('No sub tasks have been created for this session.', { exact: true }),
   ).toBeVisible();
 });
+
+test('mixed execution targets are inspectable without inventing native model metadata', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?view=tasks');
+  await page.getByLabel('Task kind').selectOption('memory_consolidation');
+  const rows = page.locator('.task-list .task-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('configured-small-model');
+  await expect(rows).toContainText('low');
+  await rows.first().click();
+  const execution = page.getByRole('region', { name: 'Configured execution target' });
+  await expect(execution).toContainText('tasks.kinds.memory_consolidation.execution');
+  await expect(execution).toContainText('backends.claude.defaults');
+
+  await page.route('**/api/sessions/fixture-thread', async (route) => {
+    const response = await route.fetch();
+    const detail = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...detail, runtime: { ...detail.runtime, model: null } },
+    });
+  });
+  await page.goto('/dashboard?session=fixture-thread&tab=details');
+  const native = page
+    .locator('.session-metadata > div')
+    .filter({ has: page.getByText('Native reported model', { exact: true }) });
+  await expect(native).toContainText('Not reported');
+  await expect(native).not.toContainText('configured-review-model');
+  await expect(page.getByRole('region', { name: 'Configured execution target' })).toContainText(
+    'configured-review-model',
+  );
+
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click();
+  await expect(page.getByRole('article', { name: 'Backend codex' })).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Backend claude' })).toBeVisible();
+  await page
+    .locator('.execution-activity button')
+    .filter({ hasText: 'memory_consolidation' })
+    .click();
+  await expect(page.getByLabel('Task backend')).toHaveValue('claude');
+  await expect(page.getByLabel('Task kind')).toHaveValue('memory_consolidation');
+  await expect(page.locator('.task-list .task-row')).toHaveCount(1);
+});
+
+test('memory search shows merge evidence and only task-authorized private knowledge', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?view=memory');
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
+  await expect(page.getByLabel('Memory topic').locator('option')).not.toContainText([
+    'private-topic',
+  ]);
+  await page.getByLabel('Memory topic').selectOption('python');
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  const note = page.getByRole('article', { name: 'Memory details' });
+  await expect(note).toContainText('repository:Relax');
+  await expect(note).toContainText('Use pytest and shared fixtures.');
+  await expect(note.getByRole('region', { name: 'Merged memories' }).locator('li')).toHaveCount(1);
+  await expect(
+    note
+      .locator('dl > div')
+      .filter({ has: page.getByText('Revision', { exact: true }) })
+      .locator('code'),
+  ).toHaveText(/^[a-f0-9]{64}$/);
+  await note.getByRole('button', { name: 'task:fixture-task', exact: true }).click();
+  await expect(page).toHaveURL(/task=fixture-task/);
+  await page.getByRole('button', { name: 'Inspect task memory', exact: false }).click();
+  await page.getByLabel('Memory topic').selectOption('private-topic');
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  await expect(note).toContainText("fixture task's private audience");
+  await page.getByRole('button', { name: 'Public memory', exact: true }).click();
+  await expect(page.locator('.memory-row')).toHaveCount(2);
+  await expect(page.getByLabel('Memory results')).not.toContainText('Private workspace guide');
+  await expect(note).not.toContainText("fixture task's private audience");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel('Search memory').fill('leases');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await page.locator('.memory-row').click();
+  await expect(note).toContainText('Check active task leases.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});

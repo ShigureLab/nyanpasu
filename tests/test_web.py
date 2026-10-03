@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from nyanpasu.config import CodexConfig, NyanpasuConfig, ServerConfig
+from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
@@ -69,7 +69,7 @@ class FakePlugin:
 @pytest.mark.anyio
 async def test_token_protects_all_data_routes_and_plugins(tmp_path) -> None:
     config = NyanpasuConfig(
-        state_dir=tmp_path, server=ServerConfig(token=SecretStr("test-secret")), enabled_plugins=("fake",)
+        state_dir=tmp_path, server=ServerConfig(token=SecretStr("test-secret")), plugins={"enabled": ["fake"]}
     )
     registry = PluginRegistry({"fake": FakePlugin()})
     app = create_app(config, agent=FakeAgent(), plugin_registry=registry)
@@ -79,6 +79,9 @@ async def test_token_protects_all_data_routes_and_plugins(tmp_path) -> None:
         "/api/dashboard",
         "/api/overview",
         "/api/runtime",
+        "/api/memory",
+        "/api/memory?task_id=missing",
+        "/api/memory/missing",
         "/api/plugins",
         "/api/tasks",
         "/api/tasks/missing",
@@ -131,8 +134,7 @@ async def test_dashboard_assets_remain_public_with_auth(tmp_path, monkeypatch) -
 async def test_app_health_and_plugin_router(tmp_path) -> None:
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
-        enabled_plugins=("fake",),
-        plugins={"fake": {"enabled": True}},
+        plugins={"enabled": ["fake"], "settings": {"fake": {"enabled": True}}},
     )
     registry = PluginRegistry()
     registry.register(FakePlugin())
@@ -153,7 +155,15 @@ async def test_app_health_and_plugin_router(tmp_path) -> None:
 async def test_app_tasks_and_contexts_endpoints(tmp_path) -> None:
     config = NyanpasuConfig(state_dir=tmp_path / "state")
     store = StateStore(config.db_path)
-    store.record_task(AgentTask(task_id="task-1", context_key="demo:1", action=TaskAction.RUN, prompt="request"))
+    store.record_task(
+        AgentTask(
+            execution=config.resolve_execution(),
+            task_id="task-1",
+            context_key="demo:1",
+            action=TaskAction.RUN,
+            prompt="request",
+        )
+    )
     store.upsert_context(
         AgentContext(
             context_key="demo:1",
@@ -181,12 +191,28 @@ async def test_app_tasks_and_contexts_endpoints(tmp_path) -> None:
 
 @pytest.mark.anyio
 async def test_runtime_exposes_configured_model_and_effort(tmp_path) -> None:
-    config = NyanpasuConfig(state_dir=tmp_path, codex=CodexConfig(model="configured-model", reasoning_effort="medium"))
+    config = NyanpasuConfig(
+        state_dir=tmp_path,
+        backends={
+            "codex": {"driver": "codex", "defaults": {"model": "configured-model", "reasoning": "medium"}},
+            "cheap": {"driver": "claude-code", "defaults": {"model": "small-model", "reasoning": "low"}},
+        },
+        tasks={"kinds": {"memory_consolidation": {"execution": {"backend": "cheap"}}}},
+    )
     app = create_app(config, agent=FakeAgent(), plugin_registry=PluginRegistry())
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
             runtime = await client.get("/api/runtime")
 
     assert runtime.status_code == 200
-    assert runtime.json()["model"] == "configured-model"
-    assert runtime.json()["reasoning_effort"] == "medium"
+    data = runtime.json()
+    assert "backend" not in data
+    assert data["default_execution"]["model"] == "configured-model"
+    assert data["default_execution"]["reasoning"] == "medium"
+    assert data["task_kinds"]["memory_consolidation"]["backend"] == "cheap"
+    assert data["task_kinds"]["memory_consolidation"]["model"] == "small-model"
+    assert (
+        data["task_kinds"]["memory_consolidation"]["sources"]["backend"] == "tasks.kinds.memory_consolidation.execution"
+    )
+    assert set(data["backends"]) == {"codex", "cheap"}
+    assert data["backends"]["cheap"]["driver"] == "claude-code"

@@ -12,8 +12,10 @@ from pydantic import SecretStr
 from nyanpasu.agent import AgentService
 from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.diagnostics import diagnostic
+from nyanpasu.memory import MemoryAccess, MemoryService
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
+from nyanpasu.targets import ExecutionOverride
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from tests.claude_source import SESSION, records, write_session
 from tests.session_source import MemorySessionSource, tool, turn
@@ -26,14 +28,21 @@ def fixture_app():
     config = NyanpasuConfig(
         state_dir=Path(os.environ["NYANPASU_HOME"]),
         server=ServerConfig(token=SecretStr(token) if token else None),
+        backends={
+            "codex": {"driver": "codex", "defaults": {"model": "configured-review-model", "reasoning": "high"}},
+            "claude": {"driver": "claude-code", "defaults": {"model": "configured-small-model", "reasoning": "low"}},
+        },
+        tasks={"kinds": {"memory_consolidation": {"execution": {"backend": "claude"}}}},
     )
     state = StateStore(config.db_path)
     task = AgentTask(
+        execution=config.resolve_execution(),
         task_id="fixture-task",
         context_key="demo:transcript",
         action=TaskAction.RUN,
         prompt="Inspect session transcript rendering",
         metadata={"request": {"title": "Trace a running agent session"}},
+        memory=MemoryAccess(("public", "private:fixture")),
     )
     state.record_task(task)
     state.mark_task_done(
@@ -46,6 +55,7 @@ def fixture_app():
         )
     )
     review = AgentTask(
+        execution=config.resolve_execution(),
         task_id="fixture-review",
         context_key="demo:review",
         action=TaskAction.RUN,
@@ -56,15 +66,21 @@ def fixture_app():
     state.mark_task_running(review.task_id, None)
     state.bind_task_execution(review.task_id, "fixture-review-thread", "fixture-turn")
     design = state.create_subtask(
-        review.task_id, SubtaskRequest(request_key="design", prompt="Reference design", purpose="independent-design")
+        review.task_id,
+        SubtaskRequest(request_key="design", prompt="Reference design", purpose="independent-design"),
+        execution=config.resolve_execution(),
     )
     audit = state.create_subtask(
-        review.task_id, SubtaskRequest(request_key="audit", prompt="Audit tests", purpose="test-audit")
+        review.task_id,
+        SubtaskRequest(request_key="audit", prompt="Audit tests", purpose="test-audit"),
+        execution=config.resolve_execution(),
     )
     state.mark_task_running(audit.task_id, None)
     state.bind_task_execution(audit.task_id, "fixture-audit-thread", "fixture-turn")
     experiment = state.create_subtask(
-        audit.task_id, SubtaskRequest(request_key="experiment", prompt="Check cleanup", purpose="module-review")
+        audit.task_id,
+        SubtaskRequest(request_key="experiment", prompt="Check cleanup", purpose="module-review"),
+        execution=config.resolve_execution(),
     )
     state.wait_for_subtasks(audit.task_id, [experiment.task_id])
     state.mark_task_waiting(audit.task_id)
@@ -92,6 +108,64 @@ def fixture_app():
     )
     state.wait_for_subtasks(review.task_id, [audit.task_id])
     state.mark_task_waiting(review.task_id)
+    state.record_task(
+        AgentTask(
+            task_id="fixture-memory",
+            context_key="demo:memory",
+            action=TaskAction.RUN,
+            prompt="Consolidate shared knowledge",
+            kind="memory_consolidation",
+            execution=config.resolve_execution("memory_consolidation"),
+            memory=MemoryAccess(("public",), "public"),
+        )
+    )
+    memory = MemoryService(config.memory_dir)
+    public_access = MemoryAccess(("public",), "public")
+    first = memory.write(
+        public_access,
+        key="python-tests",
+        title="Python tests",
+        body="Use pytest.",
+        topics=("python", "tests"),
+        applies_to=("repository:Relax",),
+        sources=("task:fixture-task",),
+    )
+    second = memory.write(
+        public_access,
+        key="pytest-fixtures",
+        title="Pytest fixtures",
+        body="Reuse shared fixtures.",
+        topics=("tests",),
+        sources=("task:fixture-review",),
+    )
+    memory.merge(
+        public_access,
+        (second.id,),
+        target_id=first.id,
+        key=first.key,
+        title="Python testing guide",
+        body="Use pytest and shared fixtures.",
+        topics=("python", "tests"),
+        applies_to=first.applies_to,
+        sources=("task:fixture-memory",),
+        expected_revisions={first.id: first.revision, second.id: second.revision},
+    )
+    memory.write(
+        public_access,
+        key="runtime",
+        title="Runtime checks",
+        body="Check active task leases.",
+        topics=("runtime",),
+        sources=("task:fixture-review",),
+    )
+    memory.write(
+        MemoryAccess(("private:fixture",), "private:fixture"),
+        key="private-guide",
+        title="Private workspace guide",
+        body="This knowledge belongs to the fixture task's private audience.",
+        topics=("private-topic",),
+        sources=("task:fixture-task",),
+    )
     items: list[dict[str, Any]] = [
         {
             "id": "input",
@@ -209,7 +283,15 @@ def fixture_app():
         ("claude-task", "claude-input", "Inspect a Claude Code session"),
         ("claude-followup-task", "claude-followup", "Continue the Claude Code check"),
     ]:
-        state.record_task(AgentTask(task_id=task_id, action=TaskAction.RUN, context_key="demo:claude", prompt=title))
+        state.record_task(
+            AgentTask(
+                execution=config.resolve_execution(override=ExecutionOverride(backend="claude")),
+                task_id=task_id,
+                action=TaskAction.RUN,
+                context_key="demo:claude",
+                prompt=title,
+            )
+        )
         state.mark_task_done(
             TaskRunResult(
                 task_id=task_id,

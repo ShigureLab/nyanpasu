@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { TaskDetail, TaskPage } from './api-types';
+import type { ExecutionTarget, TaskDetail, TaskPage } from './api-types';
 import {
   backendLabel,
   query,
@@ -14,12 +14,14 @@ import { Download } from './Download';
 import { Transcript } from './Transcript';
 import { Time } from './Time';
 import { useSessions } from './useSessions';
+import { ExecutionDetails, ExecutionSummary } from './Execution';
+import { MemoryView } from './Memory';
 
 interface Overview {
   service: string;
-  backend: string;
   generated_at: number;
   task_counts: Record<string, number>;
+  executions: Array<{ backend: string; kind: string; status: string; count: number }>;
 }
 interface Plugin {
   plugin_id: string;
@@ -28,16 +30,14 @@ interface Plugin {
   tasks: Array<{ status: string; action: string; count: number }>;
 }
 interface Runtime {
-  connection: string;
-  backend: string;
-  model: string | null;
-  fallback_models: Array<{ model: string; reasoning_effort: string | null }>;
-  reasoning_effort: string | null;
+  default_execution: ExecutionTarget;
+  task_kinds: Record<string, ExecutionTarget>;
   concurrency: number;
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
-  diagnostics: Diagnostic[];
-  bin: string;
-  backends: Record<string, { connection: string; bin: string; diagnostics: Diagnostic[] }>;
+  backends: Record<
+    string,
+    { driver: string; connection: string; command: string[]; diagnostics: Diagnostic[] }
+  >;
 }
 
 export function App({ onSignOut }: { onSignOut?: () => void }) {
@@ -95,11 +95,13 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
           <span aria-hidden="true">✳</span> Nyanpasu
         </a>
         <nav aria-label="Main navigation">
-          {['sessions', 'tasks', 'plugins', 'runtime'].map((item) => (
+          {['sessions', 'tasks', 'memory', 'plugins', 'runtime'].map((item) => (
             <button
               key={item}
               aria-current={view === item ? 'page' : undefined}
-              onClick={() => navigate({ view: item })}
+              onClick={() =>
+                navigate({ view: item, ...(item === 'memory' ? { memory_task: null } : {}) })
+              }
             >
               {item[0]!.toUpperCase() + item.slice(1)}
             </button>
@@ -215,6 +217,11 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
                       {item.task_count} tasks · {backendLabel(item.backend)}
                       {item.spawned_by_task_id && ' · subtask'}
                     </small>
+                    <ExecutionSummary
+                      kind={item.kind}
+                      backend={item.backend}
+                      execution={item.execution}
+                    />
                   </button>
                 ))}
                 <div ref={sessionEnd} className="session-list-end" role="status">
@@ -255,10 +262,32 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
           </>
         )}
         {view === 'tasks' && (
-          <Tasks selection={selection} navigate={navigate} live={live} refresh={refresh} />
+          <Tasks
+            selection={selection}
+            navigate={navigate}
+            live={live}
+            refresh={refresh}
+            executions={overview.data?.executions ?? []}
+          />
+        )}
+        {view === 'memory' && (
+          <MemoryView
+            key={selection.get('memory_task') ?? 'public'}
+            taskId={selection.get('memory_task')}
+            navigate={navigate}
+            live={live}
+            refresh={refresh}
+          />
         )}
         {view === 'plugins' && <Plugins navigate={navigate} live={live} refresh={refresh} />}
-        {view === 'runtime' && <RuntimeView navigate={navigate} live={live} refresh={refresh} />}
+        {view === 'runtime' && (
+          <RuntimeView
+            navigate={navigate}
+            live={live}
+            refresh={refresh}
+            executions={overview.data?.executions ?? []}
+          />
+        )}
       </main>
     </div>
   );
@@ -269,17 +298,26 @@ function Tasks({
   navigate,
   live,
   refresh,
+  executions,
 }: {
   selection: URLSearchParams;
   navigate: Navigate;
   live: boolean;
   refresh: number;
+  executions: Overview['executions'];
 }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [offset, setOffset] = useState(0);
   const data = useResource<TaskPage>(
-    query('/api/tasks', { q, state, plugin: selection.get('plugin'), offset }),
+    query('/api/tasks', {
+      q,
+      state,
+      plugin: selection.get('plugin'),
+      backend: selection.get('backend'),
+      kind: selection.get('kind'),
+      offset,
+    }),
     live,
     refresh,
   );
@@ -317,6 +355,36 @@ function Tasks({
             <option key={value}>{value}</option>
           ))}
         </select>
+        <select
+          aria-label="Task backend"
+          value={selection.get('backend') ?? ''}
+          onChange={(event) => {
+            navigate({ backend: event.target.value || null });
+            setOffset(0);
+          }}
+        >
+          <option value="">All backends</option>
+          {[...new Set(executions.map((item) => item.backend))].map((name) => (
+            <option key={name} value={name}>
+              {backendLabel(name)}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Task kind"
+          value={selection.get('kind') ?? ''}
+          onChange={(event) => {
+            navigate({ kind: event.target.value || null });
+            setOffset(0);
+          }}
+        >
+          <option value="">All kinds</option>
+          {[...new Set(executions.map((item) => item.kind))].map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
         {selection.has('plugin') && (
           <button onClick={() => navigate({ plugin: null })}>Clear plugin filter</button>
         )}
@@ -333,6 +401,11 @@ function Tasks({
             <div>
               <strong>{task.title}</strong>
               <code>{task.context_key}</code>
+              <ExecutionSummary
+                kind={task.kind}
+                backend={task.backend}
+                execution={task.execution}
+              />
               {task.error && <p className="error-text">{task.error.split('\n')[0]}</p>}
             </div>
             <span>
@@ -384,6 +457,10 @@ function Tasks({
               <p>
                 Lifecycle: {detail.data.lifecycle} · Generation {detail.data.context_generation}
               </p>
+              <ExecutionDetails kind={detail.data.kind} execution={detail.data.execution} />
+              <button onClick={() => navigate({ view: 'memory', memory_task: taskId })}>
+                Inspect task memory →
+              </button>
               {detail.data.spawned_by_task_id && (
                 <p>
                   Parent task{' '}
@@ -412,6 +489,11 @@ function Tasks({
                       <button onClick={() => navigate({ task: child.task_id })}>
                         {child.task_id}
                       </button>
+                      <ExecutionSummary
+                        kind={child.kind}
+                        backend={child.backend}
+                        execution={child.execution}
+                      />
                     </div>
                   ))}
                 </section>
@@ -530,15 +612,17 @@ function RuntimeView({
   navigate,
   live,
   refresh,
+  executions,
 }: {
   navigate: Navigate;
   live: boolean;
   refresh: number;
+  executions: Overview['executions'];
 }) {
   const data = useResource<Runtime>('/api/runtime', live, refresh);
   const [level, setLevel] = useState('');
   const [diagnosticBackend, setDiagnosticBackend] = useState('');
-  const selectedBackend = diagnosticBackend || data.data?.backend || '';
+  const selectedBackend = diagnosticBackend || data.data?.default_execution.backend || '';
   const diagnostics = (data.data?.backends[selectedBackend]?.diagnostics ?? []).filter(
     (item) => !level || item.level === level,
   );
@@ -550,33 +634,48 @@ function RuntimeView({
       {data.data && (
         <>
           <div className="runtime-cards">
-            <article>
-              <span>Backend</span>
-              <h2>{backendLabel(data.data.backend)}</h2>
-              <code>{data.data.bin}</code>
-              <Status state={data.data.connection} />
-            </article>
+            {Object.entries(data.data.backends).map(([name, backend]) => (
+              <article key={name} aria-label={`Backend ${name}`}>
+                <span>{backendLabel(backend.driver)}</span>
+                <h2>{name}</h2>
+                <code>{backend.command.join(' ')}</code>
+                <Status state={backend.connection} />
+              </article>
+            ))}
             <article>
               <span>Root task concurrency</span>
               <h2>{data.data.concurrency}</h2>
               <p>Subtasks share their root’s slot, including while it waits.</p>
             </article>
-            <article>
-              <span>Configured model</span>
-              <h2>{data.data.model ?? 'Backend default'}</h2>
-              <span>Reasoning: {data.data.reasoning_effort ?? 'Backend default'}</span>
-              {data.data.fallback_models.length > 0 && (
-                <p>
-                  Fallback:{' '}
-                  {data.data.fallback_models
-                    .map(
-                      (model) =>
-                        `${model.model} (${model.reasoning_effort ?? data.data?.reasoning_effort ?? 'default'})`,
-                    )
-                    .join(' → ')}
-                </p>
-              )}
-            </article>
+          </div>
+          <h2>Execution policies</h2>
+          <p className="subtle">
+            Defaults for newly submitted work. Each task retains its admitted target.
+          </p>
+          <div className="execution-policies">
+            {Object.entries({ default: data.data.default_execution, ...data.data.task_kinds }).map(
+              ([kind, target]) => (
+                <details key={kind}>
+                  <summary>
+                    <ExecutionSummary kind={kind} backend={target.backend} execution={target} />
+                  </summary>
+                  <ExecutionDetails kind={kind} execution={target} />
+                </details>
+              ),
+            )}
+          </div>
+          <h2>Task activity</h2>
+          <div className="execution-activity">
+            {executions.map((item) => (
+              <button
+                key={`${item.backend}:${item.kind}:${item.status}`}
+                onClick={() => navigate({ view: 'tasks', backend: item.backend, kind: item.kind })}
+              >
+                {backendLabel(item.backend)} · {item.kind} <Status state={item.status} />{' '}
+                {item.count}
+              </button>
+            ))}
+            {executions.length === 0 && <p className="empty">No recorded tasks.</p>}
           </div>
           <h2>Context leases</h2>
           {data.data.leases.map((lease) => (
@@ -595,9 +694,9 @@ function RuntimeView({
               value={selectedBackend}
               onChange={(event) => setDiagnosticBackend(event.target.value)}
             >
-              {[...new Set([data.data.backend, ...Object.keys(data.data.backends)])].map((name) => (
+              {Object.keys(data.data.backends).map((name) => (
                 <option key={name} value={name}>
-                  {backendLabel(name)}
+                  {name}
                 </option>
               ))}
             </select>

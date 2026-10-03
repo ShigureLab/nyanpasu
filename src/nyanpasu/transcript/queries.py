@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from nyanpasu.presentation import task_title
+from nyanpasu.presentation import task_execution, task_title
 from nyanpasu.redaction import redact
 from nyanpasu.store import TASK_RUNS
 from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint
@@ -165,6 +165,7 @@ class TranscriptReader:
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
             runtime["history_error"] = str(exc)
         return {
+            **task_execution(json.loads(latest["task_json"])),
             "session_id": session_id,
             "thread_id": latest["session_thread_id"],
             "context_key": latest["context_key"],
@@ -191,6 +192,7 @@ class TranscriptReader:
             workspace = task.get("workspace") or {}
             data["tasks"].append(
                 {
+                    **task_execution(task),
                     "task_id": row["task_id"],
                     "turn_id": row["turn_id"],
                     "title": task_title(task),
@@ -247,6 +249,8 @@ class TranscriptReader:
             result = json.loads(row["subtask_result"] or "{}")
             nodes[row["task_id"]] = {
                 **task_link(row),
+                **task_execution(json.loads(row["task_json"])),
+                "backend": row["session_backend"],
                 "purpose": json.loads(row["task_json"]).get("metadata", {}).get("purpose"),
                 "status": row["status"],
                 "created_at": iso_time(row["created_at"]),
