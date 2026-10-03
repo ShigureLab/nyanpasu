@@ -12,6 +12,7 @@ from loguru import logger
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
+from nyanpasu.memory_migration import migrate_memory as migrate_memory_store
 from nyanpasu.migration import migrate_state as migrate_state_file
 from nyanpasu.models import AgentTask, TaskStatus
 from nyanpasu.store import StateStore
@@ -140,6 +141,18 @@ def migrate_state(
                 )
             )
         )
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command()
+def migrate_memory(
+    source: Annotated[PathArgument, typer.Argument(help="Offline, backed-up legacy memory directory.")],
+    destination: Annotated[PathArgument, typer.Argument(help="New destination directory; must not exist.")],
+) -> None:
+    """Import old memory notes as sources. Stop the service and retain its backup."""
+    try:
+        typer.echo(json.dumps(migrate_memory_store(source, destination)))
     except (ValueError, OSError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 

@@ -122,4 +122,16 @@ This is an explicit configuration and storage-format upgrade; runtime loading do
    uv run nyanpasu explain-target --kind memory_consolidation
    ```
 
-Old knowledge-note manifests cannot be used as source stores. Keep the original memory directory and backups intact until an explicit offline conversion and deployment have been verified; do not start this version against the old-format directory.
+Old knowledge-note manifests cannot be used as source stores. Convert them with the offline migration below before restarting; retain the original directory and backups until deployment has been verified.
+
+## Migration from knowledge notes
+
+After draining and stopping the service and backing up its state as described above, import the old memory directory into a new destination:
+
+```bash
+uv run nyanpasu migrate-memory /path/to/old-memory /path/to/new-memory
+```
+
+The command leaves the input unchanged and publishes a new destination only after every active note is imported. It preserves each audience, original content, applicability, and source references. Large notes are split without dropping text. Imported accounts are clearly marked as legacy memory that has not been independently reverified. Their identities begin with `legacy:` and do not refer to a new execution task.
+
+After completing the configuration upgrade above, replace the active memory directory with the new destination. Retain the old directory and service-state backup until the deployment has been accepted. Imported sources are available immediately; subsequent consolidation can include them in derived navigation.
