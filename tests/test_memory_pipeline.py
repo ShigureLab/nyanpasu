@@ -16,6 +16,7 @@ from nyanpasu.task_control import call_control
 from tests.session_source import MemorySessionSource, tool, turn
 from tests.test_agent import FakeCodex
 from tests.test_hybrid_memory import ALICE, BOB, PUBLIC, config_for, make_agent, task
+from tests.test_memory import legacy_sources
 
 ROOT_EXTRACTION_ID = f"memory:{hashlib.sha256(b'root').hexdigest()}"
 SOURCE_EXTRACTION_ID = f"memory:{hashlib.sha256(b'source').hexdigest()}"
@@ -589,7 +590,7 @@ async def test_extraction_reads_only_bound_turns_across_backend_handoffs(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_summary_consumes_only_its_context_in_bounded_batches(tmp_path):
+async def test_migrated_account_is_compacted_in_bounded_chunks_before_new_evidence(tmp_path):
     model = MemoryModel()
     agent = make_agent(
         config_for(tmp_path, consolidate=True),
@@ -598,37 +599,108 @@ async def test_summary_consumes_only_its_context_in_bounded_batches(tmp_path):
     )
     prior = [
         publish_source(
-            agent.memory, ALICE, f"history-{index}", body="history " * 1600, context_key="source", source_order=index
+            agent.memory,
+            ALICE,
+            f"history-{index}",
+            body=f"Lesson {index}\n" + "history " * 1600,
+            topics=[f"topic-{index}-{number}".ljust(128, "x") for number in range(32)],
         )
         for index in range(7)
     ]
+    legacy_sources(
+        agent.memory, ALICE, contexts={item.task_id: ("source", 1, index) for index, item in enumerate(prior)}
+    )
+    agent.memory.bind_source_contexts(ALICE, {})
+    merged = agent.memory.read(ALICE, prior[0].id)
     hidden = publish_source(agent.memory, PUBLIC, "outside-domain", body="PUBLIC HISTORY OUTSIDE MAINTENANCE DOMAIN")
     unrelated = publish_source(agent.memory, ALICE, "another-context", body="PRIVATE UNRELATED CONTEXT")
     next_generation = publish_source(agent.memory, ALICE, "new-generation", context_key="source", context_generation=2)
     try:
         await agent.run_now(task("source", memory=ALICE))
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
+        extractions = [material for kind, material in model.events if kind == "extraction"]
+        retained = [
+            item for material in extractions for item in material["evidence"] if item["kind"] == "retained_memory"
+        ]
+        assert len(retained) > 1
+        assert "".join(item["text"] for item in retained) == merged.body
+        assert all(
+            len(json.dumps(material["evidence"], ensure_ascii=False)) <= EVIDENCE_BUDGET for material in extractions
+        )
+        assert extractions[0]["previous_account"] is None
+        assert "Lesson 0" in extractions[-1]["previous_account"]["body"]
         batches = [material["source_accounts"] for kind, material in model.events if kind == "summary"]
-        assert len(batches) > 1
-        seen = [source["id"] for batch in batches for source in batch]
+        seen = {source["id"] for batch in batches for source in batch}
         snapshot = agent.memory.snapshot_context(ALICE, "source", 1)
         assert set(seen) == set(snapshot.source_revisions)
-        assert len(seen) == len(set(seen)) == len(prior) + 1
+        assert seen == {merged.id}
         assert hidden.id not in seen
         assert unrelated.id not in seen and next_generation.id not in seen
-        assert seen[: len(prior)] == [source.id for source in prior]
         assert {material["context_key"] for kind, material in model.events if kind == "summary"} == {"source"}
         assert all(
             sum(len(json.dumps(item, ensure_ascii=False)) for item in batch) <= EVIDENCE_BUDGET for batch in batches
         )
         assert snapshot.summary is not None
         assert set(snapshot.summary.sources) == set(seen)
+        assert all(original.body in merged.body for original in prior)
+        assert snapshot.sources[0].id == merged.id
+        assert len(snapshot.sources[0].body) <= 16_000
+        assert set(merged.sources) <= set(snapshot.sources[0].sources)
     finally:
         await agent.shutdown()
 
 
 @pytest.mark.anyio
-async def test_summary_appends_only_new_sources_to_the_previous_context_summary(tmp_path):
+async def test_startup_migrates_large_accounts_and_refreshes_summaries_without_native_history(tmp_path):
+    model = MemoryModel()
+    native = MemorySessionSource()
+    agent = make_agent(config_for(tmp_path, consolidate=True), cheap=model, source=native)
+    originals = []
+    for index in range(7):
+        name = f"historical-{index}"
+        request = agent._admit(task(name, memory=ALICE).model_copy(update={"context_key": "conversation"}))
+        agent.store.record_task(request)
+        agent.store.mark_task_running(name, None)
+        agent.store.mark_task_done(
+            TaskRunResult(task_id=name, status=TaskStatus.COMPLETED, thread_id=None, turn_id=None, final_message="done")
+        )
+        originals.append(
+            publish_source(
+                agent.memory,
+                ALICE,
+                name,
+                body=f"Historical lesson {index}\n" + "evidence " * 1200,
+                topics=[f"topic-{index}-{number}".ljust(128, "x") for number in range(32)],
+            )
+        )
+    legacy_sources(agent.memory, ALICE)
+    try:
+        await agent.startup()
+        jobs = [item for item in agent.store.recent_tasks() if item.kind == "memory_consolidation"]
+        assert len(jobs) == 1
+        assert (await agent.wait_for_memory(jobs[0].task_id)).status is TaskStatus.COMPLETED
+        assert native.calls == []
+        assert {kind for kind, _ in model.events} == {"summary"}
+        batches = [material["source_accounts"] for _, material in model.events]
+        assert len(batches) > 1
+        assert all(
+            sum(len(json.dumps(item, ensure_ascii=False)) for item in batch) <= EVIDENCE_BUDGET for batch in batches
+        )
+        snapshot = agent.memory.snapshot_context(ALICE, "conversation", 1)
+        assert len(snapshot.sources) == 1
+        merged = snapshot.sources[0]
+        assert "".join(item["body"] for batch in batches for item in batch) == merged.body
+        assert all(original.body in merged.body for original in originals)
+        assert {item["id"] for batch in batches for item in batch} == {merged.id}
+        assert snapshot.summary is not None and not snapshot.summary.stale
+        assert snapshot.summary.sources == (merged.id,)
+        assert len(summary_block(snapshot.summary).encode()) <= SUMMARY_MAX_BYTES
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_summary_refreshes_from_the_updated_rolling_account(tmp_path):
     model = MemoryModel()
     agent = make_agent(
         config_for(tmp_path, consolidate=True),
@@ -646,21 +718,25 @@ async def test_summary_appends_only_new_sources_to_the_previous_context_summary(
         assert current is not None
         calls = [material for kind, material in model.events if kind == "summary"]
         assert len(calls) == 1
-        assert calls[0]["draft"] == {"body": prior.body, "source_ids": list(prior.sources)}
+        assert calls[0]["draft"] == {"body": "", "source_ids": []}
         assert [item["id"] for item in calls[0]["source_accounts"]] == [current.id]
+        assert current.id == old.id
+        assert old.body in calls[0]["source_accounts"][0]["body"]
+        assert model.events[0][1]["previous_account"]["body"] == old.body
         assert "DO NOT REPLAY ANOTHER CONTEXT" not in json.dumps(model.events)
         snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
         assert snapshot.summary is not None and not snapshot.summary.stale
-        assert snapshot.summary.source_revisions == {old.id: old.revision, current.id: current.revision}
-        assert set(snapshot.summary.sources) == {old.id, current.id}
+        assert snapshot.summary.source_revisions == {current.id: current.revision}
+        assert snapshot.summary.id == prior.id and snapshot.summary.revision != prior.revision
+        assert snapshot.summary.sources == (current.id,)
         assert agent.memory.snapshot_context(PUBLIC, unrelated.context_key, 1).summary == unrelated_summary
     finally:
         await agent.shutdown()
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("change", ["corrected", "withdrawn", "inserted-earlier"])
-async def test_changed_historical_sources_replay_only_their_context(tmp_path, change):
+@pytest.mark.parametrize("change", ["corrected", "withdrawn"])
+async def test_corrected_or_withdrawn_account_refreshes_only_its_context(tmp_path, change):
     model = MemoryModel()
     agent = make_agent(
         config_for(tmp_path, consolidate=True),
@@ -673,40 +749,37 @@ async def test_changed_historical_sources_replay_only_their_context(tmp_path, ch
     try:
         await agent.run_now(task("source"))
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
-        if change == "inserted-earlier":
-            inserted = publish_source(
-                agent.memory, PUBLIC, "inserted", context_key="source", source_order=5, body="Earlier evidence"
-            )
-        else:
-            publish_source(
-                agent.memory,
-                PUBLIC,
-                old.task_id,
-                context_key=old.context_key,
-                source_order=old.source_order,
-                input_digest="corrected-evidence",
-                body="Verified correction" if change == "corrected" else "",
-                expected_revision=old.revision,
-            )
+        current = agent.memory.source_state(PUBLIC, "source")
+        assert current is not None
+        publish_source(
+            agent.memory,
+            PUBLIC,
+            current.task_id,
+            context_key=current.context_key,
+            source_order=current.source_order,
+            input_digest="corrected-evidence",
+            body="Verified correction" if change == "corrected" else "",
+            expected_revision=current.revision,
+        )
         expected = agent.memory.snapshot_context(PUBLIC, "source", 1)
         assert expected.summary is not None and expected.summary.stale
         model.events.clear()
         retry = await agent.rebuild_memory("source")
         assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
-        assert [kind for kind, _ in model.events] == ["summary"]
-        material = model.events[0][1]
-        assert material["draft"] == {"body": "", "source_ids": []}
-        assert [item["id"] for item in material["source_accounts"]] == [source.id for source in expected.sources]
-        assert "UNRELATED EVIDENCE MUST NOT BE REPLAYED" not in json.dumps(material)
-        if change == "inserted-earlier":
-            assert material["source_accounts"][0]["id"] == inserted.id
-        elif change == "corrected":
+        if change == "corrected":
+            assert [kind for kind, _ in model.events] == ["summary"]
+            material = model.events[0][1]
+            assert material["draft"] == {"body": "", "source_ids": []}
+            assert [item["id"] for item in material["source_accounts"]] == [old.id]
             assert material["source_accounts"][0]["body"] == "Verified correction"
+            assert "UNRELATED EVIDENCE MUST NOT BE REPLAYED" not in json.dumps(material)
         else:
-            assert old.id not in {item["id"] for item in material["source_accounts"]}
+            assert model.events == []
         summary = agent.memory.snapshot_context(PUBLIC, "source", 1).summary
         assert summary is not None and not summary.stale
         assert summary.source_revisions == expected.source_revisions
+        if change == "withdrawn":
+            assert summary.body == "" and summary.sources == ()
         assert agent.memory.snapshot_context(PUBLIC, "unrelated", 1).summary == other
     finally:
         await agent.shutdown()
@@ -731,14 +804,15 @@ async def test_noop_followup_can_preserve_prior_useful_summary_while_advancing_c
         await agent.run_now(task("source"))
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         material = next(material for kind, material in model.events if kind == "summary")
-        assert material["draft"] == {"body": prior.body, "source_ids": list(prior.sources)}
+        assert model.events[0][1]["previous_account"]["body"] == old.body
+        assert old.body in material["source_accounts"][0]["body"]
         current = agent.memory.source_state(PUBLIC, "source")
         assert current is not None
         assert [item["id"] for item in material["source_accounts"]] == [current.id]
         snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
         assert snapshot.summary is not None
         assert snapshot.summary.body == prior.body and snapshot.summary.sources == prior.sources
-        assert snapshot.summary.source_revisions == {old.id: old.revision, current.id: current.revision}
+        assert snapshot.summary.source_revisions == {current.id: current.revision}
         assert not snapshot.summary.stale
         calls = len(model.events)
         retry = await agent.rebuild_memory("source")

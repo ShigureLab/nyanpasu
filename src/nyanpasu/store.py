@@ -546,6 +546,29 @@ class StateStore:
             ).fetchall()
         return {row["task_id"]: (row["context_key"], row["context_generation"], row["source_order"]) for row in rows}
 
+    def memory_source_tasks(self, task_id: str) -> list[AgentTask]:
+        """Completed contributions through this task, in this audience and context's execution order."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """WITH contributions AS (
+                    SELECT r.task_id,r.task_json,r.context_key,r.context_generation,
+                        json_extract(r.task_json,'$.memory.write_domain') AS domain,
+                        coalesce((SELECT min(started_at) FROM task_turns t WHERE t.task_id=r.task_id),
+                            r.created_at) AS source_order
+                    FROM task_runs r WHERE r.spawned_by_task_id IS NULL
+                        AND r.status='completed' AND r.action='run'
+                        AND json_extract(r.task_json,'$.kind') NOT IN ('memory_extraction','memory_consolidation')
+                )
+                SELECT source.task_json FROM contributions source JOIN contributions target
+                    ON target.task_id=? AND source.domain=target.domain
+                        AND source.context_key=target.context_key
+                        AND source.context_generation=target.context_generation
+                WHERE (source.source_order,source.task_id) <= (target.source_order,target.task_id)
+                ORDER BY source.source_order,source.task_id""",
+                (task_id,),
+            ).fetchall()
+        return [AgentTask.model_validate_json(row["task_json"]) for row in rows]
+
     def native_home(self, backend: str, thread_id: str) -> NativeSessionLocation:
         with self._connect() as conn:
             row = conn.execute(

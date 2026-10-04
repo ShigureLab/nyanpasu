@@ -237,8 +237,8 @@ export function MemoryView({
           {section === 'summaries' && (
             <section aria-label="Context summaries">
               <p className="memory-section-hint">
-                One rolling summary per context. Select one to read its conclusions and supporting
-                sources.
+                One rolling summary per session and audience. Select one to read its conclusions and
+                supporting sources.
               </p>
               {summaries.length === 0 ? (
                 <p className="empty">
@@ -290,8 +290,8 @@ export function MemoryView({
           {section === 'sources' && (
             <section aria-label="Source summaries">
               <p className="memory-section-hint">
-                Published task evidence behind the summaries. Select a source to read the full
-                account.
+                One detailed account per session and audience, updated as tasks add evidence. Select
+                a source to read the full account and its task references.
               </p>
               <div className="memory-layout">
                 <div className="memory-list" aria-label="Memory results" aria-busy={page.loading}>
@@ -606,9 +606,12 @@ function SourceReader({
       <p className="memory-byline">
         {audienceLabel(source.domain)} · Updated <Time value={source.updated_at} />
       </p>
+      <p className="memory-byline">
+        {source.context_key} · generation {source.context_generation}
+      </p>
       <MemoryMarkdown onSelect={openSource}>{source.body}</MemoryMarkdown>
       <div className="memory-source-task">
-        <span>Source task</span>
+        <span>Last updated by task</span>
         <button className="quiet" onClick={() => navigate({ view: 'tasks', task: source.task_id })}>
           task:{source.task_id}
         </button>

@@ -105,47 +105,86 @@ def evidence_chunks(source_id: str, source_prompt: str, evidence: list[dict[str,
 
 
 def source_chunks(sources: Sequence[Any]) -> list[list[dict[str, Any]]]:
-    """Summaries consume ordered complete accounts from one context."""
+    """Bound summary inputs, including losslessly migrated accounts larger than the normal budget."""
     return _partition(
         [
-            {"id": source.id, "title": source.title, "body": source.body, "topics": list(source.topics)}
+            {
+                "id": source.id,
+                "title": source.title,
+                "body": source.body[offset : offset + BLOCK_LIMIT],
+                "offset": offset,
+            }
             for source in sources
+            for offset in range(0, max(1, len(source.body)), BLOCK_LIMIT)
+        ]
+    )
+
+
+def retained_account_chunks(source: MemorySource) -> list[list[dict[str, Any]]]:
+    """Fold a migrated account into bounded working memory before processing new evidence."""
+    return _partition(
+        [
+            {
+                "kind": "retained_memory",
+                "title": source.title,
+                "reference": f"memory:{source.id}",
+                "offset": offset,
+                "text": source.body[offset : offset + BLOCK_LIMIT],
+            }
+            for offset in range(0, len(source.body), BLOCK_LIMIT)
         ]
     )
 
 
 def summary_inputs(snapshot: MemorySnapshot) -> tuple[ContextSummaryOutput, tuple[MemorySource, ...]]:
-    """Append to a covered prefix; replay this context after corrected or reordered evidence."""
+    """A changed rolling account replaces the summary's evidence, rather than extending it."""
     previous = snapshot.summary
-    if previous is not None:
-        covered = len(previous.source_revisions)
-        prefix = {source.id: source.revision for source in snapshot.sources[:covered]}
-        if prefix == previous.source_revisions:
-            return ContextSummaryOutput(body=previous.body, source_ids=list(previous.sources)), snapshot.sources[
-                covered:
-            ]
+    if previous is not None and previous.source_revisions == snapshot.source_revisions:
+        return ContextSummaryOutput(body=previous.body, source_ids=list(previous.sources)), ()
     return ContextSummaryOutput(body="", source_ids=[]), snapshot.sources
 
 
-def extraction_prompt(source_id: str, previous: Any, chunk: list[dict[str, Any]], *, final: bool) -> str:
+def extraction_prompt(
+    source_id: str,
+    previous: Any,
+    chunk: list[dict[str, Any]],
+    *,
+    final: bool,
+    context_key: str,
+    context_generation: int,
+    source_order: float,
+) -> str:
     account = (
         {
             "title": previous.title,
             "body": previous.body,
-            "topics": list(previous.topics),
+            "topics": list(previous.topics[:32]),
+            "last_task_id": previous.task_id,
+            "latest_evidence_order": previous.source_order,
         }
         if previous is not None
         else None
     )
     material = {
         "source_task_id": source_id,
+        "context_key": context_key,
+        "context_generation": context_generation,
+        "source_order": source_order,
         "previous_account": account,
         "final_chunk": final,
         "evidence": [{key: value for key, value in item.items() if key != "reference"} for item in chunk],
     }
-    return f"""Write an updated source account from the previous account and this next ordered evidence chunk.
+    return f"""Update this context's rolling memory from its previous account and this next ordered evidence chunk.
 Return only the JSON required by the output schema. This is background memory work;
 do not run tools, edit files, contact anyone, or continue the source task.
+
+The previous account covers earlier tasks in the same context. Rewrite and merge it
+with useful new evidence; do not create a separate task recap or append duplicate lessons.
+Preserve earlier applicable knowledge when the new task adds nothing useful.
+Use source_order and the account's latest_evidence_order to distinguish when evidence occurred from when it was extracted:
+late extraction of an older task must not undo a later verified correction.
+Retained_memory chunks are existing memory being compacted after an upgrade, not
+new independent evidence. Preserve their useful content and qualifications.
 
 Retain source-grounded knowledge that can improve a future task's decisions or execution.
 Prioritize substantive human feedback and corrections: what was mistaken, why it
@@ -195,6 +234,7 @@ def summary_prompt(
     return f"""Update the compact memory summary for this one context from its previous summary and next source accounts.
 Return only the JSON required by the output schema. Do not run tools, modify files,
 contact anyone, or perform the source tasks. Accounts arrive in execution order.
+Large accounts may arrive in consecutive parts with the same id and increasing offsets.
 The summary is automatically provided to future tasks alongside other relevant summaries.
 It must remain a small overview, not grow into a task-by-task history.
 

@@ -54,7 +54,7 @@ def test_rebuild_command_retries_summary_and_reports_publication_result(tmp_path
     assert status["kind"] == "memory_consolidation"
     assert status["task_id"] != failed.task_id
     assert agent.store.task_status(failed.task_id) == "failed"
-    assert agent.memory.source_state(PUBLIC, source.task_id) == checkpoint
+    assert agent.memory.source_state(PUBLIC, source.context_key, source.context_generation) == checkpoint
     assert [kind for kind, _ in model.events] == ["summary"]
     summary = agent.memory.list_summaries(PUBLIC)
     if fails:
@@ -103,16 +103,27 @@ def test_rebuild_all_binds_legacy_contexts_and_reuses_sources_without_native_his
     assert [kind for kind, _ in model.events] == ["summary", "summary"]
     inputs = {material["context_key"]: material for _, material in model.events}
     assert set(inputs) == {"pr-257", "pr-258"}
-    assert [item["id"] for item in inputs["pr-257"]["source_accounts"]] == [
-        originals[0].id,
-        originals[1].id,
-    ]
-    assert [item["id"] for item in inputs["pr-258"]["source_accounts"]] == [originals[2].id]
+    accounts = agent.memory.list_sources(PUBLIC)
+    assert len(accounts) == 2
+    by_context = {source.context_key: source for source in accounts}
+    assert set(by_context) == {"pr-257", "pr-258"}
+    merged = by_context["pr-257"]
+    separate = by_context["pr-258"]
+    assert [item["id"] for item in inputs["pr-257"]["source_accounts"]] == [merged.id]
+    assert [item["id"] for item in inputs["pr-258"]["source_accounts"]] == [separate.id]
+    assert inputs["pr-257"]["source_accounts"][0]["body"] == merged.body
+    assert inputs["pr-258"]["source_accounts"][0]["body"] == separate.body
+    assert originals[0].body in merged.body and originals[1].body in merged.body
+    assert originals[2].body not in merged.body
+    assert merged.sources == tuple(sorted({*originals[0].sources, *originals[1].sources}))
+    assert separate.body == originals[2].body and separate.sources == originals[2].sources
+    assert agent.memory.read(PUBLIC, originals[0].id) == agent.memory.read(PUBLIC, originals[1].id) == merged
     assert native.calls == []
     for original in originals:
         source = agent.memory.read(PUBLIC, original.id)
-        assert source.body == original.body and source.sources == original.sources
-        assert source.context_key == ("pr-258" if source.task_id == "other" else "pr-257")
+        assert original.body in source.body and set(original.sources).issubset(source.sources)
+        assert source.context_key == ("pr-258" if original.task_id == "other" else "pr-257")
+        assert source.context_generation == 1
         assert source.source_order > 0
     background = [item for item in agent.store.recent_tasks() if item.kind == "memory_consolidation"]
     assert len(background) == 2
@@ -185,7 +196,7 @@ def test_rebuild_all_uses_complete_publications_even_when_empty_or_a_newer_draft
     assert len(results) == 1 and results[0]["kind"] == "memory_consolidation"
     assert results[0]["status"] == "completed"
     assert native.calls == []
-    assert agent.memory.source_state(PUBLIC, root.task_id) == latest
+    assert agent.memory.source_state(PUBLIC, root.context_key, root.context_generation) == latest
     summary = agent.memory.snapshot_context(PUBLIC, root.context_key, root.context_generation).summary
     assert summary is not None and not summary.stale
     if source_state == "withdrawn":

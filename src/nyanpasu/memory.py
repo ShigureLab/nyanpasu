@@ -11,7 +11,7 @@ import re
 import tempfile
 import unicodedata
 from collections import Counter
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -103,6 +103,7 @@ class MemorySource:
 class MemorySourceCheckpoint(MemorySource):
     input_digest: str
     cursor: int
+    task_digests: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,8 +152,8 @@ def _source_digest(revisions: dict[str, str]) -> str:
     return hashlib.sha256(_json(revisions)).hexdigest()
 
 
-def _identifier(kind: str, domain: str, task_id: str = "") -> str:
-    return hashlib.sha256(_json([kind, domain, task_id])).hexdigest()[:32]
+def _source_id(domain: str, context_key: str, context_generation: int) -> str:
+    return hashlib.sha256(_json(["source", domain, context_key, context_generation])).hexdigest()[:32]
 
 
 def _summary_id(domain: str, context_key: str, context_generation: int) -> str:
@@ -230,8 +231,8 @@ def _input_digest(value: str) -> str:
 
 def _markdown(record: MemorySourceCheckpoint | MemorySummary) -> bytes:
     data = asdict(record)
-    for field in ("domain", "revision", "body", "stale"):
-        data.pop(field, None)
+    for name in ("domain", "revision", "body", "stale"):
+        data.pop(name, None)
     data["kind"] = "source" if isinstance(record, MemorySourceCheckpoint) else "summary"
     # JSON frontmatter is also valid YAML. Markdown remains the only body store.
     return ("---\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n---\n\n" + record.body + "\n").encode()
@@ -249,7 +250,7 @@ def _published(checkpoint: MemorySourceCheckpoint) -> MemorySource:
 
 
 class MemoryService:
-    """Audience-scoped source accounts and derived context summaries.
+    """One rolling account and derived summary per audience and context generation.
 
     A domain manifest points to immutable Markdown objects. Source progress and
     its draft body commit together; only complete accounts enter recall. The
@@ -297,6 +298,7 @@ class MemoryService:
             return {"domain": domain, "sources": {}, "drafts": {}, "summaries": {}}
         manifest = json.loads(path.read_text())
         manifest.setdefault("summaries", {})
+        manifest.setdefault("aliases", {})
         return manifest
 
     @staticmethod
@@ -312,8 +314,9 @@ class MemoryService:
         data.setdefault("context_key", data["task_id"])
         data.setdefault("context_generation", 1)
         data.setdefault("source_order", 0)
-        for field in ("topics", "sources"):
-            data[field] = tuple(data[field])
+        data.setdefault("task_digests", {data["task_id"]: data["input_digest"]} if data["complete"] else {})
+        for name in ("topics", "sources"):
+            data[name] = tuple(data[name])
         return MemorySourceCheckpoint(domain=domain, body=body, revision=revision, **data)
 
     def _sources(
@@ -351,9 +354,15 @@ class MemoryService:
 
     def read(self, access: MemoryAccess, source_id: str) -> MemorySource:
         if isinstance(source_id, str) and _ID.fullmatch(source_id):
-            for source in self.list_sources(access):
-                if source.id == source_id:
-                    return source
+            for domain in access.read_domains:
+                with self._locked(domain) as directory:
+                    manifest = self._manifest(directory, domain)
+                    identity = manifest.get("aliases", {}).get(source_id, source_id)
+                    filename = manifest["sources"].get(identity)
+                    if filename:
+                        source = self._checkpoint(directory, domain, filename)
+                        if source.complete and source.body:
+                            return _published(source)
         raise MemoryNotFound("memory source not found")
 
     def search(
@@ -369,7 +378,16 @@ class MemoryService:
         for source in self.list_sources(access):
             if not required_topics.issubset(source.topics):
                 continue
-            values = ((source.task_id, 4), (source.title, 4), (" ".join(source.topics), 5), (source.body, 1))
+            task_ids = " ".join(
+                reference.removeprefix("task:") for reference in source.sources if reference.startswith("task:")
+            )
+            values = (
+                (source.context_key, 4),
+                (task_ids, 4),
+                (source.title, 4),
+                (" ".join(source.topics), 5),
+                (source.body, 1),
+            )
             score = sum(weight for text, weight in values for term in terms if term in text.casefold())
             if score or not terms:
                 matches.append((score, source))
@@ -398,12 +416,26 @@ class MemoryService:
             "summary_count": len(self.list_summaries(access)),
         }
 
-    def source_state(self, access: MemoryAccess, task_id: str) -> MemorySourceCheckpoint | None:
+    def source_state(
+        self, access: MemoryAccess, context_key: str, context_generation: int = 1
+    ) -> MemorySourceCheckpoint | None:
+        return self._source_state(access, context_key, context_generation, include_draft=True)
+
+    def published_source_state(
+        self, access: MemoryAccess, context_key: str, context_generation: int = 1
+    ) -> MemorySourceCheckpoint | None:
+        return self._source_state(access, context_key, context_generation, include_draft=False)
+
+    def _source_state(
+        self, access: MemoryAccess, context_key: str, context_generation: int, *, include_draft: bool
+    ) -> MemorySourceCheckpoint | None:
         domain = self._write_domain(access)
-        source_id = _identifier("source", domain, _task_id(task_id))
+        context_key, context_generation = _context(context_key, context_generation)
+        source_id = _source_id(domain, context_key, context_generation)
         with self._locked(domain) as directory:
             manifest = self._manifest(directory, domain)
-            filename = manifest["drafts"].get(source_id) or manifest["sources"].get(source_id)
+            filename = manifest["drafts"].get(source_id) if include_draft else None
+            filename = filename or manifest["sources"].get(source_id)
             return self._checkpoint(directory, domain, filename) if filename else None
 
     def checkpoint_source(
@@ -440,16 +472,45 @@ class MemoryService:
             "context_generation": context_generation,
             "source_order": _source_order(source_order),
         }
-        source_id = _identifier("source", domain, task_id)
+        source_id = _source_id(domain, context_key, context_generation)
         with self._locked(domain, write=True) as directory:
             manifest = self._manifest(directory, domain)
             filename = manifest["drafts"].get(source_id) or manifest["sources"].get(source_id)
             previous = self._checkpoint(directory, domain, filename) if filename else None
-            if previous and all(getattr(previous, key) == value for key, value in content.items()):
+            published_filename = manifest["sources"].get(source_id)
+            published = self._checkpoint(directory, domain, published_filename) if published_filename else None
+            content["source_order"] = max(
+                content["source_order"],
+                previous.source_order if previous else 0,
+                published.source_order if published else 0,
+            )
+            content["sources"] = _strings(
+                (
+                    *content["sources"],
+                    *(previous.sources if previous else ()),
+                    *(published.sources if published else ()),
+                ),
+                "sources",
+            )
+            task_digests = dict(previous.task_digests) if previous else {}
+            if complete:
+                task_digests[task_id] = input_digest
+            else:
+                task_digests.pop(task_id, None)
+            content["task_digests"] = task_digests
+            if (
+                previous
+                and previous.task_id == task_id
+                and all(getattr(previous, key) == value for key, value in content.items())
+            ):
                 return previous
             self._check_revision(previous, expected_revision)
-            if previous and previous.input_digest == input_digest:
-                if previous.complete or cursor <= previous.cursor:
+            if previous:
+                if not previous.complete and previous.task_id != task_id:
+                    raise MemoryConflict("finish the pending source task before updating this context")
+                if previous.task_digests.get(task_id) == input_digest:
+                    raise MemoryConflict("source task input is already complete")
+                if previous.task_id == task_id and previous.input_digest == input_digest and cursor <= previous.cursor:
                     raise MemoryConflict("source input is already complete or its checkpoint did not advance")
             checkpoint = _with_revision(
                 MemorySourceCheckpoint(
@@ -471,26 +532,85 @@ class MemoryService:
             return checkpoint
 
     def bind_source_contexts(self, access: MemoryAccess, mapping: dict[str, tuple[str, int, float]]) -> int:
-        """Bind legacy accounts using service-owned task metadata, without changing evidence."""
+        """Merge legacy task accounts without discarding their text or evidence links."""
         domain = self._write_domain(access)
-        context_fields = ("context_key", "context_generation", "source_order")
-        changed = set()
         with self._locked(domain, write=True) as directory:
             manifest = self._manifest(directory, domain)
-            for collection in (manifest["sources"], manifest["drafts"]):
-                for identity, filename in collection.items():
-                    data, _, _ = self._object(directory, filename)
-                    if all(field in data for field in context_fields) or data["task_id"] not in mapping:
+            groups: dict[str, list[MemorySourceCheckpoint]] = {}
+            changed: set[str] = set()
+            for identity, filename in manifest["sources"].items():
+                data, _, _ = self._object(directory, filename)
+                checkpoint = self._checkpoint(directory, domain, filename)
+                if "context_key" not in data:
+                    if checkpoint.task_id not in mapping:
                         continue
-                    key, generation, order = mapping[data["task_id"]]
+                    key, generation, order = mapping[checkpoint.task_id]
                     key, generation = _context(key, generation)
-                    metadata = dict(zip(context_fields, (key, generation, _source_order(order)), strict=True))
-                    checkpoint = self._checkpoint(directory, domain, filename)
-                    bound = _with_revision(
-                        replace(checkpoint, **{key: value for key, value in metadata.items() if key not in data})
+                    checkpoint = replace(
+                        checkpoint,
+                        context_key=key,
+                        context_generation=generation,
+                        source_order=_source_order(order),
                     )
-                    collection[identity] = self._save_object(directory, bound)
+                target = _source_id(domain, checkpoint.context_key, checkpoint.context_generation)
+                groups.setdefault(target, []).append(checkpoint)
+                if identity != target or "task_digests" not in data:
                     changed.add(checkpoint.task_id)
+
+            aliases = manifest.setdefault("aliases", {})
+            for target, checkpoints in groups.items():
+                if not any(checkpoint.task_id in changed for checkpoint in checkpoints):
+                    continue
+                ordered = sorted(checkpoints, key=lambda checkpoint: (checkpoint.source_order, checkpoint.task_id))
+                latest = ordered[-1]
+                retained = [checkpoint for checkpoint in ordered if checkpoint.body]
+                body = (
+                    retained[0].body
+                    if len(retained) == 1
+                    else "\n\n".join(f"## {checkpoint.title}\n\n{checkpoint.body}" for checkpoint in retained)
+                )
+                merged = _with_revision(
+                    replace(
+                        latest,
+                        id=target,
+                        body=body,
+                        topics=_strings(
+                            tuple(topic for checkpoint in ordered for topic in checkpoint.topics), "topics"
+                        ),
+                        sources=_strings(
+                            tuple(source for checkpoint in ordered for source in checkpoint.sources), "sources"
+                        ),
+                        task_digests={
+                            task_id: digest
+                            for checkpoint in ordered
+                            for task_id, digest in checkpoint.task_digests.items()
+                        },
+                    )
+                )
+                for checkpoint in ordered:
+                    manifest["sources"].pop(checkpoint.id)
+                    if checkpoint.id != target:
+                        aliases[checkpoint.id] = target
+                manifest["sources"][target] = self._save_object(directory, merged)
+
+            # A legacy draft describes just one task, not the whole rolling account.
+            # Leave it unprocessed so maintenance restarts from the published history.
+            for identity, filename in tuple(manifest["drafts"].items()):
+                data, _, _ = self._object(directory, filename)
+                if "task_digests" not in data and data["task_id"] in mapping:
+                    manifest["drafts"].pop(identity)
+                    changed.add(data["task_id"])
+                    key, generation, _ = mapping[data["task_id"]]
+                    target = _source_id(
+                        domain, data.get("context_key", key), data.get("context_generation", generation)
+                    )
+                    published_filename = manifest["sources"].get(target)
+                    if published_filename:
+                        published = self._checkpoint(directory, domain, published_filename)
+                        task_digests = dict(published.task_digests)
+                        if task_digests.pop(data["task_id"], None) is not None:
+                            retryable = _with_revision(replace(published, task_digests=task_digests))
+                            manifest["sources"][target] = self._save_object(directory, retryable)
             if changed or "navigation" in manifest:
                 self._commit(directory, manifest)
         return len(changed)

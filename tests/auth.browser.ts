@@ -262,6 +262,58 @@ test.describe('memory', () => {
     await expect(source).not.toContainText("fixture task's private audience");
   });
 
+  test('session memory keeps older task evidence accessible after a later update', async ({
+    page,
+  }) => {
+    await page.route(/\/api\/memory\/[a-f0-9]{32}(?:\?|$)/, async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...data,
+          task_id: 'fixture-runtime',
+          sources: [...data.sources, 'task:fixture-runtime'],
+        },
+      });
+    });
+    await page
+      .getByRole('navigation', { name: 'Memory sections' })
+      .getByRole('button', { name: 'Sources', exact: true })
+      .click();
+    await page.locator('.memory-row').filter({ hasText: 'Python testing summary' }).click();
+    const source = page.getByRole('article', { name: 'Source summary details' });
+    await expect(
+      source.getByText('demo:transcript · generation 1', { exact: true }).first(),
+    ).toBeVisible();
+    await expect(source.locator('.memory-source-task')).toContainText('task:fixture-runtime');
+    await source.getByText(/^Evidence references \(\d+\)$/).click();
+    const references = source.locator('.memory-sources');
+    await expect(
+      references.getByRole('button', { name: 'task:fixture-runtime', exact: true }),
+    ).toBeVisible();
+    await references.getByRole('button', { name: 'task:fixture-task', exact: true }).click();
+    await expect(page).toHaveURL(/task=fixture-task/);
+    await expect(
+      page.locator('.task-detail').getByText('fixture-task', { exact: true }),
+    ).toBeVisible();
+
+    await page.goBack();
+    await page
+      .getByRole('navigation', { name: 'Memory sections' })
+      .getByRole('button', { name: 'Sources', exact: true })
+      .click();
+    await page.locator('.memory-row').filter({ hasText: 'Python testing summary' }).click();
+    await source
+      .locator('.memory-source-task')
+      .getByRole('button', { name: 'task:fixture-runtime', exact: true })
+      .click();
+    await expect(page).toHaveURL(/task=fixture-runtime/);
+    await expect(
+      page.locator('.task-detail').getByText('fixture-runtime', { exact: true }),
+    ).toBeVisible();
+  });
+
   test('mobile search, section resets and maintenance links stay usable', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const sections = page.getByRole('navigation', { name: 'Memory sections' });

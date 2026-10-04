@@ -55,7 +55,7 @@ def summarize(service, access=PUBLIC, snapshot=None, **overrides):
     return service.publish_summary(access, snapshot.context_key, snapshot.context_generation, **(fields | overrides))
 
 
-def legacy_sources(service, access=PUBLIC):
+def legacy_sources(service, access=PUBLIC, *, contexts=None):
     """Write the previous source format to exercise an actual on-disk upgrade."""
     directory = service._directory(access.write_domain)
     manifest_path = directory / "manifest.json"
@@ -66,8 +66,11 @@ def legacy_sources(service, access=PUBLIC):
             old_path = directory / "objects" / filename
             header, body = old_path.read_text().removeprefix("---\n").split("\n---\n\n", 1)
             data = json.loads(header)
-            for field in ("context_key", "context_generation", "source_order"):
+            for field in ("context_key", "context_generation", "source_order", "task_digests"):
                 data.pop(field)
+            if contexts is not None:
+                key, generation, order = contexts[data["task_id"]]
+                data.update(context_key=key, context_generation=generation, source_order=order)
             content = ("---\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n---\n\n" + body).encode()
             revision = hashlib.sha256(content).hexdigest()
             filename = f"{identity}-{revision}.md"
@@ -142,7 +145,7 @@ def test_sources_and_summary_are_invisible_outside_the_authorized_audience(servi
 
 def test_production_uses_only_the_contribution_domain_not_all_readable_domains(service):
     shared = checkpoint(service)
-    assert service.source_state(ALICE, shared.task_id) is None
+    assert service.source_state(ALICE, shared.context_key) is None
     assert service.snapshot_context(ALICE, "test-context", 1).sources == ()
     private = checkpoint(service, ALICE)
     assert private.id != shared.id
@@ -171,7 +174,7 @@ def test_read_access_never_grants_background_writes_or_checkpoint_reads(service)
 def test_partial_extraction_is_durable_but_not_recalled_until_complete(service):
     partial = checkpoint(service, cursor=1, complete=False, body="First chunk result.")
     restarted = MemoryService(service.root)
-    restored = restarted.source_state(PUBLIC, partial.task_id)
+    restored = restarted.source_state(PUBLIC, partial.context_key)
     assert restored == partial
     assert restored is not None and restored.cursor == 1 and not restored.complete
     assert restarted.list_sources(PUBLIC) == []
@@ -227,7 +230,8 @@ def test_checkpoint_cas_prevents_lost_or_out_of_order_chunks(service):
 
 
 def test_reextraction_keeps_previous_publication_until_new_input_is_complete(service):
-    original = checkpoint(service)
+    earlier = checkpoint(service, task_id="earlier-task")
+    original = checkpoint(service, expected_revision=earlier.revision)
     old_summary = summarize(service)
     pending = checkpoint(
         service,
@@ -237,6 +241,9 @@ def test_reextraction_keeps_previous_publication_until_new_input_is_complete(ser
         expected_revision=original.revision,
     )
     assert pending.id == original.id
+    assert pending.task_digests == {earlier.task_id: earlier.input_digest}
+    assert service.source_state(PUBLIC, original.context_key).task_digests == pending.task_digests
+    assert service.published_source_state(PUBLIC, original.context_key).task_digests == original.task_digests
     assert service.read(PUBLIC, original.id).revision == original.revision
     assert service.list_summaries(PUBLIC) == [old_summary]
     updated = checkpoint(
@@ -247,6 +254,7 @@ def test_reextraction_keeps_previous_publication_until_new_input_is_complete(ser
         expected_revision=pending.revision,
     )
     assert updated.id == original.id
+    assert updated.task_digests == {earlier.task_id: earlier.input_digest, original.task_id: "evidence-v2"}
     assert service.read(PUBLIC, original.id).body == updated.body
     assert service.list_summaries(PUBLIC)[0].stale
     current = summarize(service)
@@ -254,12 +262,53 @@ def test_reextraction_keeps_previous_publication_until_new_input_is_complete(ser
     assert current.input_digest == service.snapshot_context(PUBLIC, "test-context", 1).input_digest
 
 
+def test_pending_followup_preserves_history_and_cannot_be_overwritten_by_another_task(service):
+    original = checkpoint(service)
+    pending = checkpoint(
+        service,
+        task_id="followup",
+        complete=False,
+        body="Prior and partial follow-up evidence.",
+        sources=["tool:followup:first"],
+        expected_revision=original.revision,
+    )
+    restarted = MemoryService(service.root)
+    assert restarted.source_state(PUBLIC, "test-context") == pending
+    assert restarted.published_source_state(PUBLIC, "test-context") == original
+    assert pending.task_digests == original.task_digests
+    assert set(original.sources) <= set(pending.sources)
+    with pytest.raises(MemoryConflict, match="pending source task"):
+        checkpoint(restarted, task_id="newer", expected_revision=pending.revision)
+    assert restarted.source_state(PUBLIC, "test-context") == pending
+
+    completed = checkpoint(
+        restarted,
+        task_id="followup",
+        cursor=2,
+        body="Prior and complete follow-up evidence.",
+        sources=["tool:followup:final"],
+        expected_revision=pending.revision,
+    )
+    assert completed.id == original.id
+    assert set(pending.sources) | {"tool:followup:final"} == set(completed.sources)
+    assert completed.task_digests == {original.task_id: original.input_digest, "followup": "evidence-v1"}
+    assert restarted.published_source_state(PUBLIC, "test-context") == completed
+    assert len(restarted.list_sources(PUBLIC)) == 1
+
+
+def test_unpublished_account_is_not_returned_as_a_publication(service):
+    checkpoint(service, complete=False)
+    assert service.published_source_state(PUBLIC, "test-context") is None
+    with pytest.raises(MemoryDenied):
+        service.published_source_state(MemoryAccess(("public",)), "test-context")
+
+
 def test_empty_completed_account_is_a_persistent_receipt_and_removes_old_recall(service):
     original = checkpoint(service)
     summarize(service)
     empty = checkpoint(service, input_digest="evidence-v2", body="", expected_revision=original.revision)
     restarted = MemoryService(service.root)
-    assert restarted.source_state(PUBLIC, original.task_id) == empty
+    assert restarted.source_state(PUBLIC, original.context_key) == empty
     assert empty.complete and empty.body == ""
     assert restarted.list_sources(PUBLIC) == []
     assert restarted.describe(PUBLIC)["count"] == 0
@@ -272,27 +321,72 @@ def test_empty_completed_account_is_a_persistent_receipt_and_removes_old_recall(
     assert not restarted.list_summaries(PUBLIC)[0].stale
 
 
-def test_different_source_tasks_preserve_separate_provenance_even_with_identical_summaries(service):
+def test_new_tasks_update_one_context_account_and_keep_prior_provenance(service):
     first = checkpoint(service, task_id="task-a")
-    second = checkpoint(service, task_id="task-b")
-    assert first.id != second.id
-    assert {source.task_id for source in service.search(PUBLIC, "tests")} == {"task-a", "task-b"}
-    assert "task:task-a" in first.sources
-    assert "task:task-b" not in first.sources
+    second = checkpoint(service, task_id="task-b", source_order=20, expected_revision=first.revision)
+    assert first.id == second.id and first.revision != second.revision
+    assert service.search(PUBLIC, "tests") == [service.read(PUBLIC, first.id)]
+    assert second.task_id == "task-b" and second.source_order == 20
+    assert {"task:task-a", "task:task-b"} <= set(second.sources)
+    assert second.task_digests == {"task-a": "evidence-v1", "task-b": "evidence-v1"}
+    with pytest.raises(MemoryConflict, match="already complete"):
+        checkpoint(service, task_id="task-a", expected_revision=second.revision)
+
+
+def test_backfilled_tasks_preserve_the_latest_evidence_order(service):
+    newer = checkpoint(service, task_id="newer", source_order=30)
+    pending = checkpoint(service, task_id="backfill", source_order=10, complete=False, expected_revision=newer.revision)
+    assert (pending.task_id, pending.source_order) == ("backfill", 30)
+    backfilled = checkpoint(service, task_id="backfill", source_order=10, cursor=2, expected_revision=pending.revision)
+    assert (backfilled.task_id, backfilled.source_order) == ("backfill", 30)
+    intermediate = checkpoint(service, task_id="intermediate", source_order=20, expected_revision=backfilled.revision)
+    assert (intermediate.task_id, intermediate.source_order) == ("intermediate", 30)
+    latest = checkpoint(service, task_id="latest", source_order=40, expected_revision=intermediate.revision)
+    assert latest.source_order == 40
+    assert len(service.list_sources(PUBLIC)) == 1
+
+
+def test_rolling_account_can_be_found_by_earlier_task_ids_and_context(service):
+    first = checkpoint(service, task_id="previous_task_123", context_key="scope_unique_456")
+    latest = checkpoint(
+        service,
+        task_id="current_task_789",
+        context_key=first.context_key,
+        title="Retained lessons",
+        body="Earlier and newer evidence.",
+        expected_revision=first.revision,
+    )
+    recalled = service.read(PUBLIC, latest.id)
+    assert latest.task_id != first.task_id
+    assert service.search(PUBLIC, first.task_id) == [recalled]
+    assert service.search(PUBLIC, latest.task_id) == [recalled]
+    assert service.search(PUBLIC, first.context_key) == [recalled]
 
 
 def test_source_identity_is_stable_and_does_not_become_a_filesystem_path(service):
     source = checkpoint(service, task_id="../../elsewhere/源任务")
     assert source.task_id == "../../elsewhere/源任务"
     assert len(source.id) == 32
-    assert MemoryService(service.root).source_state(PUBLIC, source.task_id) == source
+    assert MemoryService(service.root).source_state(PUBLIC, source.context_key) == source
     assert not (service.root.parent / "elsewhere").exists()
 
 
 def test_topic_filter_and_weighted_retrieval_are_scoped_and_search_source_content(service):
-    body_match = checkpoint(service, task_id="a", title="General result", body="A Python result", topics=("runtime",))
+    body_match = checkpoint(
+        service,
+        task_id="a",
+        context_key="context-a",
+        title="General result",
+        body="A Python result",
+        topics=("runtime",),
+    )
     title_match = checkpoint(
-        service, task_id="b", title="Python workflow", body="Verified workflow", topics=("Testing",)
+        service,
+        task_id="b",
+        context_key="context-b",
+        title="Python workflow",
+        body="Verified workflow",
+        topics=("Testing",),
     )
     checkpoint(service, ALICE, task_id="private", title="Python secret", topics=("testing",))
     assert [source.id for source in service.search(PUBLIC, "Python")] == [title_match.id, body_match.id]
@@ -317,7 +411,7 @@ def test_markdown_is_the_only_source_and_summary_body_store(service):
 
 def test_invalid_and_unsupplied_summary_references_cannot_publish(service):
     first = checkpoint(service, task_id="a")
-    second = checkpoint(service, task_id="b")
+    second = checkpoint(service, task_id="b", context_key="foreign-context")
     snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     for overrides in (
         {"source_ids": ["0" * 32]},
@@ -344,7 +438,7 @@ def test_summary_rejects_outdated_source_snapshots(service, change):
     original = checkpoint(service)
     snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     if change == "add":
-        checkpoint(service, task_id="another-task")
+        checkpoint(service, task_id="another-task", expected_revision=original.revision)
     else:
         checkpoint(
             service,
@@ -395,14 +489,14 @@ def test_failed_manifest_commit_keeps_prior_published_data_and_checkpoint(servic
         else:
             summarize(service, body=f"Uncommitted summary: [source](memory:{original.id})")
     restarted = MemoryService(service.root)
-    assert restarted.source_state(PUBLIC, original.task_id) == original
+    assert restarted.source_state(PUBLIC, original.context_key) == original
     assert restarted.read(PUBLIC, original.id).body == original.body
     assert restarted.list_summaries(PUBLIC) == [old_summary]
     assert restarted.search(PUBLIC, "Uncommitted") == []
     # Orphan object files do not become sources, and the same input can be retried.
     updated = checkpoint(restarted, input_digest="evidence-v2", expected_revision=original.revision)
     assert updated.id == original.id
-    assert restarted.source_state(PUBLIC, original.task_id) == updated
+    assert restarted.source_state(PUBLIC, original.context_key) == updated
 
 
 def test_summary_failure_does_not_undo_successful_source_extraction(service, monkeypatch):
@@ -422,7 +516,7 @@ def test_summary_failure_does_not_undo_successful_source_extraction(service, mon
     with pytest.raises(OSError, match="summary publish failed"):
         summarize(service)
     restarted = MemoryService(service.root)
-    assert restarted.source_state(PUBLIC, updated.task_id) == updated
+    assert restarted.source_state(PUBLIC, updated.context_key) == updated
     assert restarted.list_summaries(PUBLIC)[0].revision == old_summary.revision
     assert restarted.list_summaries(PUBLIC)[0].stale
     assert not summarize(restarted).stale
@@ -442,7 +536,7 @@ def test_cleanup_failure_after_commit_does_not_report_failed_publication(service
         service, input_digest="evidence-v2", body="Current publication.", expected_revision=original.revision
     )
     assert service.read(PUBLIC, published.id).body == "Current publication."
-    assert service.source_state(PUBLIC, published.task_id) == published
+    assert service.source_state(PUBLIC, published.context_key) == published
     assert len(service.list_sources(PUBLIC)) == 1
 
 
@@ -452,7 +546,7 @@ def test_concurrent_sources_do_not_lose_each_other_or_share_in_memory_state(serv
     def produce(index):
         local = MemoryService(service.root)
         barrier.wait(timeout=10)
-        return checkpoint(local, task_id=f"task-{index}")
+        return checkpoint(local, task_id=f"task-{index}", context_key=f"context-{index}")
 
     with ThreadPoolExecutor(max_workers=6) as executor:
         results = list(executor.map(produce, range(6)))
@@ -506,38 +600,28 @@ def test_source_character_budget_and_summary_byte_budget_reject_oversized_output
 def test_invalid_extraction_fields_never_publish(service, overrides):
     with pytest.raises(ValueError):
         checkpoint(service, **overrides)
-    assert service.source_state(PUBLIC, "verified-task") is None
+    assert service.source_state(PUBLIC, "test-context") is None
     assert service.list_sources(PUBLIC) == []
 
 
-def test_context_snapshots_follow_execution_order_and_keep_generations_separate(service):
-    later = checkpoint(service, task_id="a-later", source_order=20, title="Alphabetically first")
+def test_context_snapshots_roll_forward_and_keep_generations_separate(service):
     earlier = checkpoint(service, task_id="z-earlier", source_order=10, title="Alphabetically last")
-    tied = checkpoint(service, task_id="b-tied", source_order=20)
+    later = checkpoint(
+        service, task_id="a-later", source_order=20, title="Alphabetically first", expected_revision=earlier.revision
+    )
     next_generation = checkpoint(service, task_id="next", context_generation=2)
     other_context = checkpoint(service, task_id="other", context_key="another-context")
     private = checkpoint(service, ALICE, task_id="private")
 
     snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
-    assert [source.id for source in snapshot.sources] == [earlier.id, later.id, tied.id]
-    assert list(snapshot.source_revisions) == [earlier.id, later.id, tied.id]
+    assert snapshot.sources == (service.read(PUBLIC, later.id),)
+    assert snapshot.source_revisions == {later.id: later.revision}
+    assert len({earlier.id, later.id, next_generation.id, other_context.id, private.id}) == 4
     assert service.snapshot_context(PUBLIC, "test-context", 2).sources == (service.read(PUBLIC, next_generation.id),)
     assert service.snapshot_context(PUBLIC, "another-context", 1).sources == (service.read(PUBLIC, other_context.id),)
     assert service.snapshot_context(ALICE, "test-context", 1).sources == (service.read(ALICE, private.id),)
-
-    updated = checkpoint(
-        service,
-        task_id=earlier.task_id,
-        source_order=earlier.source_order,
-        input_digest="reextracted-later",
-        expected_revision=earlier.revision,
-    )
-    assert updated.updated_at > later.updated_at
-    assert [source.id for source in service.snapshot_context(PUBLIC, "test-context", 1).sources] == [
-        earlier.id,
-        later.id,
-        tied.id,
-    ]
+    assert service.source_state(PUBLIC, "test-context", 2) == next_generation
+    assert service.published_source_state(PUBLIC, "test-context") == later
 
 
 def test_summary_identity_and_staleness_are_per_domain_context_and_generation(service):
@@ -633,7 +717,7 @@ def test_legacy_sources_read_without_writes_and_first_write_retires_navigation(s
     assert manifest_path.read_bytes() == before
     assert old_navigation.exists()
 
-    checkpoint(restarted, task_id="new-task")
+    checkpoint(restarted, task_id="new-task", context_key="new-context")
     manifest = json.loads(manifest_path.read_text())
     assert "navigation" not in manifest
     assert manifest["summaries"] == {}
@@ -641,7 +725,7 @@ def test_legacy_sources_read_without_writes_and_first_write_retires_navigation(s
     assert restarted.read(PUBLIC, source.id) == recalled
 
 
-def test_bind_legacy_published_and_draft_contexts_atomically_and_idempotently(service, monkeypatch):
+def test_migration_preserves_published_history_but_restarts_legacy_drafts(service, monkeypatch):
     source = checkpoint(service)
     checkpoint(
         service,
@@ -652,18 +736,17 @@ def test_bind_legacy_published_and_draft_contexts_atomically_and_idempotently(se
     )
     legacy_sources(service)
     old_published = service.read(PUBLIC, source.id)
-    old_draft = service.source_state(PUBLIC, source.task_id)
     mapping = {source.task_id: ("review:pr-257", 3, 1234.5)}
     assert service.bind_source_contexts(PUBLIC, mapping) == 1
     published = service.read(PUBLIC, source.id)
-    draft = service.source_state(PUBLIC, source.task_id)
-    for old, bound in ((old_published, published), (old_draft, draft)):
-        assert (bound.context_key, bound.context_generation, bound.source_order) == mapping[source.task_id]
-        assert bound.id == old.id
-        assert bound.body == old.body and bound.sources == old.sources
-        assert bound.complete == old.complete and bound.updated_at == old.updated_at
-        assert bound.revision != old.revision
-    assert draft.input_digest == old_draft.input_digest and draft.cursor == old_draft.cursor
+    current = service.source_state(PUBLIC, "review:pr-257", 3)
+    assert current == service.published_source_state(PUBLIC, "review:pr-257", 3)
+    assert current.complete and current.input_digest == "evidence-v1"
+    assert current.task_digests == {}
+    assert (published.context_key, published.context_generation, published.source_order) == mapping[source.task_id]
+    assert published.id != old_published.id
+    assert published.body == old_published.body and published.sources == old_published.sources
+    assert published.updated_at == old_published.updated_at
     assert service.snapshot_context(PUBLIC, "review:pr-257", 3).sources == (published,)
 
     def unexpected_write(*_):
@@ -673,7 +756,100 @@ def test_bind_legacy_published_and_draft_contexts_atomically_and_idempotently(se
     assert service.bind_source_contexts(PUBLIC, mapping) == 0
     assert service.bind_source_contexts(PUBLIC, {source.task_id: ("wrong-context", 8, 5000)}) == 0
     assert service.read(PUBLIC, source.id) == published
-    assert service.source_state(PUBLIC, source.task_id) == draft
+    assert service.source_state(PUBLIC, "review:pr-257", 3) == current
+
+    updated = checkpoint(
+        MemoryService(service.root),
+        context_key="review:pr-257",
+        context_generation=3,
+        source_order=1234.5,
+        input_digest="new-evidence",
+        expected_revision=current.revision,
+        body="Retained history with the completed update.",
+    )
+    assert updated.task_digests == {source.task_id: "new-evidence"}
+    assert service.read(PUBLIC, source.id).body == updated.body
+
+
+def test_migration_drops_a_legacy_only_draft_without_inventing_a_publication(service):
+    draft = checkpoint(service, complete=False)
+    legacy_sources(service)
+    mapping = {draft.task_id: (draft.context_key, draft.context_generation, draft.source_order)}
+    assert service.bind_source_contexts(PUBLIC, mapping) == 1
+    assert service.source_state(PUBLIC, draft.context_key) is None
+    assert service.published_source_state(PUBLIC, draft.context_key) is None
+    assert service.list_sources(PUBLIC) == []
+    assert service.bind_source_contexts(PUBLIC, mapping) == 0
+
+
+def test_migration_preserves_a_current_rolling_draft_and_its_receipts(service):
+    original = checkpoint(service)
+    draft = checkpoint(service, task_id="followup", complete=False, expected_revision=original.revision)
+    mapping = {draft.task_id: (draft.context_key, draft.context_generation, draft.source_order)}
+    assert service.bind_source_contexts(PUBLIC, mapping) == 0
+    assert service.source_state(PUBLIC, draft.context_key) == draft
+    assert service.published_source_state(PUBLIC, draft.context_key) == original
+
+
+def test_migration_merges_all_task_text_and_receipts_and_keeps_old_links_readable(service):
+    later = checkpoint(
+        service, task_id="later", context_key="legacy-later", title="Later lesson", body="later evidence " * 1000
+    )
+    earlier = checkpoint(
+        service, task_id="earlier", context_key="legacy-earlier", title="Earlier lesson", body="early evidence " * 1000
+    )
+    empty = checkpoint(service, task_id="empty", context_key="legacy-empty", body="")
+    contexts = {"earlier": ("shared", 2, 10), "later": ("shared", 2, 20), "empty": ("shared", 2, 30)}
+    legacy_sources(service, contexts=contexts)
+    snapshot = service.snapshot_context(PUBLIC, "shared", 2)
+    old_summary = summarize(service, snapshot=snapshot)
+    assert not old_summary.stale
+
+    assert service.bind_source_contexts(PUBLIC, contexts) == 3
+    current = service.source_state(PUBLIC, "shared", 2)
+    assert current is not None and current.complete
+    assert current.task_id == "empty" and current.source_order == 30
+    assert len(current.body) > SOURCE_BODY_MAX_CHARS
+    assert earlier.body in current.body and later.body in current.body
+    assert current.body.index(earlier.body) < current.body.index(later.body)
+    assert current.task_digests == {item.task_id: item.input_digest for item in (earlier, later, empty)}
+    assert set(current.sources) == set(earlier.sources) | set(later.sources) | set(empty.sources)
+    assert {source.id for source in service.list_sources(PUBLIC)} == {current.id}
+    for old in (earlier, later, empty):
+        assert service.read(PUBLIC, old.id).id == current.id
+        with pytest.raises(MemoryNotFound):
+            service.read(MemoryAccess(("private:alice",)), old.id)
+    migrated_summary = service.snapshot_context(PUBLIC, "shared", 2).summary
+    assert migrated_summary == replace(old_summary, stale=True)
+    assert service.bind_source_contexts(PUBLIC, contexts) == 0
+
+    updated = checkpoint(
+        service,
+        task_id="followup",
+        context_key="shared",
+        context_generation=2,
+        body="Consolidated earlier lessons with a new verified lesson.",
+        expected_revision=current.revision,
+    )
+    assert service.read(PUBLIC, earlier.id).body == updated.body
+    assert service.read(PUBLIC, later.id).body == updated.body
+    assert updated.task_digests == {**current.task_digests, "followup": "evidence-v1"}
+
+
+def test_migration_does_not_mark_an_already_stale_summary_fresh(service):
+    original = checkpoint(service, context_key="legacy")
+    summary = summarize(service, snapshot=service.snapshot_context(PUBLIC, "legacy", 1))
+    checkpoint(service, context_key="legacy", input_digest="corrected", expected_revision=original.revision)
+    directory = service._directory(PUBLIC.write_domain)
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    filename = manifest["sources"][original.id]
+    header, body = (directory / "objects" / filename).read_text().removeprefix("---\n").split("\n---\n\n", 1)
+    data = json.loads(header)
+    data.pop("task_digests")
+    (directory / "objects" / filename).write_text("---\n" + json.dumps(data) + "\n---\n\n" + body)
+    assert service.bind_source_contexts(PUBLIC, {}) == 1
+    assert service.list_summaries(PUBLIC) == [replace(summary, stale=True)]
 
 
 def test_failed_legacy_binding_preserves_old_manifest_and_is_retryable(service, monkeypatch):

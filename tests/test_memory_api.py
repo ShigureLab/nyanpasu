@@ -13,11 +13,11 @@ from nyanpasu.web import create_app
 from tests.test_web import FakeAgent
 
 
-def publish_source(service, domain, task_id, *, topics=(), body=None):
+def publish_source(service, domain, task_id, *, topics=(), body=None, context_key="test:context"):
     return service.checkpoint_source(
         MemoryAccess((domain,), domain),
         task_id,
-        context_key="test:context",
+        context_key=context_key,
         input_digest=f"evidence:{task_id}",
         cursor=1,
         complete=True,
@@ -173,12 +173,12 @@ async def test_memory_api_publishes_complete_sources_and_reports_stale_summary(t
     first = publish_source(
         memory, "public", "python-tests", topics=("python", "tests"), body="Use shared pytest fixtures."
     )
-    publish_source(memory, "public", "runtime-checks", topics=("runtime",))
+    runtime = publish_source(memory, "public", "runtime-checks", topics=("runtime",), context_key="test:runtime")
     publish_summary(memory, "public", body=f"[Python tests](memory:{first.id})")
     pending = memory.checkpoint_source(
         access,
         "not-yet-published",
-        context_key="test:context",
+        context_key="test:pending",
         input_digest="pending-evidence",
         cursor=1,
         complete=False,
@@ -200,7 +200,7 @@ async def test_memory_api_publishes_complete_sources_and_reports_stale_summary(t
         assert (await client.get(f"/api/memory/{pending.id}")).status_code == 404
         replacing = memory.checkpoint_source(
             access,
-            "python-tests",
+            "python-followup",
             context_key="test:context",
             input_digest="updated-evidence",
             cursor=1,
@@ -216,7 +216,7 @@ async def test_memory_api_publishes_complete_sources_and_reports_stale_summary(t
         assert (await client.get("/api/memory")).json()["summaries"][0]["stale"] is False
         completed = memory.checkpoint_source(
             access,
-            "python-tests",
+            "python-followup",
             context_key="test:context",
             input_digest="updated-evidence",
             cursor=2,
@@ -230,7 +230,17 @@ async def test_memory_api_publishes_complete_sources_and_reports_stale_summary(t
         detail = (await client.get(f"/api/memory/{first.id}")).json()
         assert detail["id"] == first.id == completed.id
         assert detail["body"] == completed.body and detail["revision"] == completed.revision
-        assert (await client.get("/api/memory")).json()["summaries"][0]["stale"] is True
+        assert detail["task_id"] == "python-followup"
+        assert set(detail["sources"]) == {
+            "task:python-tests",
+            "tool:python-tests:turn:result",
+            "task:python-followup",
+            "tool:updated:result",
+        }
+        updated = (await client.get("/api/memory")).json()
+        assert updated["count"] == 2
+        assert {source["id"] for source in updated["items"]} == {first.id, runtime.id}
+        assert updated["summaries"][0]["stale"] is True
 
 
 @pytest.mark.anyio
