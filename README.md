@@ -105,7 +105,9 @@ Both native automatic memory systems are disabled for Nyanpasu workers; normal i
 
 ## Background memory
 
-After a successful root task with a contribution audience, `memory_extraction` reads that task's native evidence in chunks and produces a source-oriented Markdown account, capped at 16,000 characters. `memory_consolidation` maintains one rolling summary per audience, context, and context generation. Each summary's complete injection block, including its heading, scope, and source references, is capped at **1 KiB of UTF-8**. Oversized output must be compressed before publication; a failed update never publishes an oversized or partial replacement. Summaries remain fallible accounts of evidence, so verify current repository, service, and PR state before acting on them.
+After a successful root task with a contribution audience, `memory_extraction` reads that task's native evidence in chunks and produces a source-grounded Markdown account, capped at 16,000 characters. It prioritizes knowledge that can improve future decisions: substantive human feedback, corrected assumptions, concrete methods, design rationale, and verified failure modes, with their reasons, conditions, and sources. Routine requests, approvals, completion status, hashes, and dashboard bookkeeping do not merit retention on their own. Failed or unfinished work remains useful when future action depends on it; a task with nothing useful to retain may produce an empty account. Human feedback retains its attribution and scope rather than becoming an unsupported technical fact or global preference.
+
+`memory_consolidation` maintains one rolling summary per audience, context, and context generation, prioritizing these lessons within a **1 KiB UTF-8** limit for the complete injection block, including its heading, scope, and source references. Oversized output must be compressed before publication; a failed update never publishes an oversized or partial replacement. Summaries remain fallible accounts of evidence, so verify current repository, service, and PR state before acting on them.
 
 New evidence incrementally updates the context's previous summary. Re-extracted, removed, or reordered evidence rebuilds that context from its sources. The summary records its source revisions and can be rebuilt without replacing the original accounts. An unchanged follow-up should preserve useful earlier conclusions, conditions, and evidence links instead of reducing the summary to the latest task's status.
 
@@ -135,7 +137,7 @@ Upgrades retain existing source accounts. Old domain navigation is no longer inj
 uv run nyanpasu memory-rebuild --all
 ```
 
-This groups existing accounts by audience and context and rebuilds their summaries without re-extracting native sessions.
+This groups existing accounts by audience and context and rebuilds their summaries without re-extracting native sessions. Changing the extraction guidance does not rewrite existing accounts: both rebuild commands reuse completed extraction checkpoints, and unchanged source digests also allow existing summaries to be reused. Prompt changes alone do not invalidate either result. Rebuilding summaries cannot recover feedback omitted from those accounts; recovering it requires fresh extraction from the original evidence, which these commands do not force for completed accounts.
 
 ## Run
 
