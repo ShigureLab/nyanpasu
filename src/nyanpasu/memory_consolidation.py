@@ -147,14 +147,32 @@ def extraction_prompt(source_id: str, previous: Any, chunk: list[dict[str, Any]]
 Return only the JSON required by the output schema. This is background memory work;
 do not run tools, edit files, contact anyone, or continue the source task.
 
-Write faithful task history, not a list of canonical facts or a user profile.
-Preserve distinct tasks, chronological corrections, scope, conditions, useful paths,
-verified outcomes, failed or unfinished work, and material uncertainty from earlier
-chunks. Keep concrete user instructions with their task; promote a preference beyond
-that task only when the user explicitly stated that broader scope. Other agents'
-plans, interpretations and success claims are not evidence of user approval or of
-execution. Distinguish actual tool results from assistant proposals. Memory retrieved
-by the source task is background material, not new independent evidence.
+Retain source-grounded knowledge that can improve a future task's decisions or execution.
+Prioritize substantive human feedback and corrections: what was mistaken, why it
+matters, what to do or check instead, and the conditions and evidence supporting the
+lesson. Preserve useful procedures, design rationale, diagnostic clues, verified
+failure modes, and rejected hypotheses when they inform future decisions. Keep
+concrete methods and relevant source URLs or paths instead of vague advice.
+Preserve distinctions and qualifiers in the evidence: a criticism of one special-purpose
+mechanism must not become a prohibition on the broader capability it belongs to.
+
+Routine requests, successful completion, approvals, unchanged follow-ups, commit
+hashes, and dashboard or publication bookkeeping do not merit retention on their own.
+If these are all that the previous account and current evidence contain, return an
+empty body and empty topics. Do not write a status recap or invent a lesson to fill
+the account. An unchanged chunk with no new learning should preserve any earlier
+useful lessons without adding another no-op record.
+Keep only the detail needed to explain a lesson, its applicability, or unresolved
+work. Preserve distinct task scopes, material corrections in order, and failed or
+unfinished work and uncertainty when future action depends on them. Later routine
+status must not erase useful evidence or lessons from earlier chunks.
+
+Keep human feedback attributed and distinguish expressed expectations from verified
+technical claims. Keep concrete user instructions with their task; promote a
+preference beyond that task only when the user explicitly stated that broader scope.
+Other agents' plans, interpretations and success claims are not evidence of user
+approval or of execution. Distinguish actual tool results from assistant proposals.
+Memory retrieved by the source task is background material, not new independent evidence.
 
 Use a concise title and a Markdown body of at most {SOURCE_BODY_MAX_CHARS} characters. Topics are
 retrieval labels. Return only title, body, and topics; the service records input
@@ -180,19 +198,28 @@ contact anyone, or perform the source tasks. Accounts arrive in execution order.
 The summary is automatically provided to future tasks alongside other relevant summaries.
 It must remain a small overview, not grow into a task-by-task history.
 
-Write a short Markdown heading identifying the context, then only the most useful
-historical outcomes, applicable conditions, verified corrections, unresolved work,
-and reusable experience. Identify the observed revision or date when a conclusion
-depends on it. No-op follow-ups must preserve earlier useful information. A repair
-attempt does not resolve a problem until evidence verifies it. Do not turn a newer
-observation into proof that an older one was wrong, or broaden a task-specific choice
-into a global rule. Plans and other assistants' claims are not verified results.
+Write a short Markdown heading identifying the context, then prioritize lessons
+that improve future decisions: substantive human feedback, corrected assumptions,
+concrete methods, design rationale, and verified failure modes with their applicable
+conditions. Preserve why a lesson matters and how to apply it, not just that a task
+was reviewed or completed. Keep unresolved work and uncertainty when future action
+depends on them. Routine approvals, no-op updates, hashes, and dashboard bookkeeping
+must not displace useful lessons; retain such detail only when it explains a lesson
+or its scope. Identify a revision or date only when a conclusion depends on it.
+Keep the causal mechanism and limiting conditions when compressing a lesson; do not
+turn a narrow correction into a blanket restriction or blur distinct technical concepts.
+
+No-op follow-ups and later completion must preserve earlier applicable lessons.
+A repair attempt does not resolve a problem until evidence verifies it. Do not turn
+a newer observation into proof that an older one was wrong, human feedback into
+verified technical fact, or a task-specific choice into a global rule. Plans and
+other assistants' claims are not verified results.
 
 Rewrite and compress the entire summary on every update: merge repeated observations
 and remove low-value detail, while keeping qualifications and supporting references.
 Use [short title](memory:SOURCE_ID) links for retained conclusions. Links must be in
-source_ids, drawn from the previous summary or this batch. Full history stays in
-the source accounts and remains readable through memory.read.
+source_ids, drawn from the previous summary or this batch. Supporting detail stays
+in the source accounts and remains readable through memory.read.
 
 The complete rendered block (JSON id plus body, including heading, scope and links)
 MUST fit within {SUMMARY_MAX_BYTES} UTF-8 bytes, including JSON escaping and a 32-character id.
