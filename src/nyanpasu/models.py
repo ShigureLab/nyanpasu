@@ -37,10 +37,10 @@ class WorkspaceRef(NyanpasuModel):
     ref: str | None = None
     revision: str | None = None
 
-    @field_validator("local_path", mode="before")
+    @field_validator("local_path", mode="after")
     @classmethod
-    def _local_path(cls, value: Any) -> Path:
-        return Path(value).expanduser().resolve()
+    def _local_path(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
 
 
 class InstructionDocument(NyanpasuModel):

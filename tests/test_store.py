@@ -388,11 +388,22 @@ def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory
     assert turns[0]["memory_context_json"] is None
 
 
-def test_source_contexts_use_execution_order_and_isolate_contribution_audiences(tmp_path: Path) -> None:
+def test_memory_sources_use_execution_order_and_isolate_contribution_audiences(tmp_path: Path) -> None:
     state = StateStore(tmp_path / "state.db")
+    tasks = {}
     for identity, domain in (("queued-first", "public"), ("executed-first", "public"), ("hidden", "private:bob")):
-        state.record_task(_task(identity).model_copy(update={"memory": MemoryAccess((domain,), domain)}))
+        tasks[identity] = _task(identity).model_copy(update={"memory": MemoryAccess((domain,), domain)})
+        state.record_task(tasks[identity])
         state.bind_task_execution(identity, "thread", identity)
+        state.mark_task_done(
+            TaskRunResult(
+                task_id=identity,
+                status=TaskStatus.COMPLETED,
+                thread_id="thread",
+                turn_id=identity,
+                final_message="done",
+            )
+        )
     with sqlite3.connect(state.db_path) as conn:
         conn.execute("UPDATE task_turns SET started_at=20 WHERE task_id='queued-first'")
         conn.execute("UPDATE task_turns SET started_at=10 WHERE task_id='executed-first'")
@@ -400,3 +411,5 @@ def test_source_contexts_use_execution_order_and_isolate_contribution_audiences(
         "queued-first": ("demo:1", 1, 20),
         "executed-first": ("demo:1", 1, 10),
     }
+    assert state.memory_source_tasks("queued-first") == [tasks["executed-first"], tasks["queued-first"]]
+    assert state.memory_source_tasks("executed-first") == [tasks["executed-first"]]
