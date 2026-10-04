@@ -460,6 +460,43 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
 
 
 @pytest.mark.anyio
+async def test_memory_search_returns_focused_excerpt_and_read_retains_full_provenance(tmp_path):
+    agent = make_agent(config_for(tmp_path))
+    body = "Earlier background. " * 100 + "Checkpoint receipt digest verification failed. " + "Later background. " * 50
+    source = publish_source(
+        agent.memory,
+        PUBLIC,
+        "verified-account",
+        body=body,
+        sources=[f"tool:session:turn:{index}:" + "x" * 100 for index in range(300)],
+    )
+    request = task("reader")
+    agent.store.record_task(agent._admit(request))
+    agent.store.mark_task_running(request.task_id, None)
+    try:
+        async with agent.control.turn(request.task_id) as control:
+            found = await asyncio.to_thread(
+                call_control,
+                control.file,
+                {"action": "memory.search", "input": {"query": "checkpoint receipt digest"}},
+            )
+            assert len(found) == 1 and found[0]["id"] == source.id
+            assert "Checkpoint receipt digest verification failed." in found[0]["body"]
+            assert len(found[0]["body"]) <= 800
+            assert len(json.dumps(found).encode()) < 2_000
+            detail = await asyncio.to_thread(
+                call_control,
+                control.file,
+                {"action": "memory.read", "input": {"source_id": found[0]["id"]}},
+            )
+            assert detail["body"] == source.body
+            assert detail["sources"] == list(source.sources)
+            assert detail["revision"] == found[0]["revision"]
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["submit", "run_now"])
 async def test_ordinary_admission_cannot_claim_generated_memory_task_ids(tmp_path, operation):
     model = FakeCodex()

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from nyanpasu.memory import MemoryAccess, MemoryConflict, MemoryDenied, MemoryNotFound
 from nyanpasu.memory_consolidation import MEMORY_TASK_KINDS
 from nyanpasu.memory_context import MemoryContext, build_memory_context
+from nyanpasu.memory_search import search_excerpt
 from nyanpasu.models import SubtaskRequest
 from nyanpasu.safe_files import open_regular_file
 from nyanpasu.task_control_client import call_control as call_control, command as client_command, main as client_main
@@ -199,7 +200,17 @@ Do not expose the control file or its contents, or include it in evidence. Only 
                 raise ValueError("memory search limit must be a positive integer")
             arguments: dict[str, Any] = {**payload, "limit": min(limit, maximum)}
             notes = service.search(access, **arguments)
-            return [{**note.to_dict(), "body": note.body[:800]} for note in notes]
+            return [
+                {
+                    "id": note.id,
+                    "context_key": note.context_key,
+                    "title": note.title,
+                    "topics": list(note.topics),
+                    "body": search_excerpt(note.body, payload["query"]),
+                    "revision": note.revision,
+                }
+                for note in notes
+            ]
         if action == "memory.read":
             return service.read(access, **payload).to_dict()
         if action == "memory.describe":

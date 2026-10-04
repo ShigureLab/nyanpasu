@@ -11,7 +11,7 @@ def command(control: Path) -> list[str]:
     return [str(Path(sys.executable).resolve()), "-I", "-S", str(Path(__file__).resolve()), str(control)]
 
 
-def call_control(control: Path, request: dict[str, Any]) -> dict[str, Any]:
+def call_control(control: Path, request: dict[str, Any]) -> Any:
     capability = json.loads(control.read_text())
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(60)

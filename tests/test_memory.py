@@ -394,6 +394,86 @@ def test_topic_filter_and_weighted_retrieval_are_scoped_and_search_source_conten
     assert len(service.search(PUBLIC, "Python", limit=1)) == 1
 
 
+@pytest.mark.parametrize("excluded_by", ["domain", "topics"])
+def test_rare_domain_terms_rank_first_using_only_the_searchable_corpus(service, excluded_by):
+    rare = checkpoint(
+        service,
+        task_id="receipt",
+        context_key="receipt-account",
+        title="Z receipt",
+        body="lkey lifetime policy",
+        topics=("runtime",),
+    )
+    common = [
+        checkpoint(
+            service,
+            task_id=f"common-{index}",
+            context_key=f"common-{index}",
+            title=f"A result {index}",
+            body="worker runtime policy",
+            topics=("runtime",),
+        )
+        for index in range(6)
+    ]
+    query = "worker runtime lkey"
+    baseline = [source.id for source in service.search(PUBLIC, query, topics=("runtime",))]
+    assert baseline[0] == rare.id
+    # Different matching terms still recall both kinds of prior evidence.
+    assert set(baseline) == {rare.id, *(source.id for source in common)}
+
+    for index in range(12):
+        checkpoint(
+            service,
+            ALICE if excluded_by == "domain" else PUBLIC,
+            task_id=f"excluded-{index}",
+            context_key=f"excluded-{index}",
+            title="Other receipt",
+            body="lkey lifetime policy",
+            topics=("runtime",) if excluded_by == "domain" else ("unrelated",),
+        )
+
+    assert [source.id for source in service.search(PUBLIC, query, topics=("runtime",))] == baseline
+
+
+def test_provenance_does_not_drive_relevance_but_exact_historical_task_lookup_still_works(service):
+    previous = checkpoint(
+        service,
+        task_id="previous-task-285",
+        context_key="receipt-account",
+        title="Receipt contract",
+        body="Verify adapter digest lifetime.",
+    )
+    latest = checkpoint(
+        service,
+        task_id="latest-task-285",
+        context_key=previous.context_key,
+        title=previous.title,
+        body=previous.body,
+        expected_revision=previous.revision,
+    )
+    unrelated = checkpoint(
+        service,
+        task_id="dashboard-task",
+        context_key="dashboard-account",
+        title="A dashboard result",
+        body="Typography was checked in previous-task-285.",
+    )
+    baseline = [source.id for source in service.search(PUBLIC, "adapter")]
+    assert baseline == [latest.id]
+    checkpoint(
+        service,
+        task_id="dashboard-task-next",
+        context_key=unrelated.context_key,
+        title=unrelated.title,
+        body=unrelated.body,
+        sources=tuple(f"task:adapter-investigation-{index}" for index in range(100)),
+        expected_revision=unrelated.revision,
+    )
+
+    assert [source.id for source in service.search(PUBLIC, "adapter")] == baseline
+    assert [source.id for source in service.search(PUBLIC, previous.task_id)] == [latest.id]
+
+
 def test_markdown_is_the_only_source_and_summary_body_store(service):
     source = checkpoint(service, body="Unique source body marker.")
     summary = summarize(service, body=f"Unique summary marker: [source](memory:{source.id})")

@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from nyanpasu.memory_search import bm25_scores, tokenize
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
@@ -373,24 +375,40 @@ class MemoryService:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         required_topics = set(_strings(topics, "topics", casefold=True))
-        terms = set(re.findall(r"\w+", unicodedata.normalize("NFC", query).casefold()))
-        matches = []
-        for source in self.list_sources(access):
-            if not required_topics.issubset(source.topics):
-                continue
-            task_ids = " ".join(
-                reference.removeprefix("task:") for reference in source.sources if reference.startswith("task:")
+        sources = [source for source in self.list_sources(access) if required_topics.issubset(source.topics)]
+        if not query.strip():
+            return sources[:limit]
+
+        # Exact context/task lookup also resolves older tasks in a rolling account.
+        # Provenance must not inflate document length or keyword frequency.
+        identity = unicodedata.normalize("NFC", query).strip().casefold()
+        exact = [
+            source
+            for source in sources
+            if identity == source.context_key.casefold()
+            or any(
+                identity == reference.removeprefix("task:").casefold()
+                for reference in source.sources
+                if reference.startswith("task:")
             )
-            values = (
-                (source.context_key, 4),
-                (task_ids, 4),
-                (source.title, 4),
-                (" ".join(source.topics), 5),
-                (source.body, 1),
-            )
-            score = sum(weight for text, weight in values for term in terms if term in text.casefold())
-            if score or not terms:
-                matches.append((score, source))
+        ]
+        if exact:
+            return exact[:limit]
+
+        scores = bm25_scores(
+            set(tokenize(query)),
+            [
+                (
+                    (source.context_key, 4.0),
+                    (source.title, 4.0),
+                    (" ".join(source.topics), 5.0),
+                    (source.body, 1.0),
+                )
+                for source in sources
+            ],
+            prefix=True,
+        )
+        matches = [(score, source) for score, source in zip(scores, sources, strict=True) if score > 0]
         matches.sort(key=lambda item: (-item[0], item[1].title.casefold(), item[1].id))
         return [source for _, source in matches[:limit]]
 

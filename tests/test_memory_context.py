@@ -142,6 +142,79 @@ def test_low_relevance_recent_summaries_do_not_fill_spare_budget():
     assert {entry.reason for entry in result.skipped} == {"irrelevant"}
 
 
+@pytest.mark.parametrize("unavailable", ["unauthorized", "stale", "other_generation", "empty"])
+def test_rare_terms_prioritize_summaries_without_statistics_from_unavailable_memory(unavailable):
+    request = task(metadata={"memory_query": "worker runtime lkey"})
+    rare = summary("rare", body="lkey lifetime policy")
+    common = [summary(f"common-{index}", body="worker runtime policy") for index in range(6)]
+    baseline = build_memory_context(request, [*common, rare])
+    assert baseline.selected[0].id == rare.id
+    assert baseline.selected[0].reason == "topic:lkey"
+
+    excluded = []
+    for index in range(12):
+        item = summary(f"lkey-{index}", body="lkey lifetime policy")
+        if unavailable == "unauthorized":
+            item = replace(item, domain="secret")
+        elif unavailable == "stale":
+            item = replace(item, stale=True)
+        elif unavailable == "empty":
+            item = replace(item, body="")
+        else:
+            excluded.append(summary(f"latest-{index}", context_key=item.context_key, context_generation=2, body=""))
+        excluded.append(item)
+
+    result = build_memory_context(request, [*excluded, *common, rare])
+
+    assert result.selected == baseline.selected
+    assert result.prompt == baseline.prompt
+    assert {entry.id for entry in result.skipped if entry.reason == unavailable} == {
+        item.id for item in excluded if item.context_generation == 1
+    }
+
+
+def test_commit_type_words_do_not_make_unrelated_summaries_relevant():
+    request = task(metadata={"memory_query": "feat: validate LoRA adapter receipts; docs"})
+    relevant = summary("receipt", body="LoRA adapters require matching digests.")
+    irrelevant = [
+        summary("docs", body="Docs describe visual styling and typography."),
+        summary("feature", body="Feat: add dashboard colors."),
+    ]
+
+    result = build_memory_context(request, [*irrelevant, relevant])
+
+    assert [entry.id for entry in result.selected] == [relevant.id]
+    assert {entry.id: entry.reason for entry in result.skipped} == {item.id: "irrelevant" for item in irrelevant}
+
+
+@pytest.mark.parametrize(
+    "query,irrelevant_body,relevant_body",
+    [
+        (
+            "src/runtime/checkpoint.py CP",
+            "Dashboard typography in web.py should use consistent spacing.",
+            "CP requires aligned tensor partitions.",
+        ),
+        (
+            "docs/en/runtime.md DP",
+            "Chinese translation lives in docs/zh/dashboard.md.",
+            "DP replicas need synchronized optimizer state.",
+        ),
+    ],
+)
+def test_file_extensions_do_not_inject_unrelated_summaries_but_short_domain_terms_do(
+    query, irrelevant_body, relevant_body
+):
+    request = task(metadata={"memory_query": query})
+    relevant = summary("relevant", body=relevant_body)
+    irrelevant = summary("unrelated", body=irrelevant_body)
+
+    result = build_memory_context(request, [irrelevant, relevant])
+
+    assert [entry.id for entry in result.selected] == [relevant.id]
+    assert [(entry.id, entry.reason) for entry in result.skipped] == [(irrelevant.id, "irrelevant")]
+
+
 def test_shared_context_identity_is_not_a_topic_match():
     request = task().model_copy(
         update={
