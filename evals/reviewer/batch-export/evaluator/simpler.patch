@@ -1,0 +1,38 @@
+--- a/courier.py
++++ b/courier.py
+@@ -1,7 +1,6 @@
+ from __future__ import annotations
+
+ import argparse
+-import hashlib
+ from pathlib import Path
+
+ from checkpoint import CheckpointStore
+@@ -11,15 +10,10 @@
+ def export(source: Path, receiver: Receiver, checkpoints: CheckpointStore) -> None:
+     records = source.read_text(encoding="utf-8").splitlines()
+     state = checkpoints.load()
+-    seen = set(state["seen"])
+     for offset in range(state["offset"], len(records), 2):
+         batch = records[offset : offset + 2]
+-        identifiers = {hashlib.sha256(record.encode("utf-8")).hexdigest() for record in batch}
+-        if seen & identifiers:
+-            raise ValueError("record already exported")
+-        seen.update(identifiers)
+-        checkpoints.save({"offset": offset + len(batch), "seen": sorted(seen)})
+         receiver.deliver(str(source.resolve()), offset, batch)
++        checkpoints.save({"offset": offset + len(batch)})
+
+
+ if __name__ == "__main__":
+--- a/checkpoint.py
++++ b/checkpoint.py
+@@ -13,7 +13,7 @@
+
+     def load(self) -> dict:
+         if not self.path.exists():
+-            return {"offset": 0, "seen": []}
++            return {"offset": 0}
+         return json.loads(self.path.read_text(encoding="utf-8"))
+
+     def save(self, state: dict) -> None:
