@@ -111,8 +111,15 @@ def explain_target(
 
 
 @app.command()
-def memory_rebuild(source_task_id: str) -> None:
-    """Retry background memory for a completed task and wait for publication."""
+def memory_rebuild(
+    source_task_id: Annotated[str | None, typer.Argument()] = None,
+    all_contexts: Annotated[
+        bool, typer.Option("--all", help="Build summaries from all existing source contexts.")
+    ] = False,
+) -> None:
+    """Retry one task or backfill existing context summaries, and wait for publication."""
+    if all_contexts == (source_task_id is not None):
+        raise typer.BadParameter("choose a source task ID or --all")
     configure_logging()
     resolved = load_config()
     ensure_state_dirs(resolved)
@@ -120,10 +127,15 @@ def memory_rebuild(source_task_id: str) -> None:
     async def run() -> None:
         agent = AgentService(resolved)
         try:
-            task = await agent.rebuild_memory(source_task_id)
-            result = await agent.wait_for_memory(task.task_id)
-            typer.echo(result.model_dump_json())
-            if result.status is not TaskStatus.COMPLETED:
+            if all_contexts:
+                tasks = await agent.rebuild_all_memory()
+            else:
+                assert source_task_id is not None
+                tasks = [await agent.rebuild_memory(source_task_id)]
+            results = [await agent.wait_for_memory(task.task_id) for task in tasks]
+            payload = [result.model_dump(mode="json") for result in results]
+            typer.echo(json.dumps(payload if all_contexts else payload[0], ensure_ascii=False))
+            if any(result.status is not TaskStatus.COMPLETED for result in results):
                 raise typer.Exit(1)
         finally:
             await agent.shutdown()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from nyanpasu.agent import AgentService
 from nyanpasu.config import NyanpasuConfig, ServerConfig
 from nyanpasu.diagnostics import diagnostic
 from nyanpasu.memory import MemoryAccess, MemoryService
+from nyanpasu.memory_context import build_memory_context
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.store import StateStore
 from nyanpasu.targets import ExecutionOverride
@@ -158,6 +160,7 @@ def fixture_app():
     first = memory.checkpoint_source(
         public_access,
         "fixture-task",
+        context_key="demo:transcript",
         input_digest="python-evidence",
         cursor=1,
         complete=True,
@@ -169,6 +172,7 @@ def fixture_app():
     memory.checkpoint_source(
         public_access,
         "fixture-runtime",
+        context_key="demo:runtime",
         input_digest="runtime-evidence",
         cursor=1,
         complete=True,
@@ -177,9 +181,11 @@ def fixture_app():
         topics=("runtime",),
         sources=("tool:runtime:lease-result",),
     )
-    snapshot = memory.snapshot_domain(public_access)
-    memory.publish_navigation(
+    snapshot = memory.snapshot_context(public_access, "demo:transcript", 1)
+    memory.publish_summary(
         public_access,
+        "demo:transcript",
+        1,
         body=f"Start with the [Python source summary](memory:{first.id}) for test evidence.",
         source_ids=list(snapshot.source_revisions),
         source_revisions=snapshot.source_revisions,
@@ -187,26 +193,28 @@ def fixture_app():
         expected_revision=None,
     )
     if token:
-        for domain, title, body, topic, navigation in (
+        for domain, title, body, topic, summary in (
             (
                 "private:fixture",
                 "Private workspace summary",
                 "This source summary belongs to the fixture task's private audience.",
                 "private-topic",
-                "Private workspace navigation",
+                "Private workspace context",
             ),
             (
                 "private:other",
                 "Other private summary",
                 "This source belongs to another private audience.",
                 "other-private-topic",
-                "Other private navigation",
+                "Other private context",
             ),
         ):
             private_access = MemoryAccess((domain,), domain)
+            context_key = "demo:transcript" if domain == "private:fixture" else "demo:other"
             private = memory.checkpoint_source(
                 private_access,
                 "fixture-task" if domain == "private:fixture" else "fixture-other",
+                context_key=context_key,
                 input_digest="private-evidence",
                 cursor=1,
                 complete=True,
@@ -215,15 +223,23 @@ def fixture_app():
                 topics=(topic,),
                 sources=("tool:private:confirmed-result",),
             )
-            snapshot = memory.snapshot_domain(private_access)
-            memory.publish_navigation(
+            snapshot = memory.snapshot_context(private_access, context_key, 1)
+            memory.publish_summary(
                 private_access,
-                body=f"{navigation}: [read the authorized source](memory:{private.id}).",
+                context_key,
+                1,
+                body=f"{summary}: [read the authorized source](memory:{private.id}).",
                 source_ids=[private.id],
                 source_revisions=snapshot.source_revisions,
                 input_digest=snapshot.input_digest,
                 expected_revision=None,
             )
+    state.bind_task_execution(
+        task.task_id,
+        "fixture-thread",
+        "fixture-turn",
+        memory_context=asdict(build_memory_context(task, memory.list_summaries(task.memory))),
+    )
     items: list[dict[str, Any]] = [
         {
             "id": "input",

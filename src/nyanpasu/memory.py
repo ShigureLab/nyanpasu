@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -20,9 +21,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SOURCE_BODY_MAX_CHARS = 16_000
-NAVIGATION_MAX_CHARS = 8_000
+SUMMARY_MAX_BYTES = 1_024
 _ID = re.compile(r"[0-9a-f]{32}\Z")
-_NAVIGATION_REFERENCE = re.compile(r"\bmemory:([^\s<>()\[\]`\"']+)")
+_SUMMARY_REFERENCE = re.compile(r"\bmemory:([^\s<>()\[\]`\"']+)")
 
 
 class MemoryDenied(PermissionError):
@@ -35,6 +36,10 @@ class MemoryNotFound(LookupError):
 
 class MemoryConflict(ValueError):
     """A background result was computed from an outdated memory snapshot."""
+
+
+class SummaryTooLarge(ValueError):
+    """The complete rendered summary exceeds its injection budget."""
 
 
 def _strings(values: Sequence[str], field: str, *, casefold: bool = False) -> tuple[str, ...]:
@@ -76,6 +81,9 @@ class MemorySource:
     id: str
     domain: str
     task_id: str
+    context_key: str
+    context_generation: int
+    source_order: float
     title: str
     body: str
     topics: tuple[str, ...]
@@ -98,9 +106,11 @@ class MemorySourceCheckpoint(MemorySource):
 
 
 @dataclass(frozen=True)
-class MemoryNavigation:
+class MemorySummary:
     id: str
     domain: str
+    context_key: str
+    context_generation: int
     body: str
     sources: tuple[str, ...]
     source_revisions: dict[str, str]
@@ -119,8 +129,10 @@ class MemoryNavigation:
 @dataclass(frozen=True)
 class MemorySnapshot:
     domain: str
+    context_key: str
+    context_generation: int
     sources: tuple[MemorySource, ...]
-    navigation: MemoryNavigation | None
+    summary: MemorySummary | None
 
     @property
     def source_revisions(self) -> dict[str, str]:
@@ -143,12 +155,44 @@ def _identifier(kind: str, domain: str, task_id: str = "") -> str:
     return hashlib.sha256(_json([kind, domain, task_id])).hexdigest()[:32]
 
 
-def _body(text: str, limit: int) -> str:
+def _summary_id(domain: str, context_key: str, context_generation: int) -> str:
+    return hashlib.sha256(_json(["summary", domain, context_key, context_generation])).hexdigest()[:32]
+
+
+def _summary_block(summary_id: str, body: str) -> str:
+    return json.dumps({"id": summary_id, "body": body}, ensure_ascii=False, separators=(",", ":"))
+
+
+def validate_summary_block(summary_id: str, body: str) -> None:
+    size = len(_summary_block(summary_id, body).encode("utf-8"))
+    if size > SUMMARY_MAX_BYTES:
+        raise SummaryTooLarge(f"rendered memory summary is {size} bytes; maximum is {SUMMARY_MAX_BYTES} bytes")
+
+
+def summary_block(summary: MemorySummary) -> str:
+    return _summary_block(summary.id, summary.body)
+
+
+def _context(context_key: str, context_generation: int) -> tuple[str, int]:
+    if not isinstance(context_key, str) or not context_key.strip() or "\x00" in context_key:
+        raise ValueError("context_key must be nonempty text without NUL")
+    if not isinstance(context_generation, int) or isinstance(context_generation, bool) or context_generation < 1:
+        raise ValueError("context_generation must be a positive integer")
+    return context_key, context_generation
+
+
+def _source_order(value: float) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError("source_order must be a finite nonnegative number")
+    return value
+
+
+def _body(text: str, limit: int | None = None) -> str:
     if not isinstance(text, str) or "\x00" in text:
         raise ValueError("memory body must be text without NUL characters")
     text = unicodedata.normalize("NFC", text.replace("\r\n", "\n").replace("\r", "\n"))
     normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip("\n")
-    if len(normalized) > limit:
+    if limit is not None and len(normalized) > limit:
         raise ValueError(f"memory body must be at most {limit} characters")
     return normalized
 
@@ -184,16 +228,16 @@ def _input_digest(value: str) -> str:
     return value
 
 
-def _markdown(record: MemorySourceCheckpoint | MemoryNavigation) -> bytes:
+def _markdown(record: MemorySourceCheckpoint | MemorySummary) -> bytes:
     data = asdict(record)
     for field in ("domain", "revision", "body", "stale"):
         data.pop(field, None)
-    data["kind"] = "source" if isinstance(record, MemorySourceCheckpoint) else "navigation"
+    data["kind"] = "source" if isinstance(record, MemorySourceCheckpoint) else "summary"
     # JSON frontmatter is also valid YAML. Markdown remains the only body store.
     return ("---\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n---\n\n" + record.body + "\n").encode()
 
 
-_Record = TypeVar("_Record", bound=MemorySourceCheckpoint | MemoryNavigation)
+_Record = TypeVar("_Record", bound=MemorySourceCheckpoint | MemorySummary)
 
 
 def _with_revision(record: _Record) -> _Record:
@@ -205,7 +249,7 @@ def _published(checkpoint: MemorySourceCheckpoint) -> MemorySource:
 
 
 class MemoryService:
-    """Audience-scoped source accounts and derived navigation.
+    """Audience-scoped source accounts and derived context summaries.
 
     A domain manifest points to immutable Markdown objects. Source progress and
     its draft body commit together; only complete accounts enter recall. The
@@ -250,8 +294,10 @@ class MemoryService:
     def _manifest(directory: Path, domain: str) -> dict[str, Any]:
         path = directory / "manifest.json"
         if not path.exists():
-            return {"domain": domain, "sources": {}, "drafts": {}, "navigation": None}
-        return json.loads(path.read_text())
+            return {"domain": domain, "sources": {}, "drafts": {}, "summaries": {}}
+        manifest = json.loads(path.read_text())
+        manifest.setdefault("summaries", {})
+        return manifest
 
     @staticmethod
     def _object(directory: Path, filename: str) -> tuple[dict[str, Any], str, str]:
@@ -263,36 +309,44 @@ class MemoryService:
         data, body, revision = self._object(directory, filename)
         if data.pop("kind") != "source":
             raise ValueError("memory source references a non-source object")
+        data.setdefault("context_key", data["task_id"])
+        data.setdefault("context_generation", 1)
+        data.setdefault("source_order", 0)
         for field in ("topics", "sources"):
             data[field] = tuple(data[field])
         return MemorySourceCheckpoint(domain=domain, body=body, revision=revision, **data)
 
-    def _sources(self, directory: Path, domain: str, manifest) -> tuple[MemorySource, ...]:
+    def _sources(
+        self, directory: Path, domain: str, manifest, *, include_empty: bool = False
+    ) -> tuple[MemorySource, ...]:
         checkpoints = [self._checkpoint(directory, domain, filename) for filename in manifest["sources"].values()]
         return tuple(
             sorted(
-                (_published(source) for source in checkpoints if source.complete and source.body),
-                key=lambda source: (source.title.casefold(), source.id),
+                (_published(source) for source in checkpoints if source.complete and (include_empty or source.body)),
+                key=lambda source: (source.source_order, source.task_id),
             )
         )
 
-    def _navigation(self, directory: Path, domain: str, manifest, sources) -> MemoryNavigation | None:
-        filename = manifest["navigation"]
-        if filename is None:
-            return None
+    def _summary(self, directory: Path, domain: str, filename: str, sources) -> MemorySummary:
         data, body, revision = self._object(directory, filename)
-        if data.pop("kind") != "navigation":
-            raise ValueError("memory navigation references a non-navigation object")
+        if data.pop("kind") != "summary":
+            raise ValueError("memory summary references a non-summary object")
         data["sources"] = tuple(data["sources"])
-        navigation = MemoryNavigation(domain=domain, body=body, revision=revision, **data)
-        current = {source.id: source.revision for source in sources}
-        return replace(navigation, stale=navigation.source_revisions != current)
+        summary = MemorySummary(domain=domain, body=body, revision=revision, **data)
+        current = {
+            source.id: source.revision
+            for source in sources
+            if (source.context_key, source.context_generation) == (summary.context_key, summary.context_generation)
+        }
+        return replace(summary, stale=summary.source_revisions != current)
 
-    def list_sources(self, access: MemoryAccess) -> list[MemorySource]:
+    def list_sources(self, access: MemoryAccess, *, include_empty: bool = False) -> list[MemorySource]:
         result = []
         for domain in access.read_domains:
             with self._locked(domain) as directory:
-                result.extend(self._sources(directory, domain, self._manifest(directory, domain)))
+                result.extend(
+                    self._sources(directory, domain, self._manifest(directory, domain), include_empty=include_empty)
+                )
         return sorted(result, key=lambda source: (source.title.casefold(), source.id))
 
     def read(self, access: MemoryAccess, source_id: str) -> MemorySource:
@@ -322,15 +376,16 @@ class MemoryService:
         matches.sort(key=lambda item: (-item[0], item[1].title.casefold(), item[1].id))
         return [source for _, source in matches[:limit]]
 
-    def list_navigation(self, access: MemoryAccess) -> list[MemoryNavigation]:
+    def list_summaries(self, access: MemoryAccess) -> list[MemorySummary]:
         result = []
         for domain in access.read_domains:
             with self._locked(domain) as directory:
                 manifest = self._manifest(directory, domain)
                 sources = self._sources(directory, domain, manifest)
-                if navigation := self._navigation(directory, domain, manifest, sources):
-                    result.append(navigation)
-        return result
+                result.extend(
+                    self._summary(directory, domain, filename, sources) for filename in manifest["summaries"].values()
+                )
+        return sorted(result, key=lambda item: (item.domain, item.context_key, item.context_generation))
 
     def describe(self, access: MemoryAccess) -> dict[str, Any]:
         sources = self.list_sources(access)
@@ -340,7 +395,7 @@ class MemoryService:
             "count": len(sources),
             "domains": [{"id": domain, "count": domains[domain]} for domain in access.read_domains],
             "topics": [{"name": topic, "count": count} for topic, count in sorted(topics.items())],
-            "navigation_count": len(self.list_navigation(access)),
+            "summary_count": len(self.list_summaries(access)),
         }
 
     def source_state(self, access: MemoryAccess, task_id: str) -> MemorySourceCheckpoint | None:
@@ -361,12 +416,16 @@ class MemoryService:
         complete: bool,
         title: str,
         body: str,
+        context_key: str | None = None,
+        context_generation: int = 1,
+        source_order: float = 0,
         topics: Sequence[str] = (),
         sources: Sequence[str] = (),
         expected_revision: str | None = None,
     ) -> MemorySourceCheckpoint:
         domain = self._write_domain(access)
         task_id = _task_id(task_id)
+        context_key, context_generation = _context(task_id if context_key is None else context_key, context_generation)
         input_digest = _input_digest(input_digest)
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
             raise ValueError("cursor must be a nonnegative integer")
@@ -377,6 +436,9 @@ class MemoryService:
             "input_digest": input_digest,
             "cursor": cursor,
             "complete": complete,
+            "context_key": context_key,
+            "context_generation": context_generation,
+            "source_order": _source_order(source_order),
         }
         source_id = _identifier("source", domain, task_id)
         with self._locked(domain, write=True) as directory:
@@ -408,16 +470,50 @@ class MemoryService:
             self._commit(directory, manifest)
             return checkpoint
 
-    def snapshot_domain(self, access: MemoryAccess) -> MemorySnapshot:
+    def bind_source_contexts(self, access: MemoryAccess, mapping: dict[str, tuple[str, int, float]]) -> int:
+        """Bind legacy accounts using service-owned task metadata, without changing evidence."""
         domain = self._write_domain(access)
+        context_fields = ("context_key", "context_generation", "source_order")
+        changed = set()
+        with self._locked(domain, write=True) as directory:
+            manifest = self._manifest(directory, domain)
+            for collection in (manifest["sources"], manifest["drafts"]):
+                for identity, filename in collection.items():
+                    data, _, _ = self._object(directory, filename)
+                    if all(field in data for field in context_fields) or data["task_id"] not in mapping:
+                        continue
+                    key, generation, order = mapping[data["task_id"]]
+                    key, generation = _context(key, generation)
+                    metadata = dict(zip(context_fields, (key, generation, _source_order(order)), strict=True))
+                    checkpoint = self._checkpoint(directory, domain, filename)
+                    bound = _with_revision(
+                        replace(checkpoint, **{key: value for key, value in metadata.items() if key not in data})
+                    )
+                    collection[identity] = self._save_object(directory, bound)
+                    changed.add(checkpoint.task_id)
+            if changed or "navigation" in manifest:
+                self._commit(directory, manifest)
+        return len(changed)
+
+    def snapshot_context(self, access: MemoryAccess, context_key: str, context_generation: int) -> MemorySnapshot:
+        domain = self._write_domain(access)
+        context_key, context_generation = _context(context_key, context_generation)
         with self._locked(domain) as directory:
             manifest = self._manifest(directory, domain)
-            sources = self._sources(directory, domain, manifest)
-            return MemorySnapshot(domain, sources, self._navigation(directory, domain, manifest, sources))
+            sources = tuple(
+                source
+                for source in self._sources(directory, domain, manifest)
+                if (source.context_key, source.context_generation) == (context_key, context_generation)
+            )
+            filename = manifest["summaries"].get(_summary_id(domain, context_key, context_generation))
+            summary = self._summary(directory, domain, filename, sources) if filename else None
+            return MemorySnapshot(domain, context_key, context_generation, sources, summary)
 
-    def publish_navigation(
+    def publish_summary(
         self,
         access: MemoryAccess,
+        context_key: str,
+        context_generation: int,
         *,
         body: str,
         source_ids: Sequence[str],
@@ -425,26 +521,34 @@ class MemoryService:
         input_digest: str,
         expected_revision: str | None = None,
         candidate_ids: Sequence[str] | None = None,
-    ) -> MemoryNavigation:
+    ) -> MemorySummary:
         domain = self._write_domain(access)
-        body = _body(body, NAVIGATION_MAX_CHARS)
+        context_key, context_generation = _context(context_key, context_generation)
+        identity = _summary_id(domain, context_key, context_generation)
+        body = _body(body)
+        validate_summary_block(identity, body)
         source_ids = _strings(source_ids, "source_ids")
         candidates = set(source_revisions if candidate_ids is None else _strings(candidate_ids, "candidate_ids"))
         if not set(source_ids).issubset(candidates) or not candidates.issubset(source_revisions):
-            raise ValueError("navigation must reference only supplied source candidates")
+            raise ValueError("summary must reference only supplied source candidates")
         if any(not _ID.fullmatch(source_id) for source_id in source_ids):
-            raise ValueError("navigation source IDs must identify memory sources")
-        if not set(_NAVIGATION_REFERENCE.findall(body)).issubset(source_ids):
-            raise ValueError("navigation contains an undeclared memory source reference")
+            raise ValueError("summary source IDs must identify memory sources")
+        if not set(_SUMMARY_REFERENCE.findall(body)).issubset(source_ids):
+            raise ValueError("summary contains an undeclared memory source reference")
         if _input_digest(input_digest) != _source_digest(source_revisions):
-            raise ValueError("navigation input digest does not match its source revisions")
+            raise ValueError("summary input digest does not match its source revisions")
         with self._locked(domain, write=True) as directory:
             manifest = self._manifest(directory, domain)
-            sources = self._sources(directory, domain, manifest)
+            sources = tuple(
+                source
+                for source in self._sources(directory, domain, manifest)
+                if (source.context_key, source.context_generation) == (context_key, context_generation)
+            )
             current = {source.id: source.revision for source in sources}
             if source_revisions != current:
-                raise MemoryConflict("navigation sources changed; read a fresh domain snapshot")
-            previous = self._navigation(directory, domain, manifest, sources)
+                raise MemoryConflict("summary sources changed; read a fresh context snapshot")
+            filename = manifest["summaries"].get(identity)
+            previous = self._summary(directory, domain, filename, sources) if filename else None
             if (
                 previous
                 and previous.body == body
@@ -453,10 +557,12 @@ class MemoryService:
             ):
                 return previous
             self._check_revision(previous, expected_revision)
-            navigation = _with_revision(
-                MemoryNavigation(
-                    id=_identifier("navigation", domain),
+            summary = _with_revision(
+                MemorySummary(
+                    id=identity,
                     domain=domain,
+                    context_key=context_key,
+                    context_generation=context_generation,
                     body=body,
                     sources=source_ids,
                     source_revisions=dict(source_revisions),
@@ -464,9 +570,9 @@ class MemoryService:
                     updated_at=datetime.now(UTC).isoformat(),
                 )
             )
-            manifest["navigation"] = self._save_object(directory, navigation)
+            manifest["summaries"][identity] = self._save_object(directory, summary)
             self._commit(directory, manifest)
-            return navigation
+            return summary
 
     @staticmethod
     def _check_revision(previous, expected_revision: str | None) -> None:
@@ -493,7 +599,7 @@ class MemoryService:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
-    def _save_object(self, directory: Path, record: MemorySourceCheckpoint | MemoryNavigation) -> str:
+    def _save_object(self, directory: Path, record: MemorySourceCheckpoint | MemorySummary) -> str:
         objects = directory / "objects"
         objects.mkdir(exist_ok=True, mode=0o700)
         filename = f"{record.id}-{record.revision}.md"
@@ -503,10 +609,13 @@ class MemoryService:
         return filename
 
     def _commit(self, directory: Path, manifest) -> None:
+        manifest.pop("navigation", None)
         self._atomic_write(directory / "manifest.json", _json(manifest))
         # The manifest is the commit boundary. Garbage collection cannot turn a
         # successful publication into a failed job or make orphan files visible.
-        live = set(manifest["sources"].values()) | set(manifest["drafts"].values()) | {manifest["navigation"]}
+        live = (
+            set(manifest["sources"].values()) | set(manifest["drafts"].values()) | set(manifest["summaries"].values())
+        )
         try:
             for path in (directory / "objects").glob("*.md"):
                 if path.name not in live:

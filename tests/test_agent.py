@@ -929,6 +929,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
             "head_sha": task.workspace.revision,
             "base_ref": "main",
             "merge_base_sha": "base-a",
+            "files": [],
         },
     )
     plugin.runtime = Mock(config=agent.config)

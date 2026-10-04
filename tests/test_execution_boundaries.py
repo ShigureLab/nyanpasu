@@ -176,7 +176,7 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
                 "count": 0,
                 "domains": [],
                 "topics": [],
-                "navigation_count": 0,
+                "summary_count": 0,
             }
             with pytest.raises(MemoryNotFound):
                 await restarted.control.dispatch(saved.task_id, "memory.read", {"source_id": source.id})

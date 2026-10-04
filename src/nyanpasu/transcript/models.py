@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nyanpasu.memory import MemoryNavigation, MemorySource
+from nyanpasu.memory import MemorySource, MemorySummary
 from nyanpasu.targets import ExecutionTarget
 
 
@@ -303,6 +303,9 @@ class MemorySourceSummary(ContractModel):
     id: str
     domain: str
     task_id: str
+    context_key: str
+    context_generation: int
+    source_order: float
     title: str
     topics: list[str]
     sources: list[str]
@@ -327,8 +330,30 @@ class MemoryPage(ContractModel):
     domains: list[MemoryDomain]
     topics: list[MemoryTopic]
     items: list[MemorySourceSummary]
-    navigation_count: int
-    navigation: list[MemoryNavigation]
+    summary_count: int
+    summaries: list[MemorySummary]
+    has_more: bool
+
+
+class MemoryInjectionSelection(ContractModel):
+    id: str
+    revision: str
+    reason: str
+
+
+class MemoryInjection(ContractModel):
+    backend: str
+    thread_id: str
+    turn_id: str
+    started_at: str
+    prompt: str
+    bytes: int
+    selected: list[MemoryInjectionSelection]
+    skipped: list[MemoryInjectionSelection]
+
+
+class MemoryInjectionPage(ContractModel):
+    items: list[MemoryInjection]
     has_more: bool
 
 
@@ -344,3 +369,4 @@ class TranscriptContract(ContractModel):
     content: ContentPage
     memory: MemoryPage
     memory_source: MemorySource
+    memory_injections: MemoryInjectionPage

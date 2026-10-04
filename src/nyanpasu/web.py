@@ -18,9 +18,9 @@ from nyanpasu.models import AgentTask
 from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskControlHandler, TaskPreparer
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.api import dashboard_router
-from nyanpasu.transcript.models import MemoryPage
+from nyanpasu.transcript.models import MemoryInjectionPage, MemoryPage
 from nyanpasu.transcript.queries import CursorError, TranscriptReader
-from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
+from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable, iso_time
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -205,6 +205,7 @@ def memory_router(config: NyanpasuConfig, reader: TranscriptReader, memory: Memo
     @router.get("", response_model=MemoryPage)
     def search_memory(
         task_id: str | None = None,
+        domain: Annotated[str | None, Query(max_length=4096)] = None,
         q: Annotated[str, Query(max_length=256)] = "",
         topic: Annotated[str, Query(max_length=256)] = "",
         limit: Annotated[int, Query(ge=1, le=50)] = 50,
@@ -217,19 +218,53 @@ def memory_router(config: NyanpasuConfig, reader: TranscriptReader, memory: Memo
                 "domains": [],
                 "topics": [],
                 "items": [],
-                "navigation_count": 0,
-                "navigation": [],
+                "summary_count": 0,
+                "summaries": [],
                 "has_more": False,
             }
+        if domain is not None and domain not in access.read_domains:
+            raise HTTPException(404, "Memory domain not found")
+        description = memory.describe(access)
+        domains = description["domains"]
+        if domain is not None:
+            access = MemoryAccess((domain,))
+            description = memory.describe(access)
         sources = memory.search(access, q, topics=(topic,) if topic else (), limit=limit + 1)
         return {
             "enabled": True,
-            **memory.describe(access),
+            **description,
+            "domains": domains,
             "items": [
                 {key: value for key, value in source.to_dict().items() if key != "body"} for source in sources[:limit]
             ],
-            "navigation": [navigation.to_dict() for navigation in memory.list_navigation(access)],
+            "summaries": [summary.to_dict() for summary in memory.list_summaries(access)],
             "has_more": len(sources) > limit,
+        }
+
+    @router.get("/injections", response_model=MemoryInjectionPage)
+    def memory_injections(task_id: str, limit: Annotated[int, Query(ge=1, le=100)] = 20):
+        access_for_task(task_id)
+        if not config.memory.enabled:
+            return {"items": [], "has_more": False}
+        with reader.connect() as conn:
+            rows = conn.execute(
+                """SELECT backend,thread_id,turn_id,started_at,memory_context_json
+                   FROM task_turns WHERE task_id=? AND memory_context_json IS NOT NULL
+                   ORDER BY started_at DESC,backend,thread_id,turn_id LIMIT ?""",
+                (task_id, limit + 1),
+            ).fetchall()
+        return {
+            "items": [
+                {
+                    **json.loads(row["memory_context_json"]),
+                    "backend": row["backend"],
+                    "thread_id": row["thread_id"],
+                    "turn_id": row["turn_id"],
+                    "started_at": iso_time(row["started_at"]),
+                }
+                for row in rows[:limit]
+            ],
+            "has_more": len(rows) > limit,
         }
 
     @router.get("/{source_id}", response_model=MemorySource)

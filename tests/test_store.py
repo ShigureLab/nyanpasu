@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from nyanpasu.config import NyanpasuConfig
+from nyanpasu.memory import MemoryAccess
 from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.targets import ExecutionOverride
@@ -355,3 +358,45 @@ def test_unsupported_conversation_schema_is_not_modified(tmp_path: Path) -> None
         assert "result_json" in {row[1] for row in conn.execute("PRAGMA table_info(task_runs)")}
         assert conn.execute("SELECT content FROM transcript_events").fetchall() == [("conversation copy",)]
         assert conn.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 1
+
+
+def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory_receipts(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    state = StateStore(path)
+    original = _task("original")
+    state.record_task(original)
+    state.bind_task_execution(original.task_id, "thread", "old-turn")
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE task_turns DROP COLUMN memory_context_json")
+        conn.execute("PRAGMA user_version=1")
+        before = conn.execute("SELECT * FROM task_turns").fetchall()
+
+    migrated = StateStore(path)
+    assert migrated.task_request(original.task_id) == original
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("SELECT task_id,backend,thread_id,turn_id,started_at FROM task_turns").fetchall() == before
+        assert conn.execute("SELECT memory_context_json FROM task_turns").fetchall() == [(None,)]
+
+    receipt = {"prompt": "Historical evidence: 修复已验证", "bytes": 42, "selected": [], "skipped": []}
+    migrated.bind_task_execution(original.task_id, "thread", "new-turn", memory_context=receipt)
+    migrated.bind_task_execution(original.task_id, "thread", "new-turn", memory_context={"prompt": "changed"})
+    reopened = StateStore(path)
+    turns = reopened.task_turns(original.task_id)
+    assert len(turns) == 2
+    assert json.loads(turns[1]["memory_context_json"]) == receipt
+    assert turns[0]["memory_context_json"] is None
+
+
+def test_source_contexts_use_execution_order_and_isolate_contribution_audiences(tmp_path: Path) -> None:
+    state = StateStore(tmp_path / "state.db")
+    for identity, domain in (("queued-first", "public"), ("executed-first", "public"), ("hidden", "private:bob")):
+        state.record_task(_task(identity).model_copy(update={"memory": MemoryAccess((domain,), domain)}))
+        state.bind_task_execution(identity, "thread", identity)
+    with sqlite3.connect(state.db_path) as conn:
+        conn.execute("UPDATE task_turns SET started_at=20 WHERE task_id='queued-first'")
+        conn.execute("UPDATE task_turns SET started_at=10 WHERE task_id='executed-first'")
+    assert state.memory_source_contexts("public") == {
+        "queued-first": ("demo:1", 1, 20),
+        "executed-first": ("demo:1", 1, 10),
+    }

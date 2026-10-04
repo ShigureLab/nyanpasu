@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -8,6 +9,8 @@ import pytest
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.config import CodexBackendConfig, ModelSettings, NyanpasuConfig
+from nyanpasu.memory import MemorySummary
+from nyanpasu.memory_context import build_memory_context
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
@@ -74,7 +77,7 @@ def _live_pr(**updates):
     }
 
 
-def _stub_github(monkeypatch, **updates):
+def _stub_github(monkeypatch, *, files=(), **updates):
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
     monkeypatch.setattr(module, "gh_json", lambda *args, **kwargs: _live_pr(**updates))
     monkeypatch.setattr(
@@ -85,6 +88,7 @@ def _stub_github(monkeypatch, **updates):
             "head_sha": task.workspace.revision,
             "base_ref": task.metadata["pull_request"]["base_ref"],
             "merge_base_sha": "base-a",
+            "files": [{"path": path} for path in files],
         },
     )
 
@@ -142,6 +146,58 @@ async def test_preparation_reads_completed_context_at_execution(tmp_path: Path, 
 
     assert prepared.prompt.startswith("Continue reviewing ")
     assert "Previous task head (not proof of completed review): head-a" in prepared.prompt
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("topic_source", ["changed_path", "trigger_body", "ci_trigger_body"])
+async def test_preparation_uses_review_subject_for_memory_instead_of_dashboard_template(
+    tmp_path: Path, monkeypatch, topic_source: str
+) -> None:
+    plugin = _plugin(tmp_path)
+    queued = _task(plugin, "synchronize", "head-b")
+    _stub_github(monkeypatch, files=("src/lora/adapters.py",) if topic_source == "changed_path" else ())
+    if topic_source != "changed_path":
+        trigger = ReviewTrigger(
+            kind="ci_changed" if topic_source == "ci_trigger_body" else "review_thread_comment",
+            body_excerpt="Verify the LoRA adapter receipt.",
+        )
+        queued = queued.model_copy(update={"metadata": {**queued.metadata, "triggers": [trigger.model_dump()]}})
+    if topic_source == "ci_trigger_body":
+        from nyanpasu_github_reviewer.ci import CISnapshot
+
+        monkeypatch.setattr(
+            importlib.import_module("nyanpasu_github_reviewer.plugin"),
+            "fetch_ci_snapshot",
+            lambda *args: CISnapshot(head_sha="head-b"),
+        )
+    unrelated = MemorySummary(
+        id="a" * 32,
+        domain="shared:github:ExampleOrg/ExampleRepo",
+        context_key="github:ExampleOrg/ExampleRepo#2",
+        context_generation=1,
+        body="Dashboard publication and verification state.",
+        sources=(),
+        source_revisions={},
+        revision="dashboard-revision",
+        updated_at="2026-10-04T00:00:00+00:00",
+    )
+    relevant = replace(
+        unrelated,
+        id="b" * 32,
+        context_key="github:ExampleOrg/ExampleRepo#3",
+        body="LoRA adapter receipts verify the loaded weights.",
+        revision="adapter-revision",
+    )
+
+    prepared = await plugin.prepare_task(queued, (), None)
+    result = build_memory_context(prepared, [unrelated, relevant])
+
+    assert [entry.id for entry in result.selected] == [relevant.id]
+    assert [(entry.id, entry.reason) for entry in result.skipped] == [(unrelated.id, "irrelevant")]
+    default_query = prepared.model_copy(
+        update={"metadata": {key: value for key, value in prepared.metadata.items() if key != "memory_query"}}
+    )
+    assert unrelated.id in {entry.id for entry in build_memory_context(default_query, [unrelated]).selected}
 
 
 @pytest.mark.anyio

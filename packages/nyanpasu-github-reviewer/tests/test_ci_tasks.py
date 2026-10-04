@@ -133,7 +133,13 @@ async def test_ci_signal_coalesced_with_code_change_keeps_the_normal_review_path
     plugin, pr = ci_plugin
     ci = event_task(plugin, pr)
     code = event_task(plugin, pr, "pull_request_synchronize", "code-1")
-    inventory = {"head_sha": HEAD, "base_ref": "main", "merge_base_sha": NEXT_HEAD, "inventory_id": "c" * 64}
+    inventory = {
+        "head_sha": HEAD,
+        "base_ref": "main",
+        "merge_base_sha": NEXT_HEAD,
+        "inventory_id": "c" * 64,
+        "files": [],
+    }
     build = Mock(return_value=inventory)
     monkeypatch.setattr(plugin_module, "build_inventory", build)
 

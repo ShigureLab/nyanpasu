@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE agent_contexts (
@@ -47,6 +47,7 @@ CREATE TABLE task_turns (
     thread_id TEXT NOT NULL,
     turn_id TEXT NOT NULL,
     started_at REAL NOT NULL,
+    memory_context_json TEXT,
     PRIMARY KEY (task_id, backend, thread_id, turn_id)
 );
 CREATE TABLE native_sessions (
@@ -81,11 +82,18 @@ CREATE TABLE subtask_requests (
 
 
 def initialize(conn: sqlite3.Connection) -> None:
-    """Create new state or open the supported schema without modifying it."""
-    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'").fetchone()
-    if exists:
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version != SCHEMA_VERSION:
-            raise ValueError(f"Unsupported state schema version {version}; expected {SCHEMA_VERSION}")
-        return
-    conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA}\nPRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;")
+    """Create state or atomically add memory receipts to the previous schema."""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'").fetchone()
+        if exists:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version == 1:
+                conn.execute("ALTER TABLE task_turns ADD COLUMN memory_context_json TEXT")
+            elif version != SCHEMA_VERSION:
+                raise ValueError(f"Unsupported state schema version {version}; expected {SCHEMA_VERSION}")
+        else:
+            for statement in SCHEMA.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

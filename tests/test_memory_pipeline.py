@@ -4,13 +4,15 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from dataclasses import asdict
 
 import pytest
 
-from nyanpasu.memory import MemoryAccess, MemoryDenied, MemoryNotFound, MemoryService
+from nyanpasu.memory import SUMMARY_MAX_BYTES, MemoryAccess, MemoryDenied, MemoryNotFound, MemoryService, summary_block
 from nyanpasu.memory_consolidation import BLOCK_LIMIT, EVIDENCE_BUDGET, MEMORY_TASK_KINDS, input_digest
+from nyanpasu.memory_context import MEMORY_CONTEXT_MAX_BYTES, build_memory_context
 from nyanpasu.models import TaskRunResult, TaskStatus
-from nyanpasu.task_control import MEMORY_NAVIGATION_BUDGET, call_control, navigation_context
+from nyanpasu.task_control import call_control
 from tests.session_source import MemorySessionSource, tool, turn
 from tests.test_agent import FakeCodex
 from tests.test_hybrid_memory import ALICE, BOB, PUBLIC, config_for, make_agent, task
@@ -33,7 +35,7 @@ class MemoryModel(FakeCodex):
         result = await super().run_turn(**kwargs)
         material = json.loads(kwargs["prompt"][kwargs["prompt"].index("{") :])
         extraction = "topics" in output_schema["properties"]
-        self.events.append(("extraction" if extraction else "navigation", material))
+        self.events.append(("extraction" if extraction else "summary", material))
         number = len(self.events)
         if number in self.fail_at:
             raise RuntimeError("injected model failure")
@@ -58,28 +60,44 @@ class MemoryModel(FakeCodex):
         return result.model_copy(update={"final_message": json.dumps(output)})
 
 
-def publish_source(service, access, source_id, *, body="verified source history", title=None):
-    return service.checkpoint_source(
-        access,
-        source_id,
-        input_digest=f"digest:{source_id}",
-        cursor=1,
-        complete=True,
-        title=title or source_id,
-        body=body,
-        topics=["testing"],
-        sources=[f"tool:{source_id}"],
-    )
+def publish_source(
+    service,
+    access,
+    source_id,
+    *,
+    body="verified source history",
+    title=None,
+    context_key=None,
+    context_generation=1,
+    source_order=0,
+    **overrides,
+):
+    fields = {
+        "context_key": context_key or source_id,
+        "context_generation": context_generation,
+        "source_order": source_order,
+        "input_digest": f"digest:{source_id}",
+        "cursor": 1,
+        "complete": True,
+        "title": title or source_id,
+        "body": body,
+        "topics": ["testing"],
+        "sources": [f"tool:{source_id}"],
+    }
+    return service.checkpoint_source(access, source_id, **(fields | overrides))
 
 
-def publish_navigation(service, access, body):
-    snapshot = service.snapshot_domain(access)
-    return service.publish_navigation(
+def publish_summary(service, access, body, *, context_key="source", context_generation=1):
+    snapshot = service.snapshot_context(access, context_key, context_generation)
+    return service.publish_summary(
         access,
+        context_key,
+        context_generation,
         body=body,
         source_ids=[source.id for source in snapshot.sources],
         source_revisions=snapshot.source_revisions,
         input_digest=snapshot.input_digest,
+        expected_revision=snapshot.summary.revision if snapshot.summary else None,
     )
 
 
@@ -97,14 +115,17 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
     config = config_for(tmp_path, consolidate=True, enabled=enabled)
     model = MemoryModel()
     source = MemorySessionSource([turn("turn-1", tool("verified-build", "Build exited successfully"))])
-    agent = make_agent(config, cheap=model, source=source)
+    worker = FakeCodex(new_session_id="codex-session")
+    agent = make_agent(config, codex=worker, cheap=model, source=source)
     controls = []
+    injected = []
     original_turn = agent.control.turn
 
     @contextlib.asynccontextmanager
     async def recorded_control(identity):
         controls.append(identity)
         async with original_turn(identity) as control:
+            injected.append(json.loads(json.dumps(asdict(control.memory_context))))
             yield control
 
     monkeypatch.setattr(agent.control, "turn", recorded_control)
@@ -115,7 +136,7 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
         if maintained:
             last = await agent.wait_for_memory(ROOT_EXTRACTION_ID)
             assert last.status is TaskStatus.COMPLETED and last.kind == "memory_consolidation"
-            assert [kind for kind, _ in model.events] == ["extraction", "navigation"]
+            assert [kind for kind, _ in model.events] == ["extraction", "summary"]
             extraction = agent.store.task_request(ROOT_EXTRACTION_ID)
             assert extraction.memory == MemoryAccess((access.write_domain,), access.write_domain)
             assert extraction.execution is not None
@@ -127,16 +148,24 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
             assert checkpoint is not None and checkpoint.complete
             recalled = agent.memory.read(access, checkpoint.id)
             assert "Build exited successfully" in recalled.body
-            assert agent.memory.list_navigation(access)[-1].sources == (recalled.id,)
+            assert agent.memory.list_summaries(access)[-1].sources == (recalled.id,)
             assert {entry.task_id for entry in agent.store.recent_tasks()} == {
                 "root",
                 ROOT_EXTRACTION_ID,
-                f"{ROOT_EXTRACTION_ID}:navigation",
+                f"{ROOT_EXTRACTION_ID}:summary",
             }
         else:
             assert agent.store.task_status(ROOT_EXTRACTION_ID) is None
             assert model.events == []
         assert controls == ["root"]
+        saved_turns = agent.store.task_turns("root")
+        assert len(saved_turns) == 1
+        assert json.loads(saved_turns[0]["memory_context_json"]) == injected[0]
+        assert injected[0]["prompt"] in worker.instructions[0]
+        assert injected[0]["bytes"] == len(injected[0]["prompt"].encode("utf-8")) <= MEMORY_CONTEXT_MAX_BYTES
+        for background in agent.store.recent_tasks():
+            if background.kind in MEMORY_TASK_KINDS:
+                assert all(row["memory_context_json"] is None for row in agent.store.task_turns(background.task_id))
         assert agent.store.unfinished_tasks() == []
     finally:
         await agent.shutdown()
@@ -203,7 +232,7 @@ async def test_invalid_model_output_never_commits_a_source(tmp_path, response):
         assert result.status is TaskStatus.FAILED
         assert agent.store.task_status("source") == "completed"
         assert agent.memory.source_state(PUBLIC, "source") is None
-        assert agent.store.task_status(f"{SOURCE_EXTRACTION_ID}:navigation") is None
+        assert agent.store.task_status(f"{SOURCE_EXTRACTION_ID}:summary") is None
     finally:
         await agent.shutdown()
 
@@ -301,7 +330,7 @@ async def test_resume_reconstructs_provenance_missing_from_prior_checkpoint(tmp_
 
 
 @pytest.mark.anyio
-async def test_navigation_failure_retries_only_navigation_and_preserves_prior_summary(tmp_path):
+async def test_summary_failure_retries_only_summary_and_preserves_prior_summary(tmp_path):
     model = MemoryModel()
     model.fail_at.add(2)
     agent = make_agent(
@@ -309,19 +338,19 @@ async def test_navigation_failure_retries_only_navigation_and_preserves_prior_su
         cheap=model,
         source=MemorySessionSource([turn("turn-1", tool("proof", "verified result"))]),
     )
-    old = publish_source(agent.memory, PUBLIC, "older")
-    prior = publish_navigation(agent.memory, PUBLIC, f"[Older task](memory:{old.id})")
+    old = publish_source(agent.memory, PUBLIC, "older", context_key="source")
+    prior = publish_summary(agent.memory, PUBLIC, f"[Older task](memory:{old.id})")
     try:
         await agent.run_now(task("source"))
         failed = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert failed.kind == "memory_consolidation" and failed.status is TaskStatus.FAILED
-        unchanged = agent.memory.list_navigation(PUBLIC)[0]
+        unchanged = agent.memory.list_summaries(PUBLIC)[0]
         assert unchanged.revision == prior.revision and unchanged.stale
         retry = await agent.rebuild_memory("source")
         assert retry.kind == "memory_consolidation"
         assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
         assert [kind for kind, _ in model.events].count("extraction") == 1
-        assert agent.memory.list_navigation(PUBLIC)[0].stale is False
+        assert agent.memory.list_summaries(PUBLIC)[0].stale is False
         assert agent.store.task_status(failed.task_id) == "failed"
         # An unchanged rebuild reuses the publication receipt and makes no model call.
         calls = len(model.events)
@@ -364,8 +393,8 @@ async def test_restart_after_source_commit_recovers_without_regeneration(tmp_pat
         await recovered.startup()
         last = await recovered.wait_for_memory(extraction_id)
         assert last.status is TaskStatus.COMPLETED
-        assert last.task_id == f"{extraction_id}:navigation"
-        assert [kind for kind, _ in model.events] == ["extraction", "navigation"]
+        assert last.task_id == f"{extraction_id}:summary"
+        assert [kind for kind, _ in model.events] == ["extraction", "summary"]
         assert len(recovered.memory.list_sources(PUBLIC)) == 1
     finally:
         await recovered.shutdown()
@@ -377,13 +406,17 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
     shared = publish_source(agent.memory, PUBLIC, "shared", body="public history")
     private = publish_source(agent.memory, ALICE, "private", body="alice history " * 100)
     hidden = publish_source(agent.memory, BOB, "hidden", body="bob private history")
-    publish_navigation(agent.memory, PUBLIC, "PUBLIC NAV " + "p" * 6900)
-    publish_navigation(agent.memory, ALICE, "ALICE NAV " + "a" * 6900)
-    publish_navigation(agent.memory, BOB, "BOB NAV")
+    public_summary = publish_summary(agent.memory, PUBLIC, "PUBLIC SUMMARY", context_key="shared")
+    private_summary = publish_summary(agent.memory, ALICE, "ALICE SUMMARY", context_key="private")
+    publish_summary(agent.memory, BOB, "BOB SUMMARY", context_key="hidden")
     actors = [
         task("off", memory=MemoryAccess()),
         task("reader", memory=MemoryAccess(ALICE.read_domains)),
         task("contributor", memory=ALICE),
+    ]
+    actors = [
+        actor.model_copy(update={"metadata": {"memory_related_contexts": ["shared", "private", "hidden"]}})
+        for actor in actors
     ]
     for actor in actors:
         agent.store.record_task(agent._admit(actor))
@@ -400,9 +433,13 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
                     {shared.id, private.id} if actor.memory.read_domains else set()
                 )
                 assert all(len(item["body"]) <= 800 for item in found)
-                assert "BOB NAV" not in control.prompt
+                assert "BOB SUMMARY" not in control.prompt
                 if actor.memory.read_domains:
-                    assert "ALICE NAV" in control.prompt and "PUBLIC NAV" in control.prompt
+                    assert "ALICE SUMMARY" in control.prompt and "PUBLIC SUMMARY" in control.prompt
+                    assert {entry.id for entry in control.memory_context.selected} == {
+                        public_summary.id,
+                        private_summary.id,
+                    }
                     assert (await call("memory.read", {"source_id": private.id}))["body"] == private.body
                 with pytest.raises(ValueError, match="not found"):
                     await call("memory.read", {"source_id": hidden.id})
@@ -413,9 +450,9 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
                     await call("memory.search", {"query": "", "domain": "private:bob"})
                 with pytest.raises(ValueError):
                     await call("memory.read", {"note_id": private.id})
-        rendered = navigation_context(agent.memory.list_navigation(ALICE))
-        assert len(rendered) <= MEMORY_NAVIGATION_BUDGET
-        assert {entry["domain"] for entry in json.loads(rendered)} == set(ALICE.read_domains)
+        rendered = build_memory_context(actors[1], agent.memory.list_summaries(ALICE))
+        assert len(rendered.prompt.encode("utf-8")) == rendered.bytes <= MEMORY_CONTEXT_MAX_BYTES
+        assert {entry.id for entry in rendered.selected} == {public_summary.id, private_summary.id}
         assert len(MemoryService(agent.config.memory_dir).list_sources(ALICE)) == 2
     finally:
         await agent.shutdown()
@@ -426,7 +463,7 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
 async def test_ordinary_admission_cannot_claim_generated_memory_task_ids(tmp_path, operation):
     model = FakeCodex()
     agent = make_agent(config_for(tmp_path), codex=model)
-    claimed_id = "memory:source:navigation"
+    claimed_id = "memory:source:summary"
     try:
         with pytest.raises(MemoryDenied, match="reserved"):
             await getattr(agent, operation)(task(claimed_id, memory=MemoryAccess()))
@@ -437,7 +474,7 @@ async def test_ordinary_admission_cannot_claim_generated_memory_task_ids(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_source_names_cannot_collide_with_another_sources_navigation(tmp_path):
+async def test_source_names_cannot_collide_with_another_sources_summary(tmp_path):
     model = MemoryModel()
     agent = make_agent(
         config_for(tmp_path, consolidate=True),
@@ -446,7 +483,7 @@ async def test_source_names_cannot_collide_with_another_sources_navigation(tmp_p
     )
     jobs = set()
     try:
-        for source_id in ("source", "source:navigation"):
+        for source_id in ("source", "source:summary"):
             await agent.run_now(task(source_id))
             extractions = [
                 item
@@ -459,8 +496,8 @@ async def test_source_names_cannot_collide_with_another_sources_navigation(tmp_p
             assert last.status is TaskStatus.COMPLETED and last.kind == "memory_consolidation"
             jobs.update((extractions[0].task_id, last.task_id))
         assert len(jobs) == 4
-        assert {source.task_id for source in agent.memory.list_sources(PUBLIC)} == {"source", "source:navigation"}
-        assert [kind for kind, _ in model.events] == ["extraction", "navigation", "extraction", "navigation"]
+        assert {source.task_id for source in agent.memory.list_sources(PUBLIC)} == {"source", "source:summary"}
+        assert [kind for kind, _ in model.events] == ["extraction", "summary", "extraction", "summary"]
     finally:
         await agent.shutdown()
 
@@ -468,6 +505,7 @@ async def test_source_names_cannot_collide_with_another_sources_navigation(tmp_p
 @pytest.mark.anyio
 async def test_background_kinds_cannot_be_requested_and_have_no_control(tmp_path):
     agent = make_agent(config_for(tmp_path))
+    agent.store.record_task(agent._admit(task("source")))
     try:
         for kind in MEMORY_TASK_KINDS:
             with pytest.raises(MemoryDenied, match="reserved"):
@@ -551,29 +589,200 @@ async def test_extraction_reads_only_bound_turns_across_backend_handoffs(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_navigation_consumes_the_whole_domain_in_bounded_batches(tmp_path):
+async def test_summary_consumes_only_its_context_in_bounded_batches(tmp_path):
     model = MemoryModel()
     agent = make_agent(
         config_for(tmp_path, consolidate=True),
         cheap=model,
         source=MemorySessionSource([turn("turn-1", tool("proof", "verified result"))]),
     )
-    prior = [publish_source(agent.memory, ALICE, f"history-{index}", body="history " * 1600) for index in range(7)]
+    prior = [
+        publish_source(
+            agent.memory, ALICE, f"history-{index}", body="history " * 1600, context_key="source", source_order=index
+        )
+        for index in range(7)
+    ]
     hidden = publish_source(agent.memory, PUBLIC, "outside-domain", body="PUBLIC HISTORY OUTSIDE MAINTENANCE DOMAIN")
+    unrelated = publish_source(agent.memory, ALICE, "another-context", body="PRIVATE UNRELATED CONTEXT")
+    next_generation = publish_source(agent.memory, ALICE, "new-generation", context_key="source", context_generation=2)
     try:
         await agent.run_now(task("source", memory=ALICE))
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
-        batches = [material["source_accounts"] for kind, material in model.events if kind == "navigation"]
+        batches = [material["source_accounts"] for kind, material in model.events if kind == "summary"]
         assert len(batches) > 1
         seen = [source["id"] for batch in batches for source in batch]
-        snapshot = agent.memory.snapshot_domain(ALICE)
+        snapshot = agent.memory.snapshot_context(ALICE, "source", 1)
         assert set(seen) == set(snapshot.source_revisions)
         assert len(seen) == len(set(seen)) == len(prior) + 1
         assert hidden.id not in seen
+        assert unrelated.id not in seen and next_generation.id not in seen
+        assert seen[: len(prior)] == [source.id for source in prior]
+        assert {material["context_key"] for kind, material in model.events if kind == "summary"} == {"source"}
         assert all(
             sum(len(json.dumps(item, ensure_ascii=False)) for item in batch) <= EVIDENCE_BUDGET for batch in batches
         )
-        assert snapshot.navigation is not None
-        assert set(snapshot.navigation.sources) == set(seen)
+        assert snapshot.summary is not None
+        assert set(snapshot.summary.sources) == set(seen)
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_summary_appends_only_new_sources_to_the_previous_context_summary(tmp_path):
+    model = MemoryModel()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", tool("proof", "verified follow-up result"))]),
+    )
+    old = publish_source(agent.memory, PUBLIC, "older", context_key="source", source_order=10)
+    prior = publish_summary(agent.memory, PUBLIC, f"# Prior result\n[Verified history](memory:{old.id})")
+    unrelated = publish_source(agent.memory, PUBLIC, "unrelated", body="DO NOT REPLAY ANOTHER CONTEXT")
+    unrelated_summary = publish_summary(agent.memory, PUBLIC, "Unrelated summary", context_key="unrelated")
+    try:
+        await agent.run_now(task("source"))
+        assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
+        current = agent.memory.source_state(PUBLIC, "source")
+        assert current is not None
+        calls = [material for kind, material in model.events if kind == "summary"]
+        assert len(calls) == 1
+        assert calls[0]["draft"] == {"body": prior.body, "source_ids": list(prior.sources)}
+        assert [item["id"] for item in calls[0]["source_accounts"]] == [current.id]
+        assert "DO NOT REPLAY ANOTHER CONTEXT" not in json.dumps(model.events)
+        snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
+        assert snapshot.summary is not None and not snapshot.summary.stale
+        assert snapshot.summary.source_revisions == {old.id: old.revision, current.id: current.revision}
+        assert set(snapshot.summary.sources) == {old.id, current.id}
+        assert agent.memory.snapshot_context(PUBLIC, unrelated.context_key, 1).summary == unrelated_summary
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("change", ["corrected", "withdrawn", "inserted-earlier"])
+async def test_changed_historical_sources_replay_only_their_context(tmp_path, change):
+    model = MemoryModel()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", tool("proof", "current verified result"))]),
+    )
+    old = publish_source(agent.memory, PUBLIC, "older", context_key="source", source_order=10)
+    publish_source(agent.memory, PUBLIC, "unrelated", body="UNRELATED EVIDENCE MUST NOT BE REPLAYED")
+    other = publish_summary(agent.memory, PUBLIC, "Untouched other context", context_key="unrelated")
+    try:
+        await agent.run_now(task("source"))
+        assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
+        if change == "inserted-earlier":
+            inserted = publish_source(
+                agent.memory, PUBLIC, "inserted", context_key="source", source_order=5, body="Earlier evidence"
+            )
+        else:
+            publish_source(
+                agent.memory,
+                PUBLIC,
+                old.task_id,
+                context_key=old.context_key,
+                source_order=old.source_order,
+                input_digest="corrected-evidence",
+                body="Verified correction" if change == "corrected" else "",
+                expected_revision=old.revision,
+            )
+        expected = agent.memory.snapshot_context(PUBLIC, "source", 1)
+        assert expected.summary is not None and expected.summary.stale
+        model.events.clear()
+        retry = await agent.rebuild_memory("source")
+        assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
+        assert [kind for kind, _ in model.events] == ["summary"]
+        material = model.events[0][1]
+        assert material["draft"] == {"body": "", "source_ids": []}
+        assert [item["id"] for item in material["source_accounts"]] == [source.id for source in expected.sources]
+        assert "UNRELATED EVIDENCE MUST NOT BE REPLAYED" not in json.dumps(material)
+        if change == "inserted-earlier":
+            assert material["source_accounts"][0]["id"] == inserted.id
+        elif change == "corrected":
+            assert material["source_accounts"][0]["body"] == "Verified correction"
+        else:
+            assert old.id not in {item["id"] for item in material["source_accounts"]}
+        summary = agent.memory.snapshot_context(PUBLIC, "source", 1).summary
+        assert summary is not None and not summary.stale
+        assert summary.source_revisions == expected.source_revisions
+        assert agent.memory.snapshot_context(PUBLIC, "unrelated", 1).summary == other
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_noop_followup_can_preserve_prior_useful_summary_while_advancing_coverage(tmp_path):
+    model = MemoryModel()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", tool("noop", "No additional verified changes"))]),
+    )
+    old = publish_source(
+        agent.memory, PUBLIC, "older", context_key="source", body="Recovery was verified at revision abc"
+    )
+    prior = publish_summary(agent.memory, PUBLIC, f"# Recovery\nVerified at revision abc. [Evidence](memory:{old.id})")
+    # This fixture exercises carried-forward evidence and publication, not the
+    # model's ability to decide whether a natural-language change is a no-op.
+    model.responses[2] = json.dumps({"body": prior.body, "source_ids": list(prior.sources)})
+    try:
+        await agent.run_now(task("source"))
+        assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
+        material = next(material for kind, material in model.events if kind == "summary")
+        assert material["draft"] == {"body": prior.body, "source_ids": list(prior.sources)}
+        current = agent.memory.source_state(PUBLIC, "source")
+        assert current is not None
+        assert [item["id"] for item in material["source_accounts"]] == [current.id]
+        snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
+        assert snapshot.summary is not None
+        assert snapshot.summary.body == prior.body and snapshot.summary.sources == prior.sources
+        assert snapshot.summary.source_revisions == {old.id: old.revision, current.id: current.revision}
+        assert not snapshot.summary.stale
+        calls = len(model.events)
+        retry = await agent.rebuild_memory("source")
+        assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
+        assert len(model.events) == calls
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("compresses", [True, False])
+async def test_oversized_summary_gets_one_compression_attempt_and_preserves_atomic_publication(tmp_path, compresses):
+    model = MemoryModel()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True),
+        cheap=model,
+        source=MemorySessionSource([turn("turn-1", tool("proof", "verified follow-up"))]),
+    )
+    old = publish_source(agent.memory, PUBLIC, "older", context_key="source")
+    prior = publish_summary(agent.memory, PUBLIC, f"# Prior verified result\n[Evidence](memory:{old.id})")
+    model.responses[2] = json.dumps({"body": "汉" * 400, "source_ids": [old.id]})
+    replacement = f"# Updated history\n[Verified evidence](memory:{old.id})"
+    model.responses[3] = json.dumps({"body": replacement if compresses else "🙂" * 300, "source_ids": [old.id]})
+    try:
+        await agent.run_now(task("source"))
+        result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
+        assert result.status is (TaskStatus.COMPLETED if compresses else TaskStatus.FAILED)
+        assert [kind for kind, _ in model.events] == ["extraction", "summary", "summary"]
+        original, retry = model.events[1][1], model.events[2][1]
+        assert original["size_feedback"] is None and retry["size_feedback"]
+        assert retry["draft"] == original["draft"]
+        assert retry["source_accounts"] == original["source_accounts"]
+        assert retry["context_key"] == original["context_key"] == "source"
+        snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
+        assert snapshot.summary is not None
+        source = agent.memory.source_state(PUBLIC, "source")
+        assert source is not None and source.complete
+        if compresses:
+            assert snapshot.summary.body == replacement
+            assert snapshot.summary.revision != prior.revision and not snapshot.summary.stale
+            assert len(summary_block(snapshot.summary).encode("utf-8")) <= SUMMARY_MAX_BYTES
+        else:
+            assert snapshot.summary.revision == prior.revision and snapshot.summary.stale
+            assert snapshot.summary.body == prior.body
+            assert result.error is not None and "1024" in result.error
     finally:
         await agent.shutdown()

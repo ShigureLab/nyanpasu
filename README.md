@@ -105,11 +105,19 @@ Both native automatic memory systems are disabled for Nyanpasu workers; normal i
 
 ## Background memory
 
-After a successful root task with a contribution audience, `memory_extraction` reads that task's native evidence in chunks and produces a source-oriented Markdown account. `memory_consolidation` then derives navigation from accounts in that same audience. The service validates structured output, records input provenance, and publishes completed results; checkpoints support recovery without exposing incomplete replacements. Summaries remain fallible accounts of evidence, so verify current repository, service, and PR state before acting on them.
+After a successful root task with a contribution audience, `memory_extraction` reads that task's native evidence in chunks and produces a source-oriented Markdown account, capped at 16,000 characters. `memory_consolidation` maintains one rolling summary per audience, context, and context generation. Each summary's complete injection block, including its heading, scope, and source references, is capped at **1 KiB of UTF-8**. Oversized output must be compressed before publication; a failed update never publishes an oversized or partial replacement. Summaries remain fallible accounts of evidence, so verify current repository, service, and PR state before acting on them.
 
-Normal tasks receive authorized navigation and use `memory.describe`, `memory.search` (`query`, optional `topics` and `limit`), and `memory.read` (`source_id`). They have no memory write tools. Topics organize retrieval, while task capabilities determine access: `read_domains` selects readable audiences and `write_domain` selects the background contribution audience. Generic tasks default to no memory, and reviewer independent-design children disable it. GitHub tasks normally read `public` plus `shared:github:<owner/repo>` and contribute only to the latter. Repository memory settings can override these audiences; non-public audiences require `server.token`.
+New evidence incrementally updates the context's previous summary. Re-extracted, removed, or reordered evidence rebuilds that context from its sources. The summary records its source revisions and can be rebuilt without replacing the original accounts. An unchanged follow-up should preserve useful earlier conclusions, conditions, and evidence links instead of reducing the summary to the latest task's status.
 
-The Dashboard's global Memory view shows every stored audience for operator inspection, including private sources and navigation. A task's **Inspect task memory** view shows only the memory available to that task.
+Each normal task turn automatically receives relevant, authorized context summaries. Selection prioritizes the current context, related contexts, and matching task topics. Complete blocks are packed into a **combined 8 KiB UTF-8 budget**, including the outer wrapper; stale summaries are excluded. This is a hard limit on the memory supplied for a turn, not a token count or a guarantee about the native client's entire accumulated context window.
+
+Plugins may supply `metadata.memory_query` as a string for topic matching instead of the task prompt, and `metadata.memory_related_contexts` as a list of explicitly related context keys. Topic matching excludes terms from the current context key to avoid treating shared repository identifiers as relevant topics. These hints affect selection only and cannot widen `read_domains`.
+
+The GitHub reviewer builds its memory query from the PR's `head_ref` and trigger `body_excerpt`, adding changed paths from `inventory.files[].path` for code reviews; CI-only reviews use the first two inputs, and neither mode includes the review prompt template in its topic query.
+
+Tasks can follow summary evidence with `memory.describe`, `memory.search` (`query`, optional `topics` and `limit`), and `memory.read` (`source_id`). They have no memory write tools. Topics organize retrieval, while task capabilities determine access: `read_domains` selects readable audiences and `write_domain` selects the background contribution audience. Generic tasks default to no memory, and reviewer independent-design children disable it. GitHub tasks normally read `public` plus `shared:github:<owner/repo>` and contribute only to the latter. Repository memory settings can override these audiences; non-public audiences require `server.token`.
+
+The Dashboard's global Memory view shows every stored audience for operator inspection, including private sources and context summaries. A task's **Inspect task memory** view shows only memory available to that task, plus recorded per-turn injections: the exact memory text, byte count, selected summary revisions, and reasons for selection or omission. An injection records what was supplied; it does not prove the agent used or cited it.
 
 Both stages use the normal task queue and backend routing. Configure `tasks.kinds.memory_extraction` and `tasks.kinds.memory_consolidation` independently; an omitted kind inherits normal task defaults. The [complete example](examples/config.toml) gives them a separate backend with model credentials. `memory.enabled = false` disables all memory use; `memory.consolidate = false` disables production while retaining reads. `memory.max_results_per_search` sets the default and maximum result count from 1 to 100.
 
@@ -120,6 +128,14 @@ uv run nyanpasu memory-rebuild SOURCE_TASK_ID
 ```
 
 The command waits for publication, reuses a completed extraction checkpoint when available, and exits unsuccessfully on failure. Maintenance status, errors, and native history remain visible as ordinary Dashboard tasks.
+
+Upgrades retain existing source accounts. Old domain navigation is no longer injected; rebuild context summaries from those accounts before expecting automatic memory injection:
+
+```bash
+uv run nyanpasu memory-rebuild --all
+```
+
+This groups existing accounts by audience and context and rebuilds their summaries without re-extracting native sessions.
 
 ## Run
 

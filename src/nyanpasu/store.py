@@ -476,6 +476,7 @@ class StateStore:
         native_home: Path | None = None,
         isolated_home: Path | None = None,
         driver: str | None = None,
+        memory_context: dict[str, Any] | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -493,8 +494,16 @@ class StateStore:
             )
             if turn_id is not None:
                 conn.execute(
-                    "INSERT OR IGNORE INTO task_turns VALUES (?,?,?,?,?)",
-                    (task_id, backend, thread_id, turn_id, time.time()),
+                    """INSERT OR IGNORE INTO task_turns
+                    (task_id,backend,thread_id,turn_id,started_at,memory_context_json) VALUES (?,?,?,?,?,?)""",
+                    (
+                        task_id,
+                        backend,
+                        thread_id,
+                        turn_id,
+                        time.time(),
+                        json_dumps(memory_context) if memory_context is not None else None,
+                    ),
                 )
             if native_home is not None:
                 assert isolated_home is not None and driver is not None
@@ -523,6 +532,19 @@ class StateStore:
                     "SELECT * FROM task_turns WHERE task_id=? ORDER BY started_at,turn_id", (task_id,)
                 )
             ]
+
+    def memory_source_contexts(self, domain: str) -> dict[str, tuple[str, int, float]]:
+        """Resolve immutable source scopes and execution order from admitted tasks."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT task_id,context_key,context_generation,
+                    coalesce((SELECT min(started_at) FROM task_turns t WHERE t.task_id=r.task_id),created_at) AS source_order
+                FROM task_runs r WHERE spawned_by_task_id IS NULL
+                    AND json_extract(task_json,'$.memory.write_domain')=?
+                    AND json_extract(task_json,'$.kind') NOT IN ('memory_extraction','memory_consolidation')""",
+                (domain,),
+            ).fetchall()
+        return {row["task_id"]: (row["context_key"], row["context_generation"], row["source_order"]) for row in rows}
 
     def native_home(self, backend: str, thread_id: str) -> NativeSessionLocation:
         with self._connect() as conn:

@@ -363,6 +363,7 @@ class GitHubReviewerPlugin:
             **task.metadata,
             "pull_request": pr.model_dump(mode="json"),
             "triggers": [item.model_dump(mode="json") for item in triggers],
+            "memory_query": "\n".join([pr.head_ref, *(trigger.body_excerpt for trigger in triggers)]),
         }
         if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
             return task.model_copy(
@@ -399,6 +400,7 @@ class GitHubReviewerPlugin:
         metadata["review_inventory"] = build_inventory(
             self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
         )
+        metadata["memory_query"] += "\n" + "\n".join(item["path"] for item in metadata["review_inventory"]["files"])
         if metadata.get("review_scope", {}).get("inventory_id") != metadata["review_inventory"]["inventory_id"]:
             metadata.pop("review_scope", None)
         return task.model_copy(

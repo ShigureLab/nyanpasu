@@ -17,6 +17,7 @@ export interface TranscriptContract {
   content: ContentPage;
   memory: MemoryPage;
   memory_source: MemorySource;
+  memory_injections: MemoryInjectionPage;
   [k: string]: unknown;
 }
 export interface SessionPage {
@@ -329,8 +330,8 @@ export interface MemoryPage {
   domains: MemoryDomain[];
   topics: MemoryTopic[];
   items: MemorySourceSummary[];
-  navigation_count: number;
-  navigation: MemoryNavigation[];
+  summary_count: number;
+  summaries: MemorySummary[];
   has_more: boolean;
   [k: string]: unknown;
 }
@@ -348,6 +349,9 @@ export interface MemorySourceSummary {
   id: string;
   domain: string;
   task_id: string;
+  context_key: string;
+  context_generation: number;
+  source_order: number;
   title: string;
   topics: string[];
   sources: string[];
@@ -356,9 +360,11 @@ export interface MemorySourceSummary {
   complete: boolean;
   [k: string]: unknown;
 }
-export interface MemoryNavigation {
+export interface MemorySummary {
   id: string;
   domain: string;
+  context_key: string;
+  context_generation: number;
   body: string;
   sources: string[];
   source_revisions: {
@@ -373,6 +379,9 @@ export interface MemorySource {
   id: string;
   domain: string;
   task_id: string;
+  context_key: string;
+  context_generation: number;
+  source_order: number;
   title: string;
   body: string;
   topics: string[];
@@ -380,5 +389,27 @@ export interface MemorySource {
   revision: string;
   updated_at: string;
   complete: boolean;
+  [k: string]: unknown;
+}
+export interface MemoryInjectionPage {
+  items: MemoryInjection[];
+  has_more: boolean;
+  [k: string]: unknown;
+}
+export interface MemoryInjection {
+  backend: string;
+  thread_id: string;
+  turn_id: string;
+  started_at: string;
+  prompt: string;
+  bytes: number;
+  selected: MemoryInjectionSelection[];
+  skipped: MemoryInjectionSelection[];
+  [k: string]: unknown;
+}
+export interface MemoryInjectionSelection {
+  id: string;
+  revision: string;
+  reason: string;
   [k: string]: unknown;
 }

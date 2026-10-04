@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from threading import Barrier
 
 import pytest
 from pydantic import BaseModel, Field
 
 from nyanpasu.memory import (
-    NAVIGATION_MAX_CHARS,
     SOURCE_BODY_MAX_CHARS,
+    SUMMARY_MAX_BYTES,
     MemoryAccess,
     MemoryConflict,
     MemoryDenied,
     MemoryNotFound,
     MemoryService,
+    SummaryTooLarge,
+    summary_block,
+    validate_summary_block,
 )
 
 PUBLIC = MemoryAccess(("public",), "public")
@@ -24,6 +29,9 @@ BOB = MemoryAccess(("public", "private:bob"), "private:bob")
 
 def checkpoint(service, access=PUBLIC, task_id="verified-task", **overrides):
     fields = {
+        "context_key": "test-context",
+        "context_generation": 1,
+        "source_order": 0,
         "input_digest": "evidence-v1",
         "cursor": 1,
         "complete": True,
@@ -35,16 +43,42 @@ def checkpoint(service, access=PUBLIC, task_id="verified-task", **overrides):
     return service.checkpoint_source(access, task_id, **(fields | overrides))
 
 
-def navigation(service, access=PUBLIC, snapshot=None, **overrides):
-    snapshot = snapshot or service.snapshot_domain(access)
+def summarize(service, access=PUBLIC, snapshot=None, **overrides):
+    snapshot = snapshot or service.snapshot_context(access, "test-context", 1)
     fields = {
         "body": "\n".join(f"- [{source.title}](memory:{source.id})" for source in snapshot.sources),
         "source_ids": [source.id for source in snapshot.sources],
         "source_revisions": snapshot.source_revisions,
         "input_digest": snapshot.input_digest,
-        "expected_revision": snapshot.navigation.revision if snapshot.navigation else None,
+        "expected_revision": snapshot.summary.revision if snapshot.summary else None,
     }
-    return service.publish_navigation(access, **(fields | overrides))
+    return service.publish_summary(access, snapshot.context_key, snapshot.context_generation, **(fields | overrides))
+
+
+def legacy_sources(service, access=PUBLIC):
+    """Write the previous source format to exercise an actual on-disk upgrade."""
+    directory = service._directory(access.write_domain)
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("summaries")
+    for collection in (manifest["sources"], manifest["drafts"]):
+        for identity, filename in collection.items():
+            old_path = directory / "objects" / filename
+            header, body = old_path.read_text().removeprefix("---\n").split("\n---\n\n", 1)
+            data = json.loads(header)
+            for field in ("context_key", "context_generation", "source_order"):
+                data.pop(field)
+            content = ("---\n" + json.dumps(data, ensure_ascii=False, indent=2) + "\n---\n\n" + body).encode()
+            revision = hashlib.sha256(content).hexdigest()
+            filename = f"{identity}-{revision}.md"
+            (directory / "objects" / filename).write_bytes(content)
+            collection[identity] = filename
+            old_path.unlink()
+    old_navigation = directory / "objects" / "legacy-navigation.md"
+    old_navigation.write_text("Retired navigation that must never be injected.")
+    manifest["navigation"] = old_navigation.name
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest_path, old_navigation
 
 
 @pytest.fixture
@@ -70,7 +104,7 @@ def test_domain_listing_reads_committed_manifests_after_restart(service):
     assert service.list_domains() == ()
     checkpoint(service)
     checkpoint(service, ALICE, complete=False)
-    navigation(service, BOB)
+    summarize(service, BOB)
     # A failed write may leave a domain directory without a committed manifest.
     service._directory("private:uncommitted").mkdir()
     restarted = MemoryService(service.root)
@@ -78,21 +112,21 @@ def test_domain_listing_reads_committed_manifests_after_restart(service):
     assert {source.domain for source in restarted.list_sources(PUBLIC)} == {"public"}
 
 
-def test_sources_and_navigation_are_invisible_outside_the_authorized_audience(service):
+def test_sources_and_summary_are_invisible_outside_the_authorized_audience(service):
     shared = checkpoint(service)
     alice = checkpoint(service, ALICE, body="Alice uses a private staging runner.")
     bob = checkpoint(service, BOB, body="Bob uses his private runner.")
-    navigation(service)
-    navigation(service, ALICE)
-    navigation(service, BOB)
+    summarize(service)
+    summarize(service, ALICE)
+    summarize(service, BOB)
 
     assert {source.id for source in service.search(ALICE, "runner")} == {alice.id}
     assert {source.id for source in service.list_sources(PUBLIC)} == {shared.id}
     assert service.search(PUBLIC, "Alice") == []
     assert service.search(ALICE, "Bob") == []
     assert service.search(MemoryAccess(), "runner") == []
-    assert {item.domain for item in service.list_navigation(ALICE)} == {"public", "private:alice"}
-    assert service.list_navigation(MemoryAccess()) == []
+    assert {item.domain for item in service.list_summaries(ALICE)} == {"public", "private:alice"}
+    assert service.list_summaries(MemoryAccess()) == []
     assert service.describe(ALICE)["count"] == 2
     assert "private:bob" not in json.dumps(service.describe(ALICE))
     for access, source_id in (
@@ -109,13 +143,13 @@ def test_sources_and_navigation_are_invisible_outside_the_authorized_audience(se
 def test_production_uses_only_the_contribution_domain_not_all_readable_domains(service):
     shared = checkpoint(service)
     assert service.source_state(ALICE, shared.task_id) is None
-    assert service.snapshot_domain(ALICE).sources == ()
+    assert service.snapshot_context(ALICE, "test-context", 1).sources == ()
     private = checkpoint(service, ALICE)
     assert private.id != shared.id
-    assert [source.id for source in service.snapshot_domain(ALICE).sources] == [private.id]
+    assert [source.id for source in service.snapshot_context(ALICE, "test-context", 1).sources] == [private.id]
     with pytest.raises(ValueError, match="supplied source"):
-        navigation(service, ALICE, source_ids=[shared.id])
-    assert service.snapshot_domain(ALICE).navigation is None
+        summarize(service, ALICE, source_ids=[shared.id])
+    assert service.snapshot_context(ALICE, "test-context", 1).summary is None
 
 
 def test_read_access_never_grants_background_writes_or_checkpoint_reads(service):
@@ -125,8 +159,10 @@ def test_read_access_never_grants_background_writes_or_checkpoint_reads(service)
     for operation in (
         lambda: checkpoint(service, reader),
         lambda: service.source_state(reader, "verified-task"),
-        lambda: service.snapshot_domain(reader),
-        lambda: service.publish_navigation(reader, body="", source_ids=[], source_revisions={}, input_digest="x"),
+        lambda: service.snapshot_context(reader, "test-context", 1),
+        lambda: service.publish_summary(
+            reader, "test-context", 1, body="", source_ids=[], source_revisions={}, input_digest="x"
+        ),
     ):
         with pytest.raises(MemoryDenied):
             operation()
@@ -139,7 +175,7 @@ def test_partial_extraction_is_durable_but_not_recalled_until_complete(service):
     assert restored == partial
     assert restored is not None and restored.cursor == 1 and not restored.complete
     assert restarted.list_sources(PUBLIC) == []
-    assert restarted.snapshot_domain(PUBLIC).sources == ()
+    assert restarted.snapshot_context(PUBLIC, "test-context", 1).sources == ()
     with pytest.raises(MemoryNotFound):
         restarted.read(PUBLIC, partial.id)
 
@@ -192,7 +228,7 @@ def test_checkpoint_cas_prevents_lost_or_out_of_order_chunks(service):
 
 def test_reextraction_keeps_previous_publication_until_new_input_is_complete(service):
     original = checkpoint(service)
-    old_navigation = navigation(service)
+    old_summary = summarize(service)
     pending = checkpoint(
         service,
         input_digest="evidence-v2",
@@ -202,7 +238,7 @@ def test_reextraction_keeps_previous_publication_until_new_input_is_complete(ser
     )
     assert pending.id == original.id
     assert service.read(PUBLIC, original.id).revision == original.revision
-    assert service.list_navigation(PUBLIC) == [old_navigation]
+    assert service.list_summaries(PUBLIC) == [old_summary]
     updated = checkpoint(
         service,
         input_digest="evidence-v2",
@@ -212,28 +248,28 @@ def test_reextraction_keeps_previous_publication_until_new_input_is_complete(ser
     )
     assert updated.id == original.id
     assert service.read(PUBLIC, original.id).body == updated.body
-    assert service.list_navigation(PUBLIC)[0].stale
-    current = navigation(service)
+    assert service.list_summaries(PUBLIC)[0].stale
+    current = summarize(service)
     assert not current.stale
-    assert current.input_digest == service.snapshot_domain(PUBLIC).input_digest
+    assert current.input_digest == service.snapshot_context(PUBLIC, "test-context", 1).input_digest
 
 
 def test_empty_completed_account_is_a_persistent_receipt_and_removes_old_recall(service):
     original = checkpoint(service)
-    navigation(service)
+    summarize(service)
     empty = checkpoint(service, input_digest="evidence-v2", body="", expected_revision=original.revision)
     restarted = MemoryService(service.root)
     assert restarted.source_state(PUBLIC, original.task_id) == empty
     assert empty.complete and empty.body == ""
     assert restarted.list_sources(PUBLIC) == []
     assert restarted.describe(PUBLIC)["count"] == 0
-    assert restarted.list_navigation(PUBLIC)[0].stale
+    assert restarted.list_summaries(PUBLIC)[0].stale
     assert checkpoint(restarted, input_digest="evidence-v2", body="") == empty
     with pytest.raises(MemoryNotFound):
         restarted.read(PUBLIC, original.id)
-    cleared = navigation(restarted, body="No retained sources.")
+    cleared = summarize(restarted, body="No retained sources.")
     assert cleared.sources == ()
-    assert not restarted.list_navigation(PUBLIC)[0].stale
+    assert not restarted.list_summaries(PUBLIC)[0].stale
 
 
 def test_different_source_tasks_preserve_separate_provenance_even_with_identical_summaries(service):
@@ -264,25 +300,25 @@ def test_topic_filter_and_weighted_retrieval_are_scoped_and_search_source_conten
     assert len(service.search(PUBLIC, "Python", limit=1)) == 1
 
 
-def test_markdown_is_the_only_source_and_navigation_body_store(service):
+def test_markdown_is_the_only_source_and_summary_body_store(service):
     source = checkpoint(service, body="Unique source body marker.")
-    summary = navigation(service, body=f"Unique navigation marker: [source](memory:{source.id})")
+    summary = summarize(service, body=f"Unique summary marker: [source](memory:{source.id})")
     manifest_path = next(service.root.glob("*/manifest.json"))
     manifest = json.loads(manifest_path.read_text())
     assert "Unique source body marker" not in manifest_path.read_text()
-    assert "Unique navigation marker" not in manifest_path.read_text()
+    assert "Unique summary marker" not in manifest_path.read_text()
     source_path = manifest_path.parent / "objects" / manifest["sources"][source.id]
-    summary_path = manifest_path.parent / "objects" / manifest["navigation"]
+    summary_path = manifest_path.parent / "objects" / manifest["summaries"][summary.id]
     assert source_path.read_text().endswith(source.body + "\n")
     assert summary_path.read_text().endswith(summary.body + "\n")
     assert service.read(PUBLIC, source.id).body == source.body
-    assert service.list_navigation(PUBLIC) == [summary]
+    assert service.list_summaries(PUBLIC) == [summary]
 
 
-def test_invalid_and_unsupplied_navigation_references_cannot_publish(service):
+def test_invalid_and_unsupplied_summary_references_cannot_publish(service):
     first = checkpoint(service, task_id="a")
     second = checkpoint(service, task_id="b")
-    snapshot = service.snapshot_domain(PUBLIC)
+    snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     for overrides in (
         {"source_ids": ["0" * 32]},
         {"source_ids": [first.id], "body": "[invented](memory:unknown)"},
@@ -291,9 +327,9 @@ def test_invalid_and_unsupplied_navigation_references_cannot_publish(service):
         {"input_digest": "different-input"},
     ):
         with pytest.raises(ValueError):
-            navigation(service, snapshot=snapshot, **overrides)
-        assert service.snapshot_domain(PUBLIC).navigation is None
-    valid = navigation(
+            summarize(service, snapshot=snapshot, **overrides)
+        assert service.snapshot_context(PUBLIC, "test-context", 1).summary is None
+    valid = summarize(
         service,
         snapshot=snapshot,
         source_ids=[first.id],
@@ -304,9 +340,9 @@ def test_invalid_and_unsupplied_navigation_references_cannot_publish(service):
 
 
 @pytest.mark.parametrize("change", ["replace", "add", "remove"])
-def test_navigation_rejects_outdated_source_snapshots(service, change):
+def test_summary_rejects_outdated_source_snapshots(service, change):
     original = checkpoint(service)
-    snapshot = service.snapshot_domain(PUBLIC)
+    snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     if change == "add":
         checkpoint(service, task_id="another-task")
     else:
@@ -317,28 +353,28 @@ def test_navigation_rejects_outdated_source_snapshots(service, change):
             expected_revision=original.revision,
         )
     with pytest.raises(MemoryConflict, match="sources changed"):
-        navigation(service, snapshot=snapshot)
-    assert service.snapshot_domain(PUBLIC).navigation is None
+        summarize(service, snapshot=snapshot)
+    assert service.snapshot_context(PUBLIC, "test-context", 1).summary is None
 
 
-def test_navigation_cas_rejects_a_second_writer_and_exact_replay_is_a_noop(service, monkeypatch):
+def test_summary_cas_rejects_a_second_writer_and_exact_replay_is_a_noop(service, monkeypatch):
     source = checkpoint(service)
-    snapshot = service.snapshot_domain(PUBLIC)
-    first = navigation(service, snapshot=snapshot)
+    snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
+    first = summarize(service, snapshot=snapshot)
     with pytest.raises(MemoryConflict, match="current revision"):
-        navigation(service, snapshot=snapshot, body=f"A different grouping: [source](memory:{source.id})")
+        summarize(service, snapshot=snapshot, body=f"A different grouping: [source](memory:{source.id})")
 
     def unexpected_write(*_):
-        pytest.fail("identical navigation was republished")
+        pytest.fail("identical summary was republished")
 
     monkeypatch.setattr(service, "_atomic_write", unexpected_write)
-    assert navigation(service, snapshot=snapshot) == first
+    assert summarize(service, snapshot=snapshot) == first
 
 
-@pytest.mark.parametrize("stage", ["source", "navigation"])
+@pytest.mark.parametrize("stage", ["source", "summary"])
 def test_failed_manifest_commit_keeps_prior_published_data_and_checkpoint(service, monkeypatch, stage):
     original = checkpoint(service)
-    old_navigation = navigation(service)
+    old_summary = summarize(service)
     original_write = service._atomic_write
 
     def fail_manifest(path, content):
@@ -357,11 +393,11 @@ def test_failed_manifest_commit_keeps_prior_published_data_and_checkpoint(servic
                 expected_revision=original.revision,
             )
         else:
-            navigation(service, body=f"Uncommitted navigation: [source](memory:{original.id})")
+            summarize(service, body=f"Uncommitted summary: [source](memory:{original.id})")
     restarted = MemoryService(service.root)
     assert restarted.source_state(PUBLIC, original.task_id) == original
     assert restarted.read(PUBLIC, original.id).body == original.body
-    assert restarted.list_navigation(PUBLIC) == [old_navigation]
+    assert restarted.list_summaries(PUBLIC) == [old_summary]
     assert restarted.search(PUBLIC, "Uncommitted") == []
     # Orphan object files do not become sources, and the same input can be retried.
     updated = checkpoint(restarted, input_digest="evidence-v2", expected_revision=original.revision)
@@ -369,9 +405,9 @@ def test_failed_manifest_commit_keeps_prior_published_data_and_checkpoint(servic
     assert restarted.source_state(PUBLIC, original.task_id) == updated
 
 
-def test_navigation_failure_does_not_undo_successful_source_extraction(service, monkeypatch):
+def test_summary_failure_does_not_undo_successful_source_extraction(service, monkeypatch):
     source = checkpoint(service)
-    old_navigation = navigation(service)
+    old_summary = summarize(service)
     updated = checkpoint(
         service, input_digest="evidence-v2", body="Newly extracted fact.", expected_revision=source.revision
     )
@@ -379,17 +415,17 @@ def test_navigation_failure_does_not_undo_successful_source_extraction(service, 
 
     def fail_manifest(path, content):
         if path.name == "manifest.json":
-            raise OSError("navigation publish failed")
+            raise OSError("summary publish failed")
         original_write(path, content)
 
     monkeypatch.setattr(service, "_atomic_write", fail_manifest)
-    with pytest.raises(OSError, match="navigation publish failed"):
-        navigation(service)
+    with pytest.raises(OSError, match="summary publish failed"):
+        summarize(service)
     restarted = MemoryService(service.root)
     assert restarted.source_state(PUBLIC, updated.task_id) == updated
-    assert restarted.list_navigation(PUBLIC)[0].revision == old_navigation.revision
-    assert restarted.list_navigation(PUBLIC)[0].stale
-    assert not navigation(restarted).stale
+    assert restarted.list_summaries(PUBLIC)[0].revision == old_summary.revision
+    assert restarted.list_summaries(PUBLIC)[0].stale
+    assert not summarize(restarted).stale
 
 
 def test_cleanup_failure_after_commit_does_not_report_failed_publication(service, monkeypatch):
@@ -441,15 +477,15 @@ def test_concurrent_same_source_writers_only_publish_one_result(service):
     assert service.read(PUBLIC, winner.id).body == winner.body
 
 
-def test_character_budgets_accept_multibyte_text_and_reject_oversized_output(service):
+def test_source_character_budget_and_summary_byte_budget_reject_oversized_output(service):
     source = checkpoint(service, body="源" * SOURCE_BODY_MAX_CHARS)
     assert len(source.body.encode()) > SOURCE_BODY_MAX_CHARS
     with pytest.raises(ValueError, match="16000"):
         checkpoint(service, task_id="too-large", body="源" * (SOURCE_BODY_MAX_CHARS + 1))
-    with pytest.raises(ValueError, match="8000"):
-        navigation(service, body="导" * (NAVIGATION_MAX_CHARS + 1))
+    with pytest.raises(ValueError, match="1024"):
+        summarize(service, body="导" * (SUMMARY_MAX_BYTES + 1))
     assert len(service.list_sources(PUBLIC)) == 1
-    assert service.list_navigation(PUBLIC) == []
+    assert service.list_summaries(PUBLIC) == []
 
 
 @pytest.mark.parametrize(
@@ -471,4 +507,226 @@ def test_invalid_extraction_fields_never_publish(service, overrides):
     with pytest.raises(ValueError):
         checkpoint(service, **overrides)
     assert service.source_state(PUBLIC, "verified-task") is None
+    assert service.list_sources(PUBLIC) == []
+
+
+def test_context_snapshots_follow_execution_order_and_keep_generations_separate(service):
+    later = checkpoint(service, task_id="a-later", source_order=20, title="Alphabetically first")
+    earlier = checkpoint(service, task_id="z-earlier", source_order=10, title="Alphabetically last")
+    tied = checkpoint(service, task_id="b-tied", source_order=20)
+    next_generation = checkpoint(service, task_id="next", context_generation=2)
+    other_context = checkpoint(service, task_id="other", context_key="another-context")
+    private = checkpoint(service, ALICE, task_id="private")
+
+    snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
+    assert [source.id for source in snapshot.sources] == [earlier.id, later.id, tied.id]
+    assert list(snapshot.source_revisions) == [earlier.id, later.id, tied.id]
+    assert service.snapshot_context(PUBLIC, "test-context", 2).sources == (service.read(PUBLIC, next_generation.id),)
+    assert service.snapshot_context(PUBLIC, "another-context", 1).sources == (service.read(PUBLIC, other_context.id),)
+    assert service.snapshot_context(ALICE, "test-context", 1).sources == (service.read(ALICE, private.id),)
+
+    updated = checkpoint(
+        service,
+        task_id=earlier.task_id,
+        source_order=earlier.source_order,
+        input_digest="reextracted-later",
+        expected_revision=earlier.revision,
+    )
+    assert updated.updated_at > later.updated_at
+    assert [source.id for source in service.snapshot_context(PUBLIC, "test-context", 1).sources] == [
+        earlier.id,
+        later.id,
+        tied.id,
+    ]
+
+
+def test_summary_identity_and_staleness_are_per_domain_context_and_generation(service):
+    first = checkpoint(service)
+    summaries = [summarize(service)]
+    for access, context, generation in (
+        (PUBLIC, "test-context", 2),
+        (PUBLIC, "another-context", 1),
+        (ALICE, "test-context", 1),
+    ):
+        checkpoint(
+            service, access, task_id=f"{context}:{generation}", context_key=context, context_generation=generation
+        )
+        summaries.append(summarize(service, access, service.snapshot_context(access, context, generation)))
+    assert len({summary.id for summary in summaries}) == 4
+    assert not any(summary.stale for summary in service.list_summaries(ALICE))
+
+    checkpoint(service, input_digest="corrected", body="Corrected evidence.", expected_revision=first.revision)
+    states = {summary.id: summary.stale for summary in service.list_summaries(ALICE)}
+    assert states == {summary.id: summary.id == summaries[0].id for summary in summaries}
+    assert len(service.list_summaries(PUBLIC)) == 3
+
+
+@pytest.mark.parametrize("foreign_scope", ["context", "generation", "domain"])
+def test_summary_rejects_sources_from_another_context_generation_or_domain(service, foreign_scope):
+    own = checkpoint(service)
+    foreign = checkpoint(
+        service,
+        ALICE if foreign_scope == "domain" else PUBLIC,
+        task_id="foreign",
+        context_key="other-context" if foreign_scope == "context" else own.context_key,
+        context_generation=2 if foreign_scope == "generation" else own.context_generation,
+    )
+    snapshot = service.snapshot_context(PUBLIC, own.context_key, own.context_generation)
+    with pytest.raises(ValueError, match="supplied source"):
+        summarize(service, snapshot=snapshot, source_ids=[foreign.id])
+    forged = replace(snapshot, sources=(*snapshot.sources, foreign))
+    with pytest.raises(MemoryConflict, match="sources changed"):
+        summarize(service, snapshot=forged)
+    assert service.list_summaries(PUBLIC) == []
+
+
+def test_full_summary_block_budget_includes_wrapper_and_omits_internal_metadata(service):
+    long_context = "internal-context/" * 1000
+    checkpoint(service, context_key=long_context)
+    snapshot = service.snapshot_context(PUBLIC, long_context, 1)
+    first = summarize(service, snapshot=snapshot, body="")
+    overhead = len(summary_block(first).encode("utf-8"))
+    body = "a" * (SUMMARY_MAX_BYTES - overhead)
+    exact = summarize(service, snapshot=service.snapshot_context(PUBLIC, long_context, 1), body=body)
+    assert len(summary_block(exact).encode("utf-8")) == SUMMARY_MAX_BYTES
+    assert json.loads(summary_block(exact)) == {"id": exact.id, "body": exact.body}
+    assert long_context not in summary_block(exact)
+    validate_summary_block(exact.id, exact.body)
+
+    with pytest.raises(SummaryTooLarge, match="1025 bytes"):
+        summarize(service, snapshot=service.snapshot_context(PUBLIC, long_context, 1), body=body + "a")
+    with pytest.raises(SummaryTooLarge):
+        validate_summary_block(exact.id, body + "a")
+    assert service.list_summaries(PUBLIC) == [exact]
+
+
+@pytest.mark.parametrize("unit", ["汉", "🙂", '"', "\\", "\nline"])
+def test_summary_budget_counts_utf8_and_json_escaping_before_publication(service, unit):
+    checkpoint(service)
+    empty = summarize(service, body="")
+    body = "Scope: "
+    while True:
+        candidate = body + unit
+        try:
+            validate_summary_block(empty.id, candidate)
+        except SummaryTooLarge:
+            break
+        body = candidate
+    published = summarize(service, body=body)
+    assert len(summary_block(published).encode("utf-8")) <= SUMMARY_MAX_BYTES
+    manifest_before = next(service.root.glob("*/manifest.json")).read_bytes()
+    with pytest.raises(SummaryTooLarge):
+        summarize(service, body=candidate)
+    assert next(service.root.glob("*/manifest.json")).read_bytes() == manifest_before
+    assert service.list_summaries(PUBLIC) == [published]
+
+
+def test_legacy_sources_read_without_writes_and_first_write_retires_navigation(service):
+    source = checkpoint(service)
+    manifest_path, old_navigation = legacy_sources(service)
+    before = manifest_path.read_bytes()
+    restarted = MemoryService(service.root)
+    recalled = restarted.read(PUBLIC, source.id)
+    assert (recalled.context_key, recalled.context_generation, recalled.source_order) == (source.task_id, 1, 0)
+    assert recalled.body == source.body and recalled.sources == source.sources
+    assert restarted.list_summaries(PUBLIC) == []
+    assert manifest_path.read_bytes() == before
+    assert old_navigation.exists()
+
+    checkpoint(restarted, task_id="new-task")
+    manifest = json.loads(manifest_path.read_text())
+    assert "navigation" not in manifest
+    assert manifest["summaries"] == {}
+    assert not old_navigation.exists()
+    assert restarted.read(PUBLIC, source.id) == recalled
+
+
+def test_bind_legacy_published_and_draft_contexts_atomically_and_idempotently(service, monkeypatch):
+    source = checkpoint(service)
+    checkpoint(
+        service,
+        input_digest="new-evidence",
+        complete=False,
+        body="Draft update.",
+        expected_revision=source.revision,
+    )
+    legacy_sources(service)
+    old_published = service.read(PUBLIC, source.id)
+    old_draft = service.source_state(PUBLIC, source.task_id)
+    mapping = {source.task_id: ("review:pr-257", 3, 1234.5)}
+    assert service.bind_source_contexts(PUBLIC, mapping) == 1
+    published = service.read(PUBLIC, source.id)
+    draft = service.source_state(PUBLIC, source.task_id)
+    for old, bound in ((old_published, published), (old_draft, draft)):
+        assert (bound.context_key, bound.context_generation, bound.source_order) == mapping[source.task_id]
+        assert bound.id == old.id
+        assert bound.body == old.body and bound.sources == old.sources
+        assert bound.complete == old.complete and bound.updated_at == old.updated_at
+        assert bound.revision != old.revision
+    assert draft.input_digest == old_draft.input_digest and draft.cursor == old_draft.cursor
+    assert service.snapshot_context(PUBLIC, "review:pr-257", 3).sources == (published,)
+
+    def unexpected_write(*_):
+        pytest.fail("already bound source metadata was rewritten")
+
+    monkeypatch.setattr(service, "_atomic_write", unexpected_write)
+    assert service.bind_source_contexts(PUBLIC, mapping) == 0
+    assert service.bind_source_contexts(PUBLIC, {source.task_id: ("wrong-context", 8, 5000)}) == 0
+    assert service.read(PUBLIC, source.id) == published
+    assert service.source_state(PUBLIC, source.task_id) == draft
+
+
+def test_failed_legacy_binding_preserves_old_manifest_and_is_retryable(service, monkeypatch):
+    source = checkpoint(service)
+    manifest_path, old_navigation = legacy_sources(service)
+    original = service.read(PUBLIC, source.id)
+    before = manifest_path.read_bytes()
+    write = service._atomic_write
+
+    def fail_manifest(path, content):
+        if path.name == "manifest.json":
+            raise OSError("binding commit failed")
+        write(path, content)
+
+    monkeypatch.setattr(service, "_atomic_write", fail_manifest)
+    with pytest.raises(OSError, match="binding commit failed"):
+        service.bind_source_contexts(PUBLIC, {source.task_id: ("bound-context", 2, 10)})
+    assert manifest_path.read_bytes() == before
+    assert old_navigation.exists()
+    restarted = MemoryService(service.root)
+    assert restarted.read(PUBLIC, source.id) == original
+    assert restarted.bind_source_contexts(PUBLIC, {source.task_id: ("bound-context", 2, 10)}) == 1
+    assert restarted.read(PUBLIC, source.id).context_key == "bound-context"
+
+
+def test_legacy_binding_only_changes_the_contribution_domain(service):
+    shared = checkpoint(service)
+    private = checkpoint(service, ALICE)
+    legacy_sources(service)
+    legacy_sources(service, ALICE)
+    public_before = service.read(PUBLIC, shared.id)
+    mapping = {shared.task_id: ("bound-private-context", 2, 15)}
+    assert service.bind_source_contexts(ALICE, mapping) == 1
+    assert service.read(PUBLIC, shared.id) == public_before
+    assert service.read(ALICE, private.id).context_key == "bound-private-context"
+    with pytest.raises(MemoryDenied):
+        service.bind_source_contexts(MemoryAccess(("public",)), mapping)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"context_key": ""},
+        {"context_key": "embedded\x00nul"},
+        {"context_generation": 0},
+        {"context_generation": True},
+        {"source_order": -1},
+        {"source_order": float("nan")},
+        {"source_order": float("inf")},
+        {"source_order": True},
+    ],
+)
+def test_invalid_source_context_metadata_never_publishes(service, overrides):
+    with pytest.raises(ValueError):
+        checkpoint(service, **overrides)
     assert service.list_sources(PUBLIC) == []
