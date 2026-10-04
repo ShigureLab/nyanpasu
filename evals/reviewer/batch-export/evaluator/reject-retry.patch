@@ -1,0 +1,11 @@
+--- a/receiver.py
++++ b/receiver.py
+@@ -26,7 +26,7 @@
+             if existing is not None:
+                 if existing[0] != payload:
+                     raise ValueError("request reused with different records")
+-                return
++                raise ValueError("request already delivered")
+             db.execute("INSERT INTO deliveries VALUES (?, ?, ?)", (source, offset, payload))
+
+     def records(self, source: str) -> list[str]:
