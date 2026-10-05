@@ -46,7 +46,7 @@ dev = [
   "nyanpasu-github-pr-maker",
   "nyanpasu-github-reviewer",
   "ty>=0.0.84",
-  "ruff>=0.16.9",
+  "ruff>=0.16.10",
   "pytest>=9.1.1",
   "pytest-rerunfailures>=16.7",
 ]
