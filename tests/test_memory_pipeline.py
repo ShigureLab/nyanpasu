@@ -763,7 +763,7 @@ async def test_summary_refreshes_from_the_updated_rolling_account(tmp_path):
         assert "DO NOT REPLAY ANOTHER CONTEXT" not in json.dumps(model.events)
         snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
         assert snapshot.summary is not None and not snapshot.summary.stale
-        assert snapshot.summary.source_revisions == {current.id: current.revision}
+        assert snapshot.summary.source_revisions == {current.id: current.content_revision}
         assert snapshot.summary.id == prior.id and snapshot.summary.revision != prior.revision
         assert snapshot.summary.sources == (current.id,)
         assert agent.memory.snapshot_context(PUBLIC, unrelated.context_key, 1).summary == unrelated_summary
@@ -836,20 +836,22 @@ async def test_noop_followup_can_preserve_prior_useful_summary_while_advancing_c
     prior = publish_summary(agent.memory, PUBLIC, f"# Recovery\nVerified at revision abc. [Evidence](memory:{old.id})")
     # This fixture exercises carried-forward evidence and publication, not the
     # model's ability to decide whether a natural-language change is a no-op.
-    model.responses[2] = json.dumps({"body": prior.body, "source_ids": list(prior.sources)})
+    model.responses[1] = json.dumps({"title": old.title, "body": old.body, "topics": list(old.topics)})
     try:
         await agent.run_now(task("source"))
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
-        material = next(material for kind, material in model.events if kind == "summary")
+        assert [kind for kind, _ in model.events] == ["extraction"]
         assert model.events[0][1]["previous_account"]["body"] == old.body
-        assert old.body in material["source_accounts"][0]["body"]
         current = agent.memory.source_state(PUBLIC, "source")
         assert current is not None
-        assert [item["id"] for item in material["source_accounts"]] == [current.id]
+        assert current.revision != old.revision
+        assert current.content_revision == old.content_revision
+        assert "source" in current.task_digests and "task:source" in current.sources
         snapshot = agent.memory.snapshot_context(PUBLIC, "source", 1)
         assert snapshot.summary is not None
         assert snapshot.summary.body == prior.body and snapshot.summary.sources == prior.sources
-        assert snapshot.summary.source_revisions == {current.id: current.revision}
+        assert snapshot.summary.source_revisions == {current.id: current.content_revision}
+        assert snapshot.summary == prior
         assert not snapshot.summary.stale
         calls = len(model.events)
         retry = await agent.rebuild_memory("source")

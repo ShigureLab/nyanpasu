@@ -195,6 +195,8 @@ class MemoryConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     enabled: bool = True
     consolidate: bool = True
+    sweep_interval_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    idle_after_seconds: float = Field(default=300, ge=0, allow_inf_nan=False)
     max_results_per_search: int = Field(default=10, ge=1, le=100)
 
 

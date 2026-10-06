@@ -518,7 +518,9 @@ def test_summary_rejects_outdated_source_snapshots(service, change):
     original = checkpoint(service)
     snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     if change == "add":
-        checkpoint(service, task_id="another-task", expected_revision=original.revision)
+        checkpoint(
+            service, task_id="another-task", body="Additional verified evidence.", expected_revision=original.revision
+        )
     else:
         checkpoint(
             service,
@@ -695,7 +697,7 @@ def test_context_snapshots_roll_forward_and_keep_generations_separate(service):
 
     snapshot = service.snapshot_context(PUBLIC, "test-context", 1)
     assert snapshot.sources == (service.read(PUBLIC, later.id),)
-    assert snapshot.source_revisions == {later.id: later.revision}
+    assert snapshot.source_revisions == {later.id: later.content_revision}
     assert len({earlier.id, later.id, next_generation.id, other_context.id, private.id}) == 4
     assert service.snapshot_context(PUBLIC, "test-context", 2).sources == (service.read(PUBLIC, next_generation.id),)
     assert service.snapshot_context(PUBLIC, "another-context", 1).sources == (service.read(PUBLIC, other_context.id),)
@@ -919,7 +921,13 @@ def test_migration_merges_all_task_text_and_receipts_and_keeps_old_links_readabl
 def test_migration_does_not_mark_an_already_stale_summary_fresh(service):
     original = checkpoint(service, context_key="legacy")
     summary = summarize(service, snapshot=service.snapshot_context(PUBLIC, "legacy", 1))
-    checkpoint(service, context_key="legacy", input_digest="corrected", expected_revision=original.revision)
+    checkpoint(
+        service,
+        context_key="legacy",
+        input_digest="corrected",
+        body="Corrected lesson.",
+        expected_revision=original.revision,
+    )
     directory = service._directory(PUBLIC.write_domain)
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -930,6 +938,34 @@ def test_migration_does_not_mark_an_already_stale_summary_fresh(service):
     (directory / "objects" / filename).write_text("---\n" + json.dumps(data) + "\n---\n\n" + body)
     assert service.bind_source_contexts(PUBLIC, {}) == 1
     assert service.list_summaries(PUBLIC) == [replace(summary, stale=True)]
+
+
+def test_current_legacy_summary_migrates_without_rewriting_its_content(service):
+    original = checkpoint(service)
+    summary = summarize(service)
+    directory = service._directory(PUBLIC.write_domain)
+    manifest = json.loads((directory / "manifest.json").read_text())
+    path = directory / "objects" / manifest["summaries"][summary.id]
+    header, body = path.read_text().removeprefix("---\n").split("\n---\n\n", 1)
+    data = json.loads(header)
+    data["source_revisions"] = {original.id: original.revision}
+    legacy = "---\n" + json.dumps(data) + "\n---\n\n" + body
+    legacy_path = path.with_name(f"{summary.id}-{hashlib.sha256(legacy.encode()).hexdigest()}.md")
+    path.unlink()
+    legacy_path.write_text(legacy)
+    manifest["summaries"][summary.id] = legacy_path.name
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+
+    restarted = MemoryService(service.root)
+    assert restarted.bind_source_contexts(PUBLIC, {}) == 0
+    migrated = restarted.list_summaries(PUBLIC)[0]
+    assert migrated.body == summary.body and migrated.sources == summary.sources
+    assert migrated.source_revisions == {original.id: original.content_revision}
+    assert migrated.updated_at == summary.updated_at and not migrated.stale
+    assert restarted.source_state(PUBLIC, "test-context") == original
+
+    checkpoint(restarted, task_id="noop-followup", expected_revision=original.revision)
+    assert restarted.list_summaries(PUBLIC) == [migrated]
 
 
 def test_failed_legacy_binding_preserves_old_manifest_and_is_retryable(service, monkeypatch):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -14,6 +15,55 @@ if TYPE_CHECKING:
 MEMORY_TASK_KINDS = frozenset({"memory_extraction", "memory_consolidation"})
 EVIDENCE_BUDGET = 32_000
 BLOCK_LIMIT = 8_000
+
+
+@dataclass(frozen=True)
+class SourceEvidence:
+    task_id: str
+    source_order: float
+    chunks: list[list[dict[str, Any]]]
+
+    @property
+    def digest(self) -> str:
+        return input_digest(self.chunks)
+
+    @property
+    def records(self) -> list[dict[str, Any]]:
+        return [
+            {**item, "source_task_id": self.task_id, "source_order": self.source_order}
+            for chunk in self.chunks
+            for item in chunk
+        ]
+
+
+def extraction_batches(
+    sources: list[SourceEvidence], *, resume_task_id: str | None = None, compacting: bool = False
+) -> list[list[SourceEvidence]]:
+    """Combine whole small contributions; multi-chunk and resumed sources keep stable chunk boundaries."""
+    batches: list[list[SourceEvidence]] = []
+    batch: list[SourceEvidence] = []
+    used = 0
+    for index, source in enumerate(sources):
+        size = sum(len(json.dumps(item, ensure_ascii=False)) for item in source.records)
+        separate = len(source.chunks) > 1 or source.task_id == resume_task_id or (compacting and index == 0)
+        if batch and (separate or used + size > EVIDENCE_BUDGET):
+            batches.append(batch)
+            batch, used = [], 0
+        if separate or size > EVIDENCE_BUDGET:
+            batches.append([source])
+        else:
+            batch.append(source)
+            used += size
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def batch_chunks(batch: list[SourceEvidence]) -> list[list[dict[str, Any]]]:
+    if len(batch) == 1:
+        return batch[0].chunks
+    return _partition([item for source in batch for item in source.records])
+
 
 Reference = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
 Topic = Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -180,6 +230,8 @@ do not run tools, edit files, contact anyone, or continue the source task.
 
 The previous account covers earlier tasks in the same context. Rewrite and merge it
 with useful new evidence; do not create a separate task recap or append duplicate lessons.
+Evidence may combine several completed tasks. Per-record source_task_id and source_order
+identify their original scope and chronology; preserve attribution and apply later corrections in order.
 Preserve earlier applicable knowledge when the new task adds nothing useful.
 Use source_order and the account's latest_evidence_order to distinguish when evidence occurred from when it was extracted:
 late extraction of an older task must not undo a later verified correction.

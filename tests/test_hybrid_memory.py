@@ -34,7 +34,14 @@ ALICE = MemoryAccess(("public", "private:alice"), "private:alice")
 BOB = MemoryAccess(("public", "private:bob"), "private:bob")
 
 
-def config_for(tmp_path: Path, *, consolidate: bool = False, enabled: bool = True) -> NyanpasuConfig:
+def config_for(
+    tmp_path: Path,
+    *,
+    consolidate: bool = False,
+    enabled: bool = True,
+    idle_after_seconds: float = 0,
+    sweep_interval_seconds: float = 60,
+) -> NyanpasuConfig:
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
         server=ServerConfig(token=SecretStr("test-service-token")),
@@ -50,7 +57,13 @@ def config_for(tmp_path: Path, *, consolidate: bool = False, enabled: bool = Tru
                 "memory_consolidation": TaskPolicy(execution=ExecutionOverride(backend="cheap")),
             }
         ),
-        memory=MemoryConfig(enabled=enabled, consolidate=consolidate, max_results_per_search=2),
+        memory=MemoryConfig(
+            enabled=enabled,
+            consolidate=consolidate,
+            idle_after_seconds=idle_after_seconds,
+            sweep_interval_seconds=sweep_interval_seconds,
+            max_results_per_search=2,
+        ),
     )
 
 
@@ -72,11 +85,21 @@ def make_agent(config: NyanpasuConfig, *, codex=None, cheap=None, source=None) -
 
 
 @pytest.mark.anyio
-async def test_root_completion_and_memory_admission_commit_or_rollback_together(tmp_path):
+async def test_extraction_completion_and_summary_admission_commit_or_rollback_together(tmp_path):
     config = config_for(tmp_path, consolidate=True)
     agent = make_agent(config)
     store = agent.store
-    root = agent._admit(task("root", kind="review"))
+    source = agent._admit(task("source", kind="review"))
+    store.record_task(source)
+    store.mark_task_done(
+        TaskRunResult(
+            task_id=source.task_id, status=TaskStatus.COMPLETED, thread_id=None, turn_id=None, final_message="done"
+        )
+    )
+    agent.memory.checkpoint_source(
+        PUBLIC, source.task_id, input_digest="source-input", cursor=1, complete=True, title="Lesson", body="Useful fact"
+    )
+    root = agent._memory_task(source.task_id, "public", task_id="memory:extraction", kind="memory_extraction")
     store.record_task(root)
     store.mark_task_running(root.task_id, None)
     followup = agent._memory_followup(root)
@@ -96,8 +119,7 @@ async def test_root_completion_and_memory_admission_commit_or_rollback_together(
         reopened = StateStore(config.db_path)
         assert reopened.task_status(root.task_id) == "running"
         assert reopened.task_status(followup.task_id) is None
-        with pytest.raises(ValueError, match="unknown context"):
-            reopened.context_scope(followup.context_key)
+        assert reopened.context_scope(followup.context_key) == store.context_scope(root.context_key)
         with sqlite3.connect(config.db_path) as conn:
             conn.execute("DROP TRIGGER reject_memory")
         assert reopened.mark_task_done(result, followup=followup)
@@ -106,7 +128,7 @@ async def test_root_completion_and_memory_admission_commit_or_rollback_together(
         assert reopened.task_status(root.task_id) == "completed"
         assert reopened.task_request(followup.task_id) == followup
         assert [item.task_id for item in reopened.unfinished_tasks()] == [followup.task_id]
-        assert len(reopened.recent_tasks()) == 2
+        assert len(reopened.recent_tasks()) == 3
     finally:
         await agent.shutdown()
 

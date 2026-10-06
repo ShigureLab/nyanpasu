@@ -555,7 +555,7 @@ class StateStore:
                         json_extract(r.task_json,'$.memory.write_domain') AS domain,
                         coalesce((SELECT min(started_at) FROM task_turns t WHERE t.task_id=r.task_id),
                             r.created_at) AS source_order
-                    FROM task_runs r WHERE r.spawned_by_task_id IS NULL
+                    FROM task_runs r WHERE r.spawned_by_task_id IS NULL AND r.coalesced_into IS NULL
                         AND r.status='completed' AND r.action='run'
                         AND json_extract(r.task_json,'$.kind') NOT IN ('memory_extraction','memory_consolidation')
                 )
@@ -566,6 +566,35 @@ class StateStore:
                 WHERE (source.source_order,source.task_id) <= (target.source_order,target.task_id)
                 ORDER BY source.source_order,source.task_id""",
                 (task_id,),
+            ).fetchall()
+        return [AgentTask.model_validate_json(row["task_json"]) for row in rows]
+
+    def idle_memory_sources(self, idle_before: float) -> list[AgentTask]:
+        """Latest completed contribution per idle audience/context/generation; tasks are the backlog."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """WITH contributions AS (
+                    SELECT r.*, row_number() OVER (
+                        PARTITION BY json_extract(task_json,'$.memory.write_domain'),context_key,context_generation
+                        ORDER BY coalesce((SELECT min(started_at) FROM task_turns t WHERE t.task_id=r.task_id),
+                                          created_at) DESC,task_id DESC
+                    ) AS position
+                    FROM task_runs r WHERE spawned_by_task_id IS NULL AND action='run' AND status='completed'
+                        AND json_extract(task_json,'$.memory.write_domain') IS NOT NULL
+                        AND json_extract(task_json,'$.kind') NOT IN ('memory_extraction','memory_consolidation')
+                        AND EXISTS (SELECT 1 FROM task_turns t WHERE t.task_id=r.task_id)
+                )
+                SELECT source.task_json FROM contributions source WHERE position=1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM task_runs activity
+                        WHERE activity.context_key=source.context_key
+                            AND activity.context_generation=source.context_generation
+                            AND activity.action='run' AND (
+                                activity.status IN ('queued','running','waiting') OR activity.updated_at>?
+                            )
+                    )
+                ORDER BY source.updated_at,source.task_id""",
+                (idle_before,),
             ).fetchall()
         return [AgentTask.model_validate_json(row["task_json"]) for row in rows]
 

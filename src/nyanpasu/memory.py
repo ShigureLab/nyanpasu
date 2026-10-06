@@ -94,6 +94,10 @@ class MemorySource:
     updated_at: str
     complete: bool
 
+    @property
+    def content_revision(self) -> str:
+        return hashlib.sha256(_json([self.title, self.body, self.topics])).hexdigest()
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         for key in ("topics", "sources"):
@@ -139,7 +143,7 @@ class MemorySnapshot:
 
     @property
     def source_revisions(self) -> dict[str, str]:
-        return {source.id: source.revision for source in self.sources}
+        return {source.id: source.content_revision for source in self.sources}
 
     @property
     def input_digest(self) -> str:
@@ -339,7 +343,7 @@ class MemoryService:
         data["sources"] = tuple(data["sources"])
         summary = MemorySummary(domain=domain, body=body, revision=revision, **data)
         current = {
-            source.id: source.revision
+            source.id: source.content_revision
             for source in sources
             if (source.context_key, source.context_generation) == (summary.context_key, summary.context_generation)
         }
@@ -472,6 +476,7 @@ class MemoryService:
         topics: Sequence[str] = (),
         sources: Sequence[str] = (),
         expected_revision: str | None = None,
+        completed_task_digests: dict[str, str] | None = None,
     ) -> MemorySourceCheckpoint:
         domain = self._write_domain(access)
         task_id = _task_id(task_id)
@@ -512,6 +517,9 @@ class MemoryService:
             )
             task_digests = dict(previous.task_digests) if previous else {}
             if complete:
+                task_digests.update(
+                    {_task_id(key): _input_digest(value) for key, value in (completed_task_digests or {}).items()}
+                )
                 task_digests[task_id] = input_digest
             else:
                 task_digests.pop(task_id, None)
@@ -550,10 +558,30 @@ class MemoryService:
             return checkpoint
 
     def bind_source_contexts(self, access: MemoryAccess, mapping: dict[str, tuple[str, int, float]]) -> int:
-        """Merge legacy task accounts without discarding their text or evidence links."""
+        """Upgrade account scopes and summary content fingerprints without losing evidence."""
         domain = self._write_domain(access)
         with self._locked(domain, write=True) as directory:
             manifest = self._manifest(directory, domain)
+            summaries_changed = False
+            sources = self._sources(directory, domain, manifest)
+            for identity, filename in tuple(manifest["summaries"].items()):
+                data, body, revision = self._object(directory, filename)
+                scoped = [
+                    source
+                    for source in sources
+                    if (source.context_key, source.context_generation)
+                    == (data["context_key"], data["context_generation"])
+                ]
+                content_revisions = {source.id: source.content_revision for source in scoped}
+                if data["source_revisions"] == {source.id: source.revision for source in scoped} and (
+                    data["source_revisions"] != content_revisions
+                ):
+                    data.pop("kind")
+                    data["sources"] = tuple(data["sources"])
+                    summary = MemorySummary(domain=domain, body=body, revision=revision, **data)
+                    summary = _with_revision(replace(summary, source_revisions=content_revisions))
+                    manifest["summaries"][identity] = self._save_object(directory, summary)
+                    summaries_changed = True
             groups: dict[str, list[MemorySourceCheckpoint]] = {}
             changed: set[str] = set()
             for identity, filename in manifest["sources"].items():
@@ -629,7 +657,7 @@ class MemoryService:
                         if task_digests.pop(data["task_id"], None) is not None:
                             retryable = _with_revision(replace(published, task_digests=task_digests))
                             manifest["sources"][target] = self._save_object(directory, retryable)
-            if changed or "navigation" in manifest:
+            if changed or summaries_changed or "navigation" in manifest:
                 self._commit(directory, manifest)
         return len(changed)
 
@@ -682,7 +710,7 @@ class MemoryService:
                 for source in self._sources(directory, domain, manifest)
                 if (source.context_key, source.context_generation) == (context_key, context_generation)
             )
-            current = {source.id: source.revision for source in sources}
+            current = {source.id: source.content_revision for source in sources}
             if source_revisions != current:
                 raise MemoryConflict("summary sources changed; read a fresh context snapshot")
             filename = manifest["summaries"].get(identity)

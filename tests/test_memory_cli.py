@@ -34,8 +34,7 @@ def test_rebuild_command_retries_summary_and_reports_publication_result(tmp_path
         )
     )
     checkpoint = publish_source(agent.memory, PUBLIC, source.task_id)
-    extraction = agent._memory_followup(source)
-    assert extraction is not None
+    extraction = agent._memory_task(source.task_id, "public", task_id="memory:extraction", kind="memory_extraction")
     failed = agent._memory_followup(extraction)
     assert failed is not None
     agent.store.record_task(failed)
@@ -206,5 +205,5 @@ def test_rebuild_all_uses_complete_publications_even_when_empty_or_a_newer_draft
         assert [kind for kind, _ in model.events] == ["summary"]
         accounts = model.events[0][1]["source_accounts"]
         assert [(item["id"], item["body"]) for item in accounts] == [(original.id, original.body)]
-        assert summary.source_revisions == {original.id: original.revision}
+        assert summary.source_revisions == {original.id: original.content_revision}
         assert agent.memory.read(PUBLIC, original.id).revision == original.revision

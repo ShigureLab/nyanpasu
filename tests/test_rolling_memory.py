@@ -323,7 +323,9 @@ async def test_overlapping_maintenance_for_one_context_retains_both_tasks(tmp_pa
         await asyncio.wait_for(entered.wait(), 5)
         await agent.run_now(continuing_task("second"))
         release.set()
-        await asyncio.gather(complete_memory(agent, "first"), complete_memory(agent, "second"))
+        await complete_memory(agent, "first")
+        await agent.sweep_memory()
+        await complete_memory(agent, "second")
 
         sources, summaries = agent.memory.list_sources(ALICE), agent.memory.list_summaries(ALICE)
         assert len(sources) == len(summaries) == 1

@@ -112,6 +112,8 @@ turn_timeout_seconds = 900
 [memory]
 enabled = true
 consolidate = true
+sweep_interval_seconds = 60
+idle_after_seconds = 300 # Batch completed contributions after the context is idle.
 max_results_per_search = 10 # Default and maximum result count (1-100).
 # Memory is stored below NYANPASU_HOME/memory and shared across backend drivers.
 # Native Codex and Claude auto-memory is disabled only for Nyanpasu subprocesses.

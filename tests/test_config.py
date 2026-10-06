@@ -7,6 +7,7 @@ import pytest
 from nyanpasu.config import (
     ClaudeOptions,
     EnvCommand,
+    MemoryConfig,
     ModelSettings,
     NyanpasuConfig,
     ProcessConfig,
@@ -14,6 +15,20 @@ from nyanpasu.config import (
     load_config,
 )
 from nyanpasu.targets import ExecutionOverride
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"sweep_interval_seconds": 0},
+        {"sweep_interval_seconds": float("inf")},
+        {"idle_after_seconds": -1},
+        {"idle_after_seconds": float("nan")},
+    ],
+)
+def test_memory_producer_rejects_invalid_intervals(options):
+    with pytest.raises(ValueError):
+        MemoryConfig.model_validate(options)
 
 
 def test_example_configuration_loads_and_routes_both_memory_stages(tmp_path, monkeypatch):
