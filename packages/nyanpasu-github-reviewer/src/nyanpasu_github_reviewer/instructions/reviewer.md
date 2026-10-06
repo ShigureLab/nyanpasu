@@ -31,11 +31,30 @@ When evidence contradicts an assumption, revise or discard the claim and follow 
 
 Finish when the assigned scope has supported conclusions and material questions are resolved. Pursue available evidence before leaving a question incomplete; identify the missing evidence and the limitation preventing further investigation. Passing CI, a completed child, agreement between designs, or fixing known findings does not establish completion. Neither a finding quota nor exhaustive speculative investigation is required.
 
+## Design necessity
+
+Investigate necessity alongside correctness, including changed responsibilities that have no suspected bug. Map required behavior and its sources to the mechanisms and test families that provide it. Consider a concrete smaller alternative: reuse existing behavior, derive a value from its authoritative owner, or delete, combine or replace machinery. Trace actual consumers, public contracts and reachable failure paths to find what that alternative would lose. Group by responsibility; do not create a checklist entry for every helper or test.
+
+Examine duplicate authoritative/derived state, repeated validation after trusted boundaries, parallel fallback paths, pass-through layers, speculative extension/compatibility, and duplicated test setup or assertions. These are questions, not automatic violations. A boolean or local branch can be simpler than a policy object or state machine; an abstraction must reduce the concepts, states, synchronization points, dependencies or special cases needed for demonstrated responsibilities. File size, fewer lines, unfamiliar structure and absence of internal callers do not establish that a mechanism is unnecessary. Public APIs can have external consumers.
+
+Use these distinctions when investigating, not as repository-wide rules:
+
+| Candidate              | Possible simplification                                              | Reason to retain                                                          |
+| ---------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Duplicate state        | Derive a count or display value from its owner                       | An independently editable draft or a demonstrated performance requirement |
+| Wrapper                | Remove an unchanged parameter/return-value forwarding layer          | Unit conversion, protocol adaptation or an established public contract    |
+| Validation or fallback | Remove repeated checks after a trusted boundary                      | Reachable external failure, malformed input or a promised output shape    |
+| Deduplication          | Remove a ledger when equal content still represents distinct records | Request identity needed for retries after a lost acknowledgement          |
+
+For a promising alternative, resolve its material uncertainty with caller/contract evidence or a bounded experiment through the real production path. Read `design-comparison.md` before a long experiment or reference comparison, and `test-review.md` for test-specific criteria. A smaller sketch or passing toy model does not establish that production machinery is removable. Distinguish executed checks from source reasoning and unavailable validation. An experiment against an invented consumer with stricter requirements proves only that assumed contract, not a defect in the actual boundary. Without an established relevant requirement or consumer, record the question as a gap rather than an actionable defect or simplification; a conditional finding or lower priority does not supply the missing evidence. Unknown requirements justify neither a deletion claim nor automatic retention of everything.
+
+Keep examined alternatives, remove/merge/replace/retain decisions and their evidence in the existing plan and `simplification` record described in `$output_reference`. Explain a retain decision by the required behavior or overall maintenance the alternative would lose. Evidence that contradicts a candidate must change or discard that candidate before publication; reconcile it with your earlier observations and child results. Report a nonblocking simplification only with a concrete maintenance consequence and a feasible smaller alternative preserving established requirements. A runtime bug is not required. Zero simplification findings is valid; assigned substantive scope still needs supported necessity conclusions.
+
 ## Independent design and test evidence
 
 Read `$review_planning` before inspecting the implementation. Record run/skip/reuse with a reason and launch managed Nyanpasu subtasks when independent work is needed. Continue general review while they run, publish its verified findings and scope on the dashboard before waiting, then integrate deep evidence in a later turn. Audit test value from failure models and observable behavior. The linked workflow contains the design, test-audit, and comparison prompts.
 
-Substantive reviews also require a production and test necessity audit: what can be deleted, combined or replaced while preserving required behavior, and why remaining complexity earns its place. Prior correctness review alone is not evidence this audit was completed. Record examined alternatives and retention reasons even when there is no justified simplification finding; never manufacture suggestions to meet a quota.
+Necessity investigation belongs to the parent and scoped reviewers whether or not an independent reference runs. Short checks and supported simplifications can finish in the general turn; reserve deep work for unresolved comparisons and extended experiments. Prior correctness review alone is not evidence of necessity coverage.
 
 ## CI evidence
 
