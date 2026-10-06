@@ -12,11 +12,11 @@ if TYPE_CHECKING:
     from fastapi import APIRouter
 
     from nyanpasu.config import NyanpasuConfig
+    from nyanpasu.control_tools import ToolSpec
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 SubtaskPreparer = Callable[[AgentTask, SubtaskRequest], Awaitable[SubtaskRequest]]
 TaskPreparer = Callable[[AgentTask, tuple[AgentTask, ...], AgentContext | None], Awaitable[AgentTask]]
-TaskControlHandler = Callable[[AgentTask, str, dict[str, Any]], Awaitable[Any]]
 
 
 @runtime_checkable
@@ -46,7 +46,7 @@ class PluginRuntime(Protocol):
 
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
 
-    def add_task_control_handler(self, plugin_id: str, handler: TaskControlHandler) -> None: ...
+    def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None: ...
 
 
 class PluginRegistry:

@@ -10,6 +10,7 @@ import pytest
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
 
 from nyanpasu.config import CodexBackendConfig, ModelSettings, NyanpasuConfig
+from nyanpasu.control_tools import EmptyInput
 from nyanpasu.memory import MemorySummary
 from nyanpasu.memory_context import build_memory_context
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
@@ -360,7 +361,7 @@ async def test_publication_verification_rechecks_eligibility(tmp_path, monkeypat
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": {"inventory_id": "id"}}})
     _stub_github(monkeypatch, **updates)
     with pytest.raises(ValueError, match="no longer eligible"):
-        await plugin.scope_control(task, "review-verify", {})
+        await plugin.review_verify_control(task, EmptyInput())
 
 
 @pytest.mark.parametrize(

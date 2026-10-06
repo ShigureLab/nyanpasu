@@ -57,7 +57,8 @@ from nyanpasu.task_control import TaskControl
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
-    from nyanpasu.plugins import SubtaskPreparer, TaskControlHandler, TaskPreparer
+    from nyanpasu.control_tools import ToolSpec
+    from nyanpasu.plugins import SubtaskPreparer, TaskPreparer
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 
@@ -98,7 +99,6 @@ class AgentService:
         self._post_process_hooks: dict[str, list[PostProcessHook]] = {}
         self._subtask_preparers: dict[str, SubtaskPreparer] = {}
         self._task_preparers: dict[str, TaskPreparer] = {}
-        self._task_control_handlers: dict[str, TaskControlHandler] = {}
         self._owner_id = f"{os.uname().nodename}:{os.getpid()}:{id(self)}"
 
     async def startup(self) -> None:
@@ -275,16 +275,8 @@ class AgentService:
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
         self._subtask_preparers[plugin_id] = preparer
 
-    def add_task_control_handler(self, plugin_id: str, handler: TaskControlHandler) -> None:
-        self._task_control_handlers[plugin_id] = handler
-
-    async def plugin_control(self, task_id: str, action: str, payload: dict[str, Any]) -> Any:
-        task = await to_thread.run_sync(self.store.task_request, task_id)
-        plugin_id = task.metadata.get("plugin_id", task.metadata.get("source_plugin_id"))
-        handler = self._task_control_handlers.get(plugin_id)
-        if handler is None:
-            raise ValueError(f"unknown task action: {action}")
-        return await handler(task, action, payload)
+    def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
+        self.control.register(plugin_id, tools)
 
     async def _run_task_guarded(self, task: AgentTask) -> None:
         try:

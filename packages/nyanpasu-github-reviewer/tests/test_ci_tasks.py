@@ -207,17 +207,18 @@ async def test_ci_refresh_rechecks_recovery_without_mutating_review_state(ci_plu
     plugin, pr = ci_plugin
     parent = event_task(plugin, pr)
     before = parent.model_dump()
-    failed = await plugin.scope_control(parent, "ci-refresh", {})
+    refresh = next(tool for tool in plugin.task_control_tools() if tool.name == "ci-refresh")
+    failed = await refresh.invoke(parent, {})
     monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", lambda *args: snapshot(failed=False))
 
-    recovered = await plugin.scope_control(parent, "ci-refresh", {})
+    recovered = await refresh.invoke(parent, {})
 
     assert failed["snapshot"]["failures"]
     assert recovered["snapshot"]["failures"] == []
     assert recovered["snapshot"]["fingerprint"] != failed["snapshot"]["fingerprint"]
     assert parent.model_dump() == before
-    with pytest.raises(ValueError, match="root reviewer"):
-        await plugin.scope_control(parent.model_copy(update={"spawned_by_task_id": "root"}), "ci-refresh", {})
+    with pytest.raises(ValueError, match="not available"):
+        await refresh.invoke(parent.model_copy(update={"spawned_by_task_id": "root"}), {})
 
 
 @pytest.mark.anyio

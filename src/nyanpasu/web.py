@@ -15,7 +15,7 @@ from nyanpasu.backends import Backends
 from nyanpasu.config import NyanpasuConfig, ensure_state_dirs, load_config
 from nyanpasu.memory import MemoryAccess, MemoryNotFound, MemoryService, MemorySource
 from nyanpasu.models import AgentTask
-from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskControlHandler, TaskPreparer
+from nyanpasu.plugins import PluginManager, PluginRegistry, SubtaskPreparer, TaskPreparer
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.api import dashboard_router
 from nyanpasu.transcript.models import MemoryInjectionPage, MemoryPage
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from enum import Enum
 
+    from nyanpasu.control_tools import ToolSpec
     from nyanpasu.models import TaskRunResult
     from nyanpasu.transcript.history import SessionSource
 
@@ -45,7 +46,7 @@ class AgentBackend(Protocol):
 
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
 
-    def add_task_control_handler(self, plugin_id: str, handler: TaskControlHandler) -> None: ...
+    def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None: ...
 
 
 class WebPluginRuntime:
@@ -79,8 +80,8 @@ class WebPluginRuntime:
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
         self.agent.add_subtask_preparer(plugin_id, preparer)
 
-    def add_task_control_handler(self, plugin_id: str, handler: TaskControlHandler) -> None:
-        self.agent.add_task_control_handler(plugin_id, handler)
+    def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
+        self.agent.add_task_control_tools(plugin_id, tools)
 
 
 def create_app(

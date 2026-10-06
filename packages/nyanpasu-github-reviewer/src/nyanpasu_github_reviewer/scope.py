@@ -18,17 +18,17 @@ if TYPE_CHECKING:
 
 class ScopeGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    files: list[str] = Field(min_length=1)
+    files: list[str] = Field(min_length=1, description="Exact changed-path tokens from the inventory, never globs.")
     category: Literal["production", "tests", "examples", "evidence", "generated", "vendor", "other"]
     decision: Literal["accept", "relocate", "clarify"]
-    reason: str = Field(pattern=r"\S")
-    source: str = Field(pattern=r"\S")
-    alternative: str = Field(pattern=r"\S")
+    reason: str = Field(pattern=r"\S", description="Concrete rationale for the admission decision.")
+    source: str = Field(pattern=r"\S", description="Original requirement or existing caller evidence.")
+    alternative: str = Field(pattern=r"\S", description="Alternative placement or simpler way to satisfy the contract.")
 
 
 class ScopePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    inventory_id: str
+    inventory_id: str = Field(description="ID from the current pinned inventory.")
     groups: list[ScopeGroup]
 
 

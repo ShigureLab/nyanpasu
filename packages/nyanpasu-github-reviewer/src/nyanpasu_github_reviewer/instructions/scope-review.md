@@ -12,28 +12,9 @@ Group the inventory by responsibility and give every path exactly one decision:
 - `relocate`: propose moving/removing this submission material; name a concrete destination or retained replacement. Task-specific experiment histories, verdict dumps, one-off probes and standalone simulators often belong with PR evidence. A new top-level directory alone is not proof.
 - `clarify`: placement or required behavior needs a maintainer decision. State the uncertainty; do not silently accept it as necessary or assert an unsupported violation.
 
-Submit the complete plan using the same control command:
+Submit the complete plan using `review-scope` and the input schema supplied for this turn. Copy the inventory ID and group every changed path by category and admission decision. For each group, explain the reason, cite original requirements and existing callers, and assess an alternative placement or simpler way to satisfy the contract.
 
-```json
-{
-   "action": "review-scope",
-   "input": {
-      "inventory_id": "from the inventory",
-      "groups": [
-         {
-            "files": ["path/from/inventory.py"],
-            "category": "production",
-            "decision": "accept",
-            "reason": "The existing service calls this implementation; this behavior must ship.",
-            "source": "Original requirement URL and existing caller location",
-            "alternative": "Keeping it only as an external experiment would not implement the service contract."
-         }
-      ]
-   }
-}
-```
-
-Categories are `production`, `tests`, `examples`, `evidence`, `generated`, `vendor`, `other`. Use exact inventory path tokens, not globs. When `path_encoding` is `percent`, all paths are encoded losslessly: decode with `urllib.parse.unquote_to_bytes` for filesystem access, but keep the encoded tokens in decisions and assignments. The service rejects stale inventories, omitted/unknown paths and duplicates. Empty diffs use empty groups. Reuse decisions only after verifying unchanged responsibilities and requirements; submit them against this inventory even on follow-ups. Once a child is dispatched the plan is frozen for this run.
+Use the category values supplied by the schema and exact inventory path tokens, not globs. When `path_encoding` is `percent`, all paths are encoded losslessly: decode with `urllib.parse.unquote_to_bytes` for filesystem access, but keep the encoded tokens in decisions and assignments. The service rejects stale inventories, omitted/unknown paths and duplicates. Empty diffs use empty groups. Reuse decisions only after verifying unchanged responsibilities and requirements; submit them against this inventory even on follow-ups. Once a child is dispatched the plan is frozen for this run.
 
 Copy the returned `source` and `scope` into the dashboard (update to the bundled profile when needed). Scope is keyed by `source.inventory_id`, which identifies the head, direct base branch and effective diff, including its merge-base. The template looks up this range rather than the head alone. Publish a concise scope concern before expensive investigation, with the affected paths, maintenance consequence, destination and rule/requirement source. Keep `relocate`/`clarify` paths visible as deferred, never reviewed-clean; do not claim whole-PR approval while they remain. Follow publication permissions and review-event policy; a placement concern does not fabricate a P1 runtime bug.
 

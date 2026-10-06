@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING, Any
 import anyio.to_thread as to_thread
 from pydantic import BaseModel, ConfigDict, Field
 
-from nyanpasu.memory import MemoryAccess, MemoryConflict, MemoryDenied, MemoryNotFound
+from nyanpasu.control_tools import EmptyInput, ToolSpec
+from nyanpasu.memory import MemoryConflict, MemoryDenied, MemoryNotFound
 from nyanpasu.memory_consolidation import MEMORY_TASK_KINDS
 from nyanpasu.memory_context import MemoryContext, build_memory_context
 from nyanpasu.memory_search import search_excerpt
-from nyanpasu.models import SubtaskRequest
+from nyanpasu.models import AgentTask, SubtaskRequest
 from nyanpasu.safe_files import open_regular_file
 from nyanpasu.task_control_client import call_control as call_control, command as client_command, main as client_main
 
@@ -37,9 +38,30 @@ class ControlRequest(BaseModel):
 
 class Completion(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    summary: str = Field(min_length=1)
-    artifacts: list[str] = Field(default_factory=list, max_length=32)
+    summary: str = Field(min_length=1, description="Supported result for the parent task.")
+    artifacts: list[str] = Field(
+        default_factory=list, max_length=32, description="Relative evidence paths in this workspace."
+    )
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskIDs(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    task_ids: list[str] = Field(min_length=1, description="Descendant task IDs owned by this task.")
+
+
+class MemorySearch(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    query: str = Field(max_length=8192, description="Specific terms for the problem or reusable procedure.")
+    topics: list[str] = Field(default_factory=list, description="Optional topic filters; never grant access.")
+    limit: int | None = Field(
+        default=None, gt=0, description="Defaults to and is capped by the configured search maximum."
+    )
+
+
+class MemoryRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    source_id: str = Field(description="ID returned by memory.search or a memory: reference.")
 
 
 @dataclass(frozen=True)
@@ -54,17 +76,100 @@ class TaskControl:
 
     def __init__(self, agent: AgentService):
         self.agent = agent
+        self._tools: dict[str | None, dict[str, ToolSpec[Any]]] = {
+            None: {tool.name: tool for tool in self._builtin_tools()}
+        }
         self._directory: tempfile.TemporaryDirectory | None = None
         self._server: asyncio.Server | None = None
         self._lock = asyncio.Lock()
         self._tokens: dict[str, str] = {}
         self._calls: dict[str, asyncio.Lock] = {}
 
+    def _builtin_tools(self) -> tuple[ToolSpec[Any], ...]:
+        return (
+            ToolSpec(
+                "create",
+                "Start a child in a fresh session and separate workspace. Retry with the same request_key and input; "
+                "use a new key for a new attempt. Terminal children include their frozen result. "
+                "Omitted execution fields use the child kind's configured defaults, not the parent's model. "
+                "Task and memory identities are assigned by the service.",
+                SubtaskRequest,
+                self._create,
+            ),
+            ToolSpec(
+                "inspect", "Inspect only this task's descendants and their frozen results.", EmptyInput, self._inspect
+            ),
+            ToolSpec(
+                "await",
+                "Wait for owned descendants from this root run. After calling, end this turn; "
+                "the service resumes you with results. Do not poll or sleep waiting for children.",
+                TaskIDs,
+                self._await,
+            ),
+            ToolSpec(
+                "cancel",
+                "Stop owned descendants from this root run. Context cleanup reclaims retained workspaces and history.",
+                TaskIDs,
+                self._cancel,
+            ),
+            ToolSpec(
+                "complete",
+                "Before ending a child task, freeze its summary and artifact bytes outside its workspace for the parent.",
+                Completion,
+                self._complete,
+                lambda task: task.spawned_by_task_id is not None,
+            ),
+            ToolSpec(
+                "memory.search",
+                "Search only authorized memory with BM25 keyword ranking. Use specific terms, then memory.read "
+                "for full evidence and provenance. Memory tools are read-only; the service maintains summaries.",
+                MemorySearch,
+                self._memory_search,
+                self._memory_available,
+            ),
+            ToolSpec(
+                "memory.read",
+                "Read an authorized memory source. Historical evidence may be outdated; "
+                "check applicability and cited sources before using it.",
+                MemoryRead,
+                self._memory_read,
+                self._memory_available,
+            ),
+            ToolSpec(
+                "memory.describe",
+                "Describe this task's authorized memory domains, topics and counts.",
+                EmptyInput,
+                self._memory_describe,
+                self._memory_available,
+            ),
+        )
+
+    def register(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
+        if plugin_id in self._tools:
+            raise ValueError(f"task tools already registered for plugin: {plugin_id}")
+        names = [tool.name for tool in tools]
+        if len(names) != len(set(names)) or set(names) & self._tools[None].keys():
+            raise ValueError("plugin task tool names must be unique and cannot shadow built-in actions")
+        if any(name.startswith("memory.") for name in names):
+            raise ValueError("memory action names are reserved for built-in task tools")
+        self._tools[plugin_id] = {tool.name: tool for tool in tools}
+
+    def _task_tools(self, task: AgentTask) -> dict[str, ToolSpec[Any]]:
+        if task.kind in MEMORY_TASK_KINDS:
+            raise MemoryDenied("background memory jobs have no task control capability")
+        plugin_id = task.metadata.get("plugin_id", task.metadata.get("source_plugin_id"))
+        return {**self._tools[None], **self._tools.get(plugin_id, {})}
+
+    def available_tools(self, task: AgentTask) -> tuple[ToolSpec[Any], ...]:
+        return tuple(tool for tool in self._task_tools(task).values() if tool.available(task))
+
+    def _memory_available(self, task: AgentTask) -> bool:
+        return self.agent.config.memory.enabled and bool(task.memory.read_domains)
+
     @contextlib.asynccontextmanager
     async def turn(self, task_id: str):
         task = await to_thread.run_sync(self.agent.store.task_request, task_id)
-        if task.kind in MEMORY_TASK_KINDS:
-            raise MemoryDenied("background memory jobs have no task control capability")
+        tools = self.available_tools(task)
         async with self._lock:
             if self._server is None:
                 self._directory = tempfile.TemporaryDirectory(prefix="nyanpasu-control-")
@@ -78,28 +183,19 @@ class TaskControl:
         try:
             command = shlex.join(client_command(control))
             summaries = []
-            if self.agent.config.memory.enabled and task.memory.read_domains:
+            if self._memory_available(task):
                 summaries = await to_thread.run_sync(self.agent.memory.list_summaries, task.memory)
             memory_context = build_memory_context(task, summaries, enabled=self.agent.config.memory.enabled)
             prompt = f"""\nNyanpasu task control (for this turn only):
 Pipe a JSON request to: {command} -
 Alternatively, replace - with a request-file path. Stdin requires no filesystem writes.
 Requests:
-{{"action":"create","input":{{"request_key":"stable-purpose-key","prompt":"self-contained task","developer_instructions":"role and constraints","revision":"optional pinned commit","purpose":"design","kind":"subtask","execution":{{"backend":"configured backend name","model":"optional model","reasoning":"optional reasoning"}},"memory_enabled":true}}}}
-{{"action":"inspect"}}
-{{"action":"await","input":{{"task_ids":["child-id"]}}}}
-{{"action":"cancel","input":{{"task_ids":["child-id"]}}}}
-{{"action":"complete","input":{{"summary":"result","artifacts":["relative/evidence.json"],"data":{{}}}}}}
-Create chooses a fresh session and separate workspace. A retry must use the same request_key and input.
-An already terminal child is returned with its frozen result; no await is needed to read it.
-Use a new request key for a new attempt; a child from an earlier root run cannot be awaited or cancelled by this run.
-Only your descendants are inspectable/cancellable. You cannot choose another parent or memory identity.
-Execution fields are individually optional; omitted fields use this task kind's configured defaults, not the parent's model.
-After await, end this turn; the service resumes you with results. Do not poll or sleep waiting for children.
-Before ending a child task, complete freezes its summary and artifact bytes outside its workspace.
-Cancel stops execution; retained workspaces and history are reclaimed by context cleanup.
+{{"action":"available action name","input":{{"parameter":"value"}}}}
+Omit input for actions with no parameters. Only the actions listed below are available to this task.
+Their input schemas supply parameter names, types, defaults and constraints.
 Do not expose the control file or its contents, or include it in evidence. Only the root publishes externally.
 """
+            prompt += "\n".join(tool.instructions() for tool in tools) + "\n"
             prompt += memory_context.prompt
             yield TurnControl(prompt, control, memory_context)
         finally:
@@ -147,85 +243,86 @@ Do not expose the control file or its contents, or include it in evidence. Only 
             await writer.wait_closed()
 
     async def dispatch(self, task_id: str, action: str, payload: dict[str, Any]) -> Any:
-        store = self.agent.store
-        task = await to_thread.run_sync(store.task_request, task_id)
-        if task.kind in MEMORY_TASK_KINDS:
-            raise MemoryDenied("background memory jobs have no task control capability")
-        if action == "create":
-            child = await self.agent.create_subtask(task_id, SubtaskRequest.model_validate(payload))
-            return {
-                "task_id": child.task_id,
-                "context_key": child.context_key,
-                "spawned_by_task_id": child.spawned_by_task_id,
-                "status": await to_thread.run_sync(store.task_status, child.task_id),
-                "result": await to_thread.run_sync(store.subtask_result, child.task_id),
-                "inputs": child.metadata.get("inputs"),
-            }
-        if action == "inspect":
-            return [
-                {
-                    "task": item.model_dump(mode="json"),
-                    "result": await to_thread.run_sync(store.subtask_result, item.task_id),
-                    "inputs": (await to_thread.run_sync(store.task_request, item.task_id)).metadata.get("inputs"),
-                }
-                for item in await to_thread.run_sync(store.subtasks, task_id)
-            ]
-        if action in {"await", "cancel"}:
-            ids = payload.get("task_ids")
-            if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
-                raise ValueError("task_ids must be a nonempty list of descendant IDs")
-            descendants = {item.task_id for item in await to_thread.run_sync(store.subtasks, task_id)}
-            if not set(ids) <= descendants:
-                raise ValueError("task_ids must belong to this task's descendants")
-            if action == "await":
-                return await self.agent.wait_for_subtasks(task_id, ids)
-            for identity in ids:
-                await self.agent.cancel_subtask(identity)
-            return {"cancelled": ids}
-        if action == "complete":
-            completion = Completion.model_validate(payload)
-            return await to_thread.run_sync(self._freeze, task_id, completion)
-        if action.startswith("memory."):
-            task = await to_thread.run_sync(store.task_request, task_id)
-            return await to_thread.run_sync(functools.partial(self._memory, task, action, payload))
-        return await self.agent.plugin_control(task_id, action, payload)
+        task = await to_thread.run_sync(self.agent.store.task_request, task_id)
+        tool = self._task_tools(task).get(action)
+        if tool is None:
+            raise ValueError(f"unknown task action: {action}")
+        return await tool.invoke(task, payload)
 
-    def _memory(self, task, action: str, payload: dict[str, Any]) -> Any:
-        service = self.agent.memory
-        access = task.memory if self.agent.config.memory.enabled else MemoryAccess()
-        if action == "memory.search":
-            maximum = self.agent.config.memory.max_results_per_search
-            limit = payload.get("limit", maximum)
-            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-                raise ValueError("memory search limit must be a positive integer")
-            arguments: dict[str, Any] = {**payload, "limit": min(limit, maximum)}
-            notes = service.search(access, **arguments)
-            return [
-                {
-                    "id": note.id,
-                    "context_key": note.context_key,
-                    "title": note.title,
-                    "topics": list(note.topics),
-                    "body": search_excerpt(note.body, payload["query"]),
-                    "revision": note.revision,
-                }
-                for note in notes
-            ]
-        if action == "memory.read":
-            return service.read(access, **payload).to_dict()
-        if action == "memory.describe":
-            if payload:
-                raise ValueError("memory.describe takes no parameters")
-            return service.describe(access)
-        if action in {"memory.write", "memory.merge", "memory.delete"}:
-            raise MemoryDenied("model memory access is read-only; only the service commits background summaries")
-        raise ValueError(f"unknown memory action: {action}")
+    async def _create(self, task: AgentTask, request: SubtaskRequest) -> dict[str, Any]:
+        child = await self.agent.create_subtask(task.task_id, request)
+        store = self.agent.store
+        return {
+            "task_id": child.task_id,
+            "context_key": child.context_key,
+            "spawned_by_task_id": child.spawned_by_task_id,
+            "status": await to_thread.run_sync(store.task_status, child.task_id),
+            "result": await to_thread.run_sync(store.subtask_result, child.task_id),
+            "inputs": child.metadata.get("inputs"),
+        }
+
+    async def _inspect(self, task: AgentTask, request: EmptyInput) -> list[dict[str, Any]]:
+        store = self.agent.store
+        return [
+            {
+                "task": item.model_dump(mode="json"),
+                "result": await to_thread.run_sync(store.subtask_result, item.task_id),
+                "inputs": (await to_thread.run_sync(store.task_request, item.task_id)).metadata.get("inputs"),
+            }
+            for item in await to_thread.run_sync(store.subtasks, task.task_id)
+        ]
+
+    async def _check_descendants(self, task: AgentTask, ids: list[str]) -> None:
+        descendants = {item.task_id for item in await to_thread.run_sync(self.agent.store.subtasks, task.task_id)}
+        if not set(ids) <= descendants:
+            raise ValueError("task_ids must belong to this task's descendants")
+
+    async def _await(self, task: AgentTask, request: TaskIDs) -> dict[str, Any]:
+        await self._check_descendants(task, request.task_ids)
+        return await self.agent.wait_for_subtasks(task.task_id, request.task_ids)
+
+    async def _cancel(self, task: AgentTask, request: TaskIDs) -> dict[str, Any]:
+        await self._check_descendants(task, request.task_ids)
+        for identity in request.task_ids:
+            await self.agent.cancel_subtask(identity)
+        return {"cancelled": request.task_ids}
+
+    async def _complete(self, task: AgentTask, request: Completion) -> dict[str, Any]:
+        return await to_thread.run_sync(self._freeze, task.task_id, request)
+
+    async def _memory_search(self, task: AgentTask, request: MemorySearch) -> list[dict[str, Any]]:
+        maximum = self.agent.config.memory.max_results_per_search
+        notes = await to_thread.run_sync(
+            functools.partial(
+                self.agent.memory.search,
+                task.memory,
+                request.query,
+                topics=request.topics,
+                limit=min(request.limit if request.limit is not None else maximum, maximum),
+            )
+        )
+        return [
+            {
+                "id": note.id,
+                "context_key": note.context_key,
+                "title": note.title,
+                "topics": list(note.topics),
+                "body": search_excerpt(note.body, request.query),
+                "revision": note.revision,
+            }
+            for note in notes
+        ]
+
+    async def _memory_read(self, task: AgentTask, request: MemoryRead) -> dict[str, Any]:
+        source = await to_thread.run_sync(self.agent.memory.read, task.memory, request.source_id)
+        return source.to_dict()
+
+    async def _memory_describe(self, task: AgentTask, request: EmptyInput) -> dict[str, Any]:
+        return await to_thread.run_sync(self.agent.memory.describe, task.memory)
 
     def _freeze(self, task_id: str, completion: Completion) -> dict[str, Any]:
         store = self.agent.store
         task = store.task_request(task_id)
-        if task.spawned_by_task_id is None:
-            raise ValueError("only subtasks produce subtask results")
         context = store.get_context(task.context_key)
         if context is None or context.session_worktree is None:
             raise ValueError("task has no workspace")

@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import PluginsConfig
+from nyanpasu.control_tools import EmptyInput
 from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
@@ -145,7 +146,7 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     plugin.runtime = Mock(config=runtime)
     live = pr
     monkeypatch.setattr(importlib.import_module("nyanpasu_github_reviewer.plugin"), "_fetch_pr", lambda *args: live)
-    assert (await plugin.scope_control(task, "review-verify", {}))["source"] == review_source(inventory)
+    assert (await plugin.review_verify_control(task, EmptyInput()))["source"] == review_source(inventory)
 
     # Advancing the direct base leaves the effective diff and its evidence intact.
     git("checkout", "lower")
@@ -153,7 +154,7 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     git("add", ".")
     git("commit", "-m", "advance lower")
     live = pr.model_copy(update={"base_sha": git("rev-parse", "HEAD")})
-    assert (await plugin.scope_control(task, "review-verify", {}))["source"] == review_source(inventory)
+    assert (await plugin.review_verify_control(task, EmptyInput()))["source"] == review_source(inventory)
 
     # Rewriting the lower layer changes the upper diff without changing its head.
     git("checkout", "-B", "lower", trunk)
@@ -172,12 +173,12 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     with pytest.raises(ValueError, match="another inventory"):
         validate_plan(changed, plan.model_dump())
     with pytest.raises(ValueError, match="review range changed"):
-        await plugin.scope_control(task, "review-verify", {})
+        await plugin.review_verify_control(task, EmptyInput())
 
     # Retargeting to an equivalent ref must still re-establish eligibility/scope.
     live = pr.model_copy(update={"base_ref": "other"})
     with pytest.raises(ValueError, match="review range changed"):
-        await plugin.scope_control(task, "review-verify", {})
+        await plugin.review_verify_control(task, EmptyInput())
 
     git("checkout", "upper")
     (repo / "upper.txt").write_text("new upper\n")
@@ -187,7 +188,7 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     git("update-ref", "refs/pull/1/head", new_head)
     live = pr.model_copy(update={"head_sha": new_head})
     with pytest.raises(ValueError, match="review range changed"):
-        await plugin.scope_control(task, "review-verify", {})
+        await plugin.review_verify_control(task, EmptyInput())
 
 
 def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_path):
@@ -244,7 +245,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
     plugin = GitHubReviewerPlugin()
     plugin.runtime = Mock(config=config)
     plugin.state_store = agent.store
-    agent.add_task_control_handler(plugin.id, plugin.scope_control)
+    agent.add_task_control_tools(plugin.id, plugin.task_control_tools())
     agent.add_subtask_preparer(plugin.id, plugin.prepare_subtask)
     try:
         await agent.submit(task)
@@ -285,7 +286,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]
-        with pytest.raises(ValueError, match="root reviewer"):
+        with pytest.raises(ValueError, match="not available"):
             await agent.control.dispatch(child["task_id"], "review-scope", plan)
         with pytest.raises(ValueError, match="accepted files"):
             await agent.create_subtask(

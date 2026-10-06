@@ -77,16 +77,18 @@ class AgentTask(NyanpasuModel):
 class SubtaskRequest(NyanpasuModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    request_key: str = Field(min_length=1, max_length=200)
-    prompt: str = Field(min_length=1)
-    developer_instructions: str = ""
-    revision: str | None = None
-    purpose: str = "subtask"
+    request_key: str = Field(min_length=1, max_length=200, description="Stable purpose key for idempotent retries.")
+    prompt: str = Field(min_length=1, description="Self-contained child task request.")
+    developer_instructions: str = Field(default="", description="Child role and constraints.")
+    revision: str | None = Field(default=None, description="Optional pinned repository commit.")
+    purpose: str = Field(default="subtask", description="Role or purpose understood by the task's plugin.")
     kind: str = "subtask"
     execution: ExecutionOverride = Field(default_factory=ExecutionOverride)
-    memory_enabled: bool = True
+    memory_enabled: bool = Field(
+        default=True, description="Inherit the parent's authorized memory; false disables recall."
+    )
     workspace_mode: Literal["clone", "snapshot"] = "clone"
-    inputs: dict[str, Any] = Field(default_factory=dict)
+    inputs: dict[str, Any] = Field(default_factory=dict, description="Plugin-specific structured child inputs.")
 
 
 class ContextScope(NyanpasuModel):

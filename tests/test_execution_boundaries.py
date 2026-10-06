@@ -9,7 +9,7 @@ from nyanpasu.agent import AgentService
 from nyanpasu.backends import Backend, Backends
 from nyanpasu.config import NyanpasuConfig
 from nyanpasu.git_ops import WorktreeManager
-from nyanpasu.memory import MemoryAccess, MemoryDenied, MemoryNotFound
+from nyanpasu.memory import MemoryAccess
 from nyanpasu.models import AgentTask, TaskAction, TaskStatus
 from tests.session_source import MemorySessionSource
 from tests.test_agent import FakeCodex
@@ -171,25 +171,16 @@ async def test_disabled_memory_blocks_recovered_task_control_reads_and_writes(tm
 
     class Resumed(FakeCodex):
         async def run_turn(self, **kwargs):
-            assert await restarted.control.dispatch(saved.task_id, "memory.search", {"query": "knowledge"}) == []
-            assert await restarted.control.dispatch(saved.task_id, "memory.describe", {}) == {
-                "count": 0,
-                "domains": [],
-                "topics": [],
-                "summary_count": 0,
-            }
-            with pytest.raises(MemoryNotFound):
-                await restarted.control.dispatch(saved.task_id, "memory.read", {"source_id": source.id})
-            with pytest.raises(MemoryDenied):
-                await restarted.control.dispatch(
-                    saved.task_id,
-                    "memory.write",
-                    {"key": "new-fact", "title": "New fact", "body": "must not be saved"},
-                )
-            with pytest.raises(MemoryDenied):
-                await restarted.control.dispatch(
-                    saved.task_id, "memory.delete", {"source_id": source.id, "expected_revision": source.revision}
-                )
+            for action, payload in (
+                ("memory.search", {"query": "knowledge"}),
+                ("memory.describe", {}),
+                ("memory.read", {"source_id": source.id}),
+                ("memory.write", {"key": "new-fact", "title": "New fact", "body": "must not be saved"}),
+                ("memory.delete", {"source_id": source.id, "expected_revision": source.revision}),
+            ):
+                assert f'"action":"{action}"' not in kwargs["developer_instructions"]
+                with pytest.raises(ValueError, match="not available|unknown task action"):
+                    await restarted.control.dispatch(saved.task_id, action, payload)
             checked.append(kwargs["thread_id"])
             return await super().run_turn(**kwargs)
 

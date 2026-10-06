@@ -429,23 +429,30 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
                 async def call(action, payload):
                     return await asyncio.to_thread(call_control, control.file, {"action": action, "input": payload})
 
-                found = await call("memory.search", {"query": "", "limit": 1000})
-                assert {item["id"] for item in found} == (
-                    {shared.id, private.id} if actor.memory.read_domains else set()
-                )
-                assert all(len(item["body"]) <= 800 for item in found)
                 assert "BOB SUMMARY" not in control.prompt
                 if actor.memory.read_domains:
+                    found = await call("memory.search", {"query": "", "limit": 1000})
+                    assert {item["id"] for item in found} == {shared.id, private.id}
+                    assert all(len(item["body"]) <= 800 for item in found)
                     assert "ALICE SUMMARY" in control.prompt and "PUBLIC SUMMARY" in control.prompt
                     assert {entry.id for entry in control.memory_context.selected} == {
                         public_summary.id,
                         private_summary.id,
                     }
                     assert (await call("memory.read", {"source_id": private.id}))["body"] == private.body
-                with pytest.raises(ValueError, match="not found"):
-                    await call("memory.read", {"source_id": hidden.id})
+                    with pytest.raises(ValueError, match="not found"):
+                        await call("memory.read", {"source_id": hidden.id})
+                else:
+                    for action, payload in (
+                        ("memory.search", {"query": ""}),
+                        ("memory.read", {"source_id": hidden.id}),
+                        ("memory.describe", {}),
+                    ):
+                        assert f'"action":"{action}"' not in control.prompt
+                        with pytest.raises(ValueError, match="not available"):
+                            await call(action, payload)
                 for action in ("memory.write", "memory.merge", "memory.delete"):
-                    with pytest.raises(ValueError, match="read-only"):
+                    with pytest.raises(ValueError, match="unknown task action"):
                         await call(action, {"source_id": shared.id, "access": ALICE.to_dict()})
                 with pytest.raises(ValueError):
                     await call("memory.search", {"query": "", "domain": "private:bob"})

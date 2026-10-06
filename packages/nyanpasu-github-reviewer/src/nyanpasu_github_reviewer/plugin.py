@@ -12,7 +12,9 @@ from nyanpasu_github.gh import GitHubCommandError, GitHubSignatureError, gh_json
 from nyanpasu_github.instructions import instruction_documents_for_repo
 from nyanpasu_github.models import GitHubIntegrationConfig, github_integration_from_config
 from nyanpasu_github.workspace import pull_request_workspace_ref
+from pydantic import ConfigDict, RootModel
 
+from nyanpasu.control_tools import EmptyInput, ToolSpec
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.memory import MemoryAccess
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
@@ -56,6 +58,10 @@ if TYPE_CHECKING:
 PLUGIN_ID = "github_reviewer"
 
 
+class ReviewScopeInput(RootModel[ScopePlan | EmptyInput]):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+
 class GitHubReviewerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubReviewerConfig
@@ -81,7 +87,7 @@ class GitHubReviewerPlugin:
         self.state_store = StateStore(runtime.config.db_path)
         runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_subtask_preparer(self.id, self.prepare_subtask)
-        runtime.add_task_control_handler(self.id, self.scope_control)
+        runtime.add_task_control_tools(self.id, self.task_control_tools())
         # Plugin setup precedes task recovery and polling; reject old unscoped work
         # before any stored child can resume or be returned as an active retry.
         await asyncio.to_thread(self._validate_recovered_subtasks)
@@ -274,15 +280,48 @@ class GitHubReviewerPlugin:
             }
         )
 
-    async def scope_control(self, task: AgentTask, action: str, payload: dict[str, Any]) -> dict:
-        if action not in {"review-scope", "review-verify", "ci-refresh"} or task.spawned_by_task_id is not None:
-            raise ValueError("review-scope, review-verify and ci-refresh are only available to the root reviewer")
-        if action == "ci-refresh":
-            pr, snapshot = await asyncio.to_thread(self._refresh_ci, task)
-            return {"pull_request": pr.model_dump(mode="json"), "snapshot": ci_snapshot_data(snapshot)}
-        if action == "review-verify":
-            return await asyncio.to_thread(self._verify_review, task)
-        return await asyncio.to_thread(self._scope_control, task, payload)
+    def task_control_tools(self) -> tuple[ToolSpec[Any], ...]:
+        return (
+            ToolSpec(
+                "review-scope",
+                "Root reviewer: omit input to read the pinned Git inventory and current scope; "
+                "submit a complete plan covering each inventory path once to set the admission scope. "
+                "Use exact inventory path tokens. Scope freezes after review child dispatch.",
+                ReviewScopeInput,
+                self.review_scope_control,
+                self._root_tool_available,
+            ),
+            ToolSpec(
+                "review-verify",
+                "Root reviewer: immediately before review publication, verify current PR eligibility and the pinned "
+                "head, base ref and merge-base. This does not verify unchanged requirements or discussions.",
+                EmptyInput,
+                self.review_verify_control,
+                self._root_tool_available,
+            ),
+            ToolSpec(
+                "ci-refresh",
+                "Root reviewer: refresh current PR eligibility, head, CI failure instances and snapshot fingerprint "
+                "before acting or publishing CI evidence. A failed refresh does not establish recovery.",
+                EmptyInput,
+                self.ci_refresh_control,
+                self._root_tool_available,
+            ),
+        )
+
+    @staticmethod
+    def _root_tool_available(task: AgentTask) -> bool:
+        return task.spawned_by_task_id is None
+
+    async def review_scope_control(self, task: AgentTask, request: ReviewScopeInput) -> dict:
+        return await asyncio.to_thread(self._scope_control, task, request.root.model_dump())
+
+    async def review_verify_control(self, task: AgentTask, request: EmptyInput) -> dict:
+        return await asyncio.to_thread(self._verify_review, task)
+
+    async def ci_refresh_control(self, task: AgentTask, request: EmptyInput) -> dict:
+        pr, snapshot = await asyncio.to_thread(self._refresh_ci, task)
+        return {"pull_request": pr.model_dump(mode="json"), "snapshot": ci_snapshot_data(snapshot)}
 
     def _refresh_ci(self, task: AgentTask) -> tuple[PullRequestRef, CISnapshot]:
         assert self.config is not None
