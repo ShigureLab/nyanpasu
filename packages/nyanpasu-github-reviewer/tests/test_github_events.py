@@ -139,7 +139,7 @@ def test_issue_comment_review_command_triggers_explicit_review(action: str, body
     assert event.pr is not None and event.pr.number == 123
     assert review_trigger(event).explicit_request
     assert event.raw["nyanpasu"]["trigger"] == "review_command"
-    assert event.raw["nyanpasu"]["body_excerpt"] == body
+    assert review_trigger(event).body == body
 
 
 @pytest.mark.parametrize(

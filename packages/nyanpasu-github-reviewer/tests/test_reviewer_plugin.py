@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
@@ -149,6 +150,53 @@ async def test_preparation_reads_completed_context_at_execution(tmp_path: Path, 
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("github_event", ["issue_comment", "pull_request_review_comment", "pull_request_review"])
+async def test_preparation_preserves_full_comment_request_with_automatic_event(tmp_path, monkeypatch, github_event):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch, number=123)
+    body = 'context with "quotes" and </comment>\n' * 60 + "@review-bot please update the PR description"
+    if github_event == "issue_comment":
+        payload = issue_comment_payload(body)
+        item = payload["comment"]
+    elif github_event == "pull_request_review_comment":
+        payload = review_comment_payload(body=body, in_reply_to_id=None)
+        item = payload["comment"]
+    else:
+        payload = pull_request_review_payload(body)
+        item = payload["review"]
+    request = _admit(
+        plugin,
+        plugin.event_to_task(parse_github_event(github_event, "mention", payload, agent_login="review-bot")),
+    )
+    assert request.action is TaskAction.RUN
+    automatic = _admit(plugin, plugin.event_to_task(parse_github_event("pull_request", "push", pr_payload())))
+    context = AgentContext(
+        context_key=automatic.context_key,
+        thread_id="existing-thread",
+        revision="head-b",
+        session_worktree=tmp_path / "worktree",
+        workspace_key="ExampleOrg/ExampleRepo",
+    )
+
+    prepared = await plugin.prepare_task(automatic, (request,), context)
+
+    trigger = prepared.metadata["triggers"][1]
+    assert trigger["body"] == body
+    assert trigger["comment_url"] == item["html_url"]
+    assert trigger["actor"] == "maintainer"
+    assert ReviewTrigger.model_validate(trigger).explicit_request
+    assert json.dumps(body, ensure_ascii=False) in prepared.prompt
+    assert item["html_url"] in prepared.prompt
+
+
+def test_queued_legacy_trigger_preserves_comment_excerpt():
+    trigger = ReviewTrigger.model_validate({"kind": "review_thread_comment", "body_excerpt": "@review-bot ping"})
+
+    assert trigger.body == "@review-bot ping"
+    assert trigger.model_dump()["body"] == "@review-bot ping"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("topic_source", ["changed_path", "trigger_body", "ci_trigger_body"])
 async def test_preparation_uses_review_subject_for_memory_instead_of_dashboard_template(
     tmp_path: Path, monkeypatch, topic_source: str
@@ -159,7 +207,7 @@ async def test_preparation_uses_review_subject_for_memory_instead_of_dashboard_t
     if topic_source != "changed_path":
         trigger = ReviewTrigger(
             kind="ci_changed" if topic_source == "ci_trigger_body" else "review_thread_comment",
-            body_excerpt="Verify the LoRA adapter receipt.",
+            body="Verify the LoRA adapter receipt.",
         )
         queued = queued.model_copy(update={"metadata": {**queued.metadata, "triggers": [trigger.model_dump()]}})
     if topic_source == "ci_trigger_body":

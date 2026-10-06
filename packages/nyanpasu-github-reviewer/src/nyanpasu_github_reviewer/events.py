@@ -57,7 +57,6 @@ def _comment_context(payload: dict[str, Any], *, trigger: str, summary: str) -> 
     comment = payload.get("comment")
     if not isinstance(comment, dict):
         comment = {}
-    body = str(comment.get("body") or "")
     user_raw = comment.get("user")
     user = user_raw if isinstance(user_raw, dict) else {}
     return _with_nyanpasu_context(
@@ -67,7 +66,6 @@ def _comment_context(payload: dict[str, Any], *, trigger: str, summary: str) -> 
         actor=str(user.get("login") or ""),
         comment_url=str(comment.get("html_url") or comment.get("url") or ""),
         comment_id=comment.get("id"),
-        body_excerpt=body.strip()[:1200],
         path=str(comment.get("path") or ""),
         line=comment.get("line") or comment.get("original_line"),
         in_reply_to_id=comment.get("in_reply_to_id"),
@@ -97,7 +95,6 @@ def _review_context(payload: dict[str, Any], *, trigger: str, summary: str) -> d
     review = payload.get("review")
     if not isinstance(review, dict):
         review = {}
-    body = str(review.get("body") or "")
     user = review.get("user")
     if not isinstance(user, dict):
         user = {}
@@ -107,7 +104,6 @@ def _review_context(payload: dict[str, Any], *, trigger: str, summary: str) -> d
         trigger_summary=summary,
         actor=str(user.get("login") or ""),
         comment_url=str(review.get("html_url") or ""),
-        body_excerpt=body.strip()[:1200],
         pull_request_review_id=review.get("id"),
     )
 

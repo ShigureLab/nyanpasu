@@ -877,18 +877,27 @@ def list_pull_request_timeline_with_gh(
     pr_number: int,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for page in range(1, config.poll_event_pages + 1):
-        path = f"repos/{repo}/issues/{pr_number}/timeline?per_page=100&page={page}"
-        proc = run_gh(
-            ["api", "-X", "GET", "-H", "Accept: application/vnd.github+json", path],
-            env=config.gh_env,
-        )
-        data = json.loads(proc.stdout)
-        if not isinstance(data, list):
-            raise ValueError("gh timeline returned non-list JSON")
-        items.extend(item for item in data if isinstance(item, dict))
-        if len(data) < 100:
-            break
+    # The issue timeline omits inline review comments and their replies.
+    sources = (
+        (f"repos/{repo}/issues/{pr_number}/timeline", ""),
+        (f"repos/{repo}/pulls/{pr_number}/comments?sort=updated&direction=desc", "line-commented"),
+    )
+    for endpoint, event_type in sources:
+        separator = "&" if "?" in endpoint else "?"
+        for page in range(1, config.poll_event_pages + 1):
+            path = f"{endpoint}{separator}per_page=100&page={page}"
+            proc = run_gh(
+                ["api", "-X", "GET", "-H", "Accept: application/vnd.github+json", path],
+                env=config.gh_env,
+            )
+            data = json.loads(proc.stdout)
+            if not isinstance(data, list):
+                raise ValueError(f"gh {endpoint} returned non-list JSON")
+            items.extend(
+                item | {"event": event_type} if event_type else item for item in data if isinstance(item, dict)
+            )
+            if len(data) < 100:
+                break
     return items
 
 

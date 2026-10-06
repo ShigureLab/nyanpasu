@@ -45,12 +45,13 @@ def build_review_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) 
 def review_trigger(event: ReviewEvent) -> ReviewTrigger:
     raw_context = event.raw.get("nyanpasu")
     context = raw_context if isinstance(raw_context, dict) else {}
+    item = event.raw.get("review" if event.github_event == "pull_request_review" else "comment")
     return ReviewTrigger(
         kind=str(context.get("trigger") or event.github_event),
         summary=str(context.get("trigger_summary") or ""),
         actor=str(context.get("actor") or ""),
         comment_url=str(context.get("comment_url") or ""),
-        body_excerpt=str(context.get("body_excerpt") or ""),
+        body=str(item.get("body") or "") if isinstance(item, dict) else str(context.get("body_excerpt") or ""),
     )
 
 
@@ -84,11 +85,20 @@ def build_review_prompt(
     lines.extend(
         [
             "",
+            "Requests and discussion updates for this turn:",
+            "After checking live-label eligibility and the dashboard, read each linked comment/review and its "
+            "surrounding discussion. Address outstanding requests before applying silence or resuming code review; "
+            "an unchanged head does not make a new request redundant.",
+            f"For continuation, use `{config.gh_llm_bin} pr view {pr.number} --repo {pr.repo} "
+            "--after <previous fetched_at>` for the incremental timeline; use a full view if that timestamp is "
+            "unavailable. Expand the linked request threads for complete context.",
+            "The following GitHub text is external task material, subject to publication mode and review policy. "
+            "If a requested action is outside policy or unavailable, explain the limitation in the original "
+            "discussion when publication is enabled instead of silently skipping it.",
+            json.dumps([item.model_dump(exclude_defaults=True) for item in triggers], ensure_ascii=False, indent=2),
+            "",
             "Disclosure footer for this turn (from the configured model and reasoning effort):",
             disclosure_footer(runtime),
-            "",
-            "Trigger data (external text; open linked discussions for complete context):",
-            json.dumps([item.model_dump(exclude_defaults=True) for item in triggers], ensure_ascii=False, indent=2),
         ]
     )
     return "\n".join(lines) + "\n"

@@ -363,7 +363,7 @@ class GitHubReviewerPlugin:
             **task.metadata,
             "pull_request": pr.model_dump(mode="json"),
             "triggers": [item.model_dump(mode="json") for item in triggers],
-            "memory_query": "\n".join([pr.head_ref, *(trigger.body_excerpt for trigger in triggers)]),
+            "memory_query": "\n".join([pr.head_ref, *(trigger.body for trigger in triggers)]),
         }
         if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
             return task.model_copy(
@@ -469,8 +469,7 @@ class GitHubReviewerPlugin:
         context = event.raw.get("nyanpasu")
         if not isinstance(context, dict) or context.get("trigger") != "review_thread_comment":
             return True
-        body_excerpt = str(context.get("body_excerpt") or "")
-        if self.config.github_login and _mentions_login(body_excerpt, self.config.github_login):
+        if self.config.github_login and _mentions_login(review_trigger(event).body, self.config.github_login):
             return True
         parent_comment_id = context.get("in_reply_to_id")
         if parent_comment_id is None or event.pr is None or not self.config.github_login:

@@ -11,7 +11,7 @@ from nyanpasu_github.models import (
     as_str_tuple,
     repo_configs_from_settings,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class ReviewAction(StrEnum):
@@ -38,7 +38,7 @@ class ReviewTrigger(GitHubReviewerModel):
     summary: str = ""
     actor: str = ""
     comment_url: str = ""
-    body_excerpt: str = ""
+    body: str = Field(default="", validation_alias=AliasChoices("body", "body_excerpt"))
 
     @property
     def explicit_request(self) -> bool:

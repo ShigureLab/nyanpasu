@@ -19,6 +19,7 @@ from nyanpasu_github_reviewer.poller import (
     GitHubEventsPoller,
     event_from_pr_timeline_item,
     event_from_repo_event,
+    list_pull_request_timeline_with_gh,
     list_pull_requests_with_gh,
 )
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
@@ -270,6 +271,72 @@ def _snapshot_from_test_pr() -> PullRequestSnapshot:
         created_at="2026-05-30T09:59:00Z",
         updated_at="2026-05-30T10:00:00Z",
     )
+
+
+@pytest.mark.anyio
+async def test_poll_collects_inline_requests_missing_from_issue_timeline(tmp_path, monkeypatch):
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    agent = FakeAgent()
+    pull = _pull_request_api_item()
+    comment = _timeline_review_comment_item("@review-bot please update the PR description")
+    comment.pop("event")
+    comments = []
+    calls = []
+
+    def github(args, **kwargs):
+        path = urlparse(args[-1])
+        calls.append(path.path)
+        data = comments if path.path.endswith("/comments") else []
+        return SimpleNamespace(stdout=json.dumps(data))
+
+    monkeypatch.setattr("nyanpasu_github_reviewer.poller.run_gh", github)
+    poller = GitHubEventsPoller(
+        _config(tmp_path),
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [],
+        list_pull_requests=lambda *_: [pull],
+    )
+    await poller.run_once()
+    for updated_at in ("2026-05-30T10:05:00Z", "2026-05-30T10:10:00Z"):
+        comments[:] = [comment | {"updated_at": updated_at}]
+        pull["updated_at"] = updated_at
+        assert (await poller.run_once()).submitted == 1
+        assert (await poller.run_once()).submitted == 0
+
+    assert "repos/ExampleOrg/ExampleRepo/pulls/1/comments" in calls
+    assert len(agent.events) == 2
+    assert all(event.github_event == "pull_request_review_comment" for event in agent.events)
+    assert all(event.raw["comment"]["body"] == comment["body"] for event in agent.events)
+    assert all(event.raw["nyanpasu"]["comment_url"] == comment["html_url"] for event in agent.events)
+
+
+@pytest.mark.parametrize("paginated_source", ["timeline", "comments"])
+def test_timeline_reader_paginates_both_comment_sources(tmp_path, monkeypatch, paginated_source):
+    calls = []
+
+    def github(args, **kwargs):
+        path = urlparse(args[-1])
+        source = path.path.rsplit("/", 1)[-1]
+        page = int(parse_qs(path.query)["page"][0])
+        calls.append((source, page))
+        if source == paginated_source and page == 1:
+            data = [{"id": index, "body": str(index)} for index in range(100)]
+        elif source == paginated_source:
+            data = [{"id": 100, "body": "last page"}]
+        else:
+            data = []
+        return SimpleNamespace(stdout=json.dumps(data))
+
+    monkeypatch.setattr("nyanpasu_github_reviewer.poller.run_gh", github)
+    items = list_pull_request_timeline_with_gh(_config(tmp_path), "ExampleOrg/ExampleRepo", 1)
+
+    assert len(items) == 101
+    assert items[-1]["id"] == 100
+    assert (paginated_source, 2) in calls
+    assert {source for source, _ in calls} == {"timeline", "comments"}
+    if paginated_source == "comments":
+        assert all(item["event"] == "line-commented" for item in items)
 
 
 @pytest.mark.anyio
