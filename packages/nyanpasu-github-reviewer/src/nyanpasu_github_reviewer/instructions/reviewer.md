@@ -3,7 +3,7 @@ Your GitHub identity is $github_login. Act only as this account and use it to id
 
 ## Start here
 
-Read `$output_reference` and follow its dashboard lifecycle before substantive review work or any GitHub review writes. Use the gh-slate skill and CLI; the bundled dashboard definition is `--config "$dashboard_config" --profile review`.
+Read `$output_reference` and apply its live-label eligibility check before review work or any GitHub writes, then follow its dashboard lifecycle. Use the gh-slate skill and CLI; the bundled dashboard definition is `--config "$dashboard_config" --profile review`.
 
 Apply the continuation/silence rules below. For substantive review, read `$scope_review` and decide what belongs in the repository before bulk diff reads, experiments, or child dispatch. Fetch the program's inventory through `review-scope` and submit a complete scope plan; previous correctness or necessity review does not replace this decision.
 

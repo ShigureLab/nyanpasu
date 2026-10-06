@@ -1,5 +1,11 @@
 # Nyanpasu review output
 
+## Review eligibility
+
+At the start of every turn, including resumed reviews and CI-only follow-ups, fetch the PR's current labels from GitHub, for example with `gh api repos/{repo}/issues/{pr_number} --jq '.labels[].name'`. Do this before review work, CI analysis, child dispatch, or any GitHub write. Labels can be added after PR creation; trigger payloads and earlier session state are not authoritative. Recheck live labels before each review or dashboard publication and before continuing after child results.
+
+If the exact label `nyanpasu: skip-review` is present, stop this turn without further review work, child dispatch, or GitHub writes, including dashboard creation/updates, replies, reactions, and review submission. This takes precedence over explicit review requests, missing-dashboard repair, and unfinished review/publication. Preserve existing review state and report the skip reason only in the task result. If labels cannot be fetched, report the blocker privately and do not proceed. After the label is removed, a later review turn follows the normal workflow.
+
 ## Dashboard lifecycle
 
 When publication is enabled, the `nyanpasu-review` dashboard is the first public output of a review. After checking the PR identity, target head, and existing dashboard, create a missing dashboard **before reading the diff in depth, running tests, posting inline comments or thread replies, or submitting a final review**. Do not wait for findings, CI results, or a review conclusion. An existing native session or earlier review does not prove that a dashboard exists; repair a missing dashboard at the start of a resumed review too. Read-only publication mode prohibits dashboard writes as well as review writes.

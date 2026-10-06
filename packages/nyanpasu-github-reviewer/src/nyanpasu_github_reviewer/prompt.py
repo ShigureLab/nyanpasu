@@ -71,7 +71,7 @@ def build_review_prompt(
         f"Base branch: {pr.base_ref}; head branch: {pr.head_ref}",
         f"Worktree: {worktree}",
         f"Publication mode: {publication_mode(config)}.",
-        f"Start here (dashboard first): {INSTRUCTIONS_DIR / 'review-output.md'}",
+        f"Start here (eligibility, then dashboard): {INSTRUCTIONS_DIR / 'review-output.md'}",
         f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
     ]
     if previous_task_head:
@@ -131,6 +131,7 @@ def build_ci_followup_prompt(
                 f"{'Continue the' if has_session else 'Handle the'} CI follow-up for {pr.repo} PR #{pr.number}: {pr.url}",
                 f"Current PR head: {pr.head_sha}; base branch: {pr.base_ref}",
                 f"Publication mode: {publication_mode(config)}.",
+                f"Start here (eligibility): {INSTRUCTIONS_DIR / 'review-output.md'}",
                 "This turn handles CI only; preserve existing review conclusions, coverage, findings, and source.",
                 f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
                 "Refresh CI before acting and immediately before publishing with task-control action ci-refresh.",

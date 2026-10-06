@@ -2,6 +2,8 @@
 
 Use this workflow for current CI failures during review and for dedicated CI follow-ups. A dedicated follow-up handles CI only; an ordinary review continues its code review responsibilities alongside the CI child. Respect the identity, publication mode, and language supplied for the current turn.
 
+First read and apply the Review eligibility section in `review-output.md` beside this file, including its live-label check before CI analysis, child dispatch, dashboard writes, and continuation after child results.
+
 CI updates do not reopen code review, require a scope inventory, or change an existing review decision. Preserve the dashboard's review `status`, `source`, `summary`, `stages`, `scope`, `simplification`, and `findings`. Only the parent writes the optional `ci` section of the existing `nyanpasu-review` dashboard. Do not submit reviews or post inline findings, replies, or separate CI comments from this follow-up.
 
 ## Observe and delegate
