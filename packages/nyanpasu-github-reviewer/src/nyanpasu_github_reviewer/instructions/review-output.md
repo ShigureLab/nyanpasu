@@ -16,6 +16,8 @@ Verify that the dashboard exists and record its comment URL before substantive r
 
 For an existing dashboard, retain stable finding IDs and published canonical thread URLs, including resolved and superseded findings. Before a substantive new review round, update its status to `reviewing` and copy the current pinned `source`. When its inventory ID changes, reset the stage summaries to the new round's actual coverage, even if the head is unchanged; old completion is not evidence for a different comparison range. Follow the reviewer's continuation and silence rules; neither a missing initial dashboard nor unfinished publication qualifies for silence. Reuse the embedded definition; select the bundled profile on the next warranted update if the existing definition differs, adding stages based on verified coverage rather than inventing past results. Use the observed revision for every update.
 
+After a gh-slate upgrade, an older saved render can fail `state verify` with `rerender_mismatch` without visible edits. Inspect the saved data and dry-run with the current bundled profile; adopt it only when an update is warranted, then verify the resulting state.
+
 On that warranted update, old deep completion without necessity evidence must be reassessed, not copied into the new definition. Carry forward applicable recorded decisions only after checking their scope against the current head; reset unreviewed production/test scope to pending or running. A policy upgrade alone does not warrant unsolicited re-review or publication on an otherwise unchanged PR.
 
 ### Repository admission before deep review

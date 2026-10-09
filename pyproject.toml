@@ -40,6 +40,7 @@ nyanpasu = "nyanpasu.__main__:app"
 
 [dependency-groups]
 dev = [
+  "gh-slate>=0.1.2",
   "httpx>=0.28.1",
   "jsonschema>=4.26.0",
   "nyanpasu-github",

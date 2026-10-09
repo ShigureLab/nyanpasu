@@ -11,7 +11,7 @@
 
 **目标分支：** {% if meta.repository %}<a href="{{ meta.repository.url }}/tree/{{ data.source.base_ref }}">{{ data.source.base_ref }}</a>{% else %}{{ data.source.base_ref }}{% endif %}
 
-{{ data.summary }}
+{{ data.summary | md_body }}
 
 {% if data.stages is defined -%}
 <table>
@@ -23,7 +23,7 @@
 <tr>
 <td nowrap valign="top">{{ label }}</td>
 <td nowrap valign="top">{{ stage_states[data.stages[key].status] }}</td>
-<td valign="top">{{ data.stages[key].summary }}</td>
+<td valign="top">{{ data.stages[key].summary | md_body }}</td>
 </tr>
 {% endfor -%}
 </tbody>
@@ -44,9 +44,9 @@
 {% for id, failure in data.ci.failures | dictsort_natural -%}
 <tr>
 <td valign="top">{{ failure.name | md_link(failure.url) }}</td>
-<td valign="top">{{ failure.summary }}</td>
-<td valign="top">{% if failure.evidence is defined %}{{ failure.evidence }}{% else %}待确认{% endif %}</td>
-<td valign="top">{% if failure.next_step is defined %}{{ failure.next_step }}{% else %}待分析{% endif %}</td>
+<td valign="top">{{ failure.summary | md_body }}</td>
+<td valign="top">{% if failure.evidence is defined %}{{ failure.evidence | md_body }}{% else %}待确认{% endif %}</td>
+<td valign="top">{% if failure.next_step is defined %}{{ failure.next_step | md_body }}{% else %}待分析{% endif %}</td>
 </tr>
 {% endfor -%}
 </tbody>
@@ -112,9 +112,9 @@
 <tr>
 <td valign="top">{% for path in group.files %}{{ path | md_code }}<br>{% endfor %}</td>
 <td nowrap valign="top">{{ scope_decisions[group.decision] }}</td>
-<td valign="top">{{ group.reason }}</td>
-<td valign="top">{{ group.source }}</td>
-<td valign="top">{{ group.alternative }}</td>
+<td valign="top">{{ group.reason | md_body }}</td>
+<td valign="top">{{ group.source | md_body }}</td>
+<td valign="top">{{ group.alternative | md_body }}</td>
 </tr>
 {% endfor -%}
 </tbody>
@@ -136,7 +136,7 @@
 <tr>
 <td nowrap valign="top">{{ label }}</td>
 <td nowrap valign="top">{{ stage_states[data.simplification[key].status] }}</td>
-<td valign="top">{{ data.simplification[key].summary }}</td>
+<td valign="top">{{ data.simplification[key].summary | md_body }}</td>
 </tr>
 {% endfor -%}
 </tbody>
@@ -154,11 +154,11 @@
 <tbody>
 {% for entry in audit.entries -%}
 <tr>
-<td valign="top">{{ entry.scope }}</td>
-<td valign="top">{{ entry.contract }}</td>
-<td valign="top">{{ entry.alternative }}</td>
+<td valign="top">{{ entry.scope | md_body }}</td>
+<td valign="top">{{ entry.contract | md_body }}</td>
+<td valign="top">{{ entry.alternative | md_body }}</td>
 <td nowrap valign="top">{{ decisions[entry.decision] }}</td>
-<td valign="top">{{ entry.evidence }}</td>
+<td valign="top">{{ entry.evidence | md_body }}</td>
 </tr>
 {% endfor -%}
 </tbody>
