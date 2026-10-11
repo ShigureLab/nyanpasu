@@ -20,6 +20,7 @@ from nyanpasu_github.workspace import branch_workspace_ref
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.models import TaskAction
 from nyanpasu_github_pr_maker.followup import GitHubPrMakerFollowUpPoller
+from nyanpasu_github_pr_maker.memory import PR_MAKER_MEMORY_POLICY
 from nyanpasu_github_pr_maker.models import (
     CreatePullRequestTaskRequest,
     GitHubPrMakerConfig,
@@ -45,6 +46,7 @@ PLUGIN_ID = "github_pr_maker"
 class GitHubPrMakerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubPrMakerConfig
+    memory_policies = {"github_pr_maker.create": PR_MAKER_MEMORY_POLICY}
 
     def __init__(self) -> None:
         self.config: GitHubPrMakerConfig | None = None

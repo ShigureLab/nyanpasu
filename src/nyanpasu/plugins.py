@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.control_tools import ToolSpec
+    from nyanpasu.memory_consolidation import MemoryPolicy
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
 SubtaskPreparer = Callable[[AgentTask, SubtaskRequest], Awaitable[SubtaskRequest]]
@@ -48,6 +49,8 @@ class PluginRuntime(Protocol):
 
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None: ...
 
+    def add_memory_policy(self, plugin_id: str, task_kind: str, policy: MemoryPolicy) -> None: ...
+
 
 class PluginRegistry:
     def __init__(self, plugins: dict[str, NyanpasuPlugin] | None = None) -> None:
@@ -70,7 +73,15 @@ class PluginManager:
         self.registry = registry or discover_plugins()
         self.enabled: list[NyanpasuPlugin] = []
 
+    def register_memory_policies(self) -> None:
+        """Register static policies without starting plugin pollers or external integrations."""
+        for plugin_id in self.config.enabled_plugin_ids:
+            plugin = self.registry.get(plugin_id)
+            for kind, policy in getattr(plugin, "memory_policies", {}).items():
+                self.runtime.add_memory_policy(plugin_id, kind, policy)
+
     async def setup(self) -> None:
+        self.register_memory_policies()
         for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
             raw_config = self.config.plugins.settings.get(plugin_id, {})

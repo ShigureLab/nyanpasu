@@ -18,10 +18,29 @@ BLOCK_LIMIT = 8_000
 
 
 @dataclass(frozen=True)
+class MemoryPolicy:
+    extraction: str
+    summary: str
+
+
+DEFAULT_MEMORY_POLICY = MemoryPolicy(
+    extraction="""Retain new user requirements, important technical decisions and their reasons,
+verified failure causes and remedies, and unresolved questions that affect future work.
+Explain the problem, cause, decision, applicability, and supporting evidence.
+Keep task-local requirements local unless the human explicitly gives them broader scope.
+Do not write a task diary or retain routine completion and operational bookkeeping.""",
+    summary="""Identify the context and its substantive technical subject. Retain the most useful
+decisions, human corrections, verified mechanisms, and applicable conditions, with detail links.
+Use concrete domain terms that help future tasks find this account. Do not summarize execution status.""",
+)
+
+
+@dataclass(frozen=True)
 class SourceEvidence:
     task_id: str
     source_order: float
     chunks: list[list[dict[str, Any]]]
+    policy: MemoryPolicy = DEFAULT_MEMORY_POLICY
 
     @property
     def digest(self) -> str:
@@ -46,7 +65,7 @@ def extraction_batches(
     for index, source in enumerate(sources):
         size = sum(len(json.dumps(item, ensure_ascii=False)) for item in source.records)
         separate = len(source.chunks) > 1 or source.task_id == resume_task_id or (compacting and index == 0)
-        if batch and (separate or used + size > EVIDENCE_BUDGET):
+        if batch and (separate or used + size > EVIDENCE_BUDGET or source.policy != batch[0].policy):
             batches.append(batch)
             batch, used = [], 0
         if separate or size > EVIDENCE_BUDGET:
@@ -61,7 +80,11 @@ def extraction_batches(
 
 def batch_chunks(batch: list[SourceEvidence]) -> list[list[dict[str, Any]]]:
     if len(batch) == 1:
-        return batch[0].chunks
+        source = batch[0]
+        return [
+            [{**item, "source_task_id": source.task_id, "source_order": source.source_order} for item in chunk]
+            for chunk in source.chunks
+        ]
     return _partition([item for source in batch for item in source.records])
 
 
@@ -128,6 +151,7 @@ def evidence_chunks(source_id: str, source_prompt: str, evidence: list[dict[str,
             "kind": "request",
             "title": "Source task request",
             "reference": f"task:{source_id}",
+            "origin": "service_request",
             "blocks": [source_prompt],
         },
         *evidence,
@@ -146,6 +170,7 @@ def evidence_chunks(source_id: str, source_prompt: str, evidence: list[dict[str,
                         "title": item.get("title", ""),
                         "state": item.get("state"),
                         "reference": item["reference"],
+                        "origin": item.get("origin", "native"),
                         "block_index": block_index,
                         "offset": start,
                         "text": text[start : start + BLOCK_LIMIT],
@@ -203,6 +228,7 @@ def extraction_prompt(
     context_key: str,
     context_generation: int,
     source_order: float,
+    policy: MemoryPolicy = DEFAULT_MEMORY_POLICY,
 ) -> str:
     account = (
         {
@@ -238,32 +264,24 @@ late extraction of an older task must not undo a later verified correction.
 Retained_memory chunks are existing memory being compacted after an upgrade, not
 new independent evidence. Preserve their useful content and qualifications.
 
-Retain source-grounded knowledge that can improve a future task's decisions or execution.
-Prioritize substantive human feedback and corrections: what was mistaken, why it
-matters, what to do or check instead, and the conditions and evidence supporting the
-lesson. Preserve useful procedures, design rationale, diagnostic clues, verified
-failure modes, and rejected hypotheses when they inform future decisions. Keep
-concrete methods and relevant source URLs or paths instead of vague advice.
-Preserve distinctions and qualifiers in the evidence: a criticism of one special-purpose
-mechanism must not become a prohibition on the broader capability it belongs to.
+Apply this task type's retention policy to both the old account and new evidence:
+{policy.extraction}
 
-Routine requests, successful completion, approvals, unchanged follow-ups, commit
-hashes, and dashboard or publication bookkeeping do not merit retention on their own.
-If these are all that the previous account and current evidence contain, return an
-empty body and empty topics. Do not write a status recap or invent a lesson to fill
-the account. An unchanged chunk with no new learning should preserve any earlier
-useful lessons without adding another no-op record.
-Keep only the detail needed to explain a lesson, its applicability, or unresolved
-work. Preserve distinct task scopes, material corrections in order, and failed or
-unfinished work and uncertainty when future action depends on them. Later routine
-status must not erase useful evidence or lessons from earlier chunks.
-
-Keep human feedback attributed and distinguish expressed expectations from verified
-technical claims. Keep concrete user instructions with their task; promote a
-preference beyond that task only when the user explicitly stated that broader scope.
-Other agents' plans, interpretations and success claims are not evidence of user
-approval or of execution. Distinguish actual tool results from assistant proposals.
-Memory retrieved by the source task is background material, not new independent evidence.
+Discard fixed task instructions, configured instruction documents, tool usage guides,
+routine execution workflow, approvals, unchanged follow-ups, and publication bookkeeping.
+Keep only independently useful knowledge absent from those recurring instructions.
+A human's NEW correction about how to work can be useful even when it concerns workflow;
+the service's already-supplied workflow is not new human feedback.
+Service_request records and native user inputs can contain generated task prompts;
+their role alone does not establish a human preference or human authorship.
+Distinguish source-attributed human opinions, code/tool-verified facts, and assistant hypotheses.
+Preserve the rationale, scope, evidence URLs, and uncertainty of each useful conclusion.
+Do not invent missing identities, reasons, or source links. Keep narrow corrections narrow.
+Retrieved or injected memory is background, not independent evidence; quoting it again
+must not reinforce it. Assistant proposals and success claims do not prove execution.
+When new evidence adds no substantive knowledge, preserve useful earlier content without
+adding a status paragraph. Remove low-value content already present in the old account.
+Return empty body and topics if nothing useful remains; do not invent a lesson to fill space.
 
 Use a concise title and a Markdown body of at most {SOURCE_BODY_MAX_CHARS} characters. Topics are
 retrieval labels. Return only title, body, and topics; the service records input
@@ -282,6 +300,7 @@ def summary_prompt(
     context_key: str,
     context_generation: int,
     size_feedback: str | None = None,
+    policy: MemoryPolicy = DEFAULT_MEMORY_POLICY,
 ) -> str:
     return f"""Update the compact memory summary for this one context from its previous summary and next source accounts.
 Return only the JSON required by the output schema. Do not run tools, modify files,
@@ -290,22 +309,17 @@ Large accounts may arrive in consecutive parts with the same id and increasing o
 The summary is automatically provided to future tasks alongside other relevant summaries.
 It must remain a small overview, not grow into a task-by-task history.
 
-Write a short Markdown heading identifying the context, then prioritize lessons
-that improve future decisions: substantive human feedback, corrected assumptions,
-concrete methods, design rationale, and verified failure modes with their applicable
-conditions. Preserve why a lesson matters and how to apply it, not just that a task
-was reviewed or completed. Keep unresolved work and uncertainty when future action
-depends on them. Routine approvals, no-op updates, hashes, and dashboard bookkeeping
-must not displace useful lessons; retain such detail only when it explains a lesson
-or its scope. Identify a revision or date only when a conclusion depends on it.
-Keep the causal mechanism and limiting conditions when compressing a lesson; do not
-turn a narrow correction into a blanket restriction or blur distinct technical concepts.
+Apply this task type's summary policy:
+{policy.summary}
 
-No-op follow-ups and later completion must preserve earlier applicable lessons.
-A repair attempt does not resolve a problem until evidence verifies it. Do not turn
-a newer observation into proof that an older one was wrong, human feedback into
-verified technical fact, or a task-specific choice into a global rule. Plans and
-other assistants' claims are not verified results.
+Write a short Markdown heading identifying the context. Preserve technical identity,
+causal mechanisms, human attribution, limiting conditions, and useful search terms.
+Discard fixed instructions, execution workflow, approval/publication status, and no-op updates.
+Later routine status must not replace earlier technical substance or human feedback.
+Human feedback is an expressed expectation, not automatically a verified technical fact.
+Plans, assistant claims, and repeated retrieved memory are not independent evidence.
+A verified correction should replace the corresponding mistaken conclusion while retaining
+any useful reason or qualification; do not turn task-local choices into global rules.
 
 Rewrite and compress the entire summary on every update: merge repeated observations
 and remove low-value detail, while keeping qualifications and supporting references.

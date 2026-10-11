@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from enum import Enum
 
     from nyanpasu.control_tools import ToolSpec
+    from nyanpasu.memory_consolidation import MemoryPolicy
     from nyanpasu.models import TaskRunResult
     from nyanpasu.transcript.history import SessionSource
 
@@ -47,6 +48,8 @@ class AgentBackend(Protocol):
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
 
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None: ...
+
+    def add_memory_policy(self, plugin_id: str, task_kind: str, policy: MemoryPolicy) -> None: ...
 
 
 class WebPluginRuntime:
@@ -82,6 +85,9 @@ class WebPluginRuntime:
 
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
         self.agent.add_task_control_tools(plugin_id, tools)
+
+    def add_memory_policy(self, plugin_id: str, task_kind: str, policy: MemoryPolicy) -> None:
+        self.agent.add_memory_policy(plugin_id, task_kind, policy)
 
 
 def create_app(

@@ -207,3 +207,42 @@ def test_rebuild_all_uses_complete_publications_even_when_empty_or_a_newer_draft
         assert [(item["id"], item["body"]) for item in accounts] == [(original.id, original.body)]
         assert summary.source_revisions == {original.id: original.content_revision}
         assert agent.memory.read(PUBLIC, original.id).revision == original.revision
+
+
+@pytest.mark.parametrize("all_contexts", [False, True])
+def test_fresh_command_uses_plugin_policy_and_original_history(tmp_path, monkeypatch, all_contexts):
+    import anyio
+
+    from tests.test_hybrid_memory import ALICE
+    from tests.test_memory_producer import batched_agent
+    from tests.test_rolling_memory import CONTEXT, continuing_task
+
+    model = MemoryModel()
+    agent = batched_agent(tmp_path, model, count=2)
+    config = agent.config.model_copy(
+        update={"plugins": agent.config.plugins.model_copy(update={"enabled": ("github_reviewer",)})}
+    )
+
+    async def record_sources():
+        for name in ["first", "second"]:
+            await agent.run_now(
+                continuing_task(name).model_copy(
+                    update={"kind": "github_reviewer.review", "metadata": {"plugin_id": "github_reviewer"}}
+                )
+            )
+        await agent.shutdown()
+
+    anyio.run(record_sources)
+    old = publish_source(agent.memory, ALICE, "second", context_key=CONTEXT, body="OLD STATUS GARBAGE")
+    publish_summary(agent.memory, ALICE, f"Old [status](memory:{old.id})", context_key=CONTEXT)
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+    monkeypatch.setattr(cli, "AgentService", lambda _: agent)
+    args = ["memory-rebuild", "--all" if all_contexts else "second", "--fresh"]
+    result = CliRunner().invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert (payload[0] if all_contexts else payload)["status"] == "completed"
+    assert model.events[0][1]["previous_account"] is None
+    assert "OLD STATUS GARBAGE" not in json.dumps(model.events)
+    assert {item["source_task_id"] for item in model.events[0][1]["evidence"]} == {"first", "second"}
+    assert agent.memory.snapshot_context(ALICE, CONTEXT, 1).summary.stale is False

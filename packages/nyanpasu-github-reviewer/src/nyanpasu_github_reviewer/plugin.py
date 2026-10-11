@@ -17,6 +17,7 @@ from pydantic import ConfigDict, RootModel
 from nyanpasu.control_tools import EmptyInput, ToolSpec
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.memory import MemoryAccess
+from nyanpasu.memory_consolidation import MemoryPolicy
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
@@ -65,6 +66,12 @@ class ReviewScopeInput(RootModel[ScopePlan | EmptyInput]):
 class GitHubReviewerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubReviewerConfig
+    memory_policies = {
+        "github_reviewer.review": MemoryPolicy(
+            extraction=(INSTRUCTIONS_DIR / "memory-extraction.md").read_text(),
+            summary=(INSTRUCTIONS_DIR / "memory-summary.md").read_text(),
+        )
+    }
 
     def __init__(self, config: GitHubReviewerConfig | None = None) -> None:
         self.config = config

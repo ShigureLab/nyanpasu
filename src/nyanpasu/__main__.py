@@ -13,10 +13,11 @@ from loguru import logger
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
 from nyanpasu.models import AgentTask, TaskStatus
+from nyanpasu.plugins import PluginManager
 from nyanpasu.store import StateStore
 from nyanpasu.targets import ExecutionOverride
 from nyanpasu.task_control import call_control
-from nyanpasu.web import create_app
+from nyanpasu.web import WebPluginRuntime, create_app
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 PathArgument = Path
@@ -116,6 +117,9 @@ def memory_rebuild(
     all_contexts: Annotated[
         bool, typer.Option("--all", help="Build summaries from all existing source contexts.")
     ] = False,
+    fresh: Annotated[
+        bool, typer.Option(help="Re-extract original evidence into staged memory before publication.")
+    ] = False,
 ) -> None:
     """Retry one task or backfill existing context summaries, and wait for publication."""
     if all_contexts == (source_task_id is not None):
@@ -126,12 +130,14 @@ def memory_rebuild(
 
     async def run() -> None:
         agent = AgentService(resolved)
+        manager = PluginManager(resolved, WebPluginRuntime(config=resolved, app=None, agent=agent))
         try:
+            manager.register_memory_policies()
             if all_contexts:
-                tasks = await agent.rebuild_all_memory()
+                tasks = await agent.rebuild_all_memory(fresh=fresh)
             else:
                 assert source_task_id is not None
-                tasks = [await agent.rebuild_memory(source_task_id)]
+                tasks = [await agent.rebuild_memory(source_task_id, fresh=fresh)]
             results = [await agent.wait_for_memory(task.task_id) for task in tasks]
             payload = [result.model_dump(mode="json") for result in results]
             typer.echo(json.dumps(payload if all_contexts else payload[0], ensure_ascii=False))

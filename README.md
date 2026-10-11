@@ -143,7 +143,18 @@ Upgrades combine existing task accounts for the same audience, context, and gene
 uv run nyanpasu memory-rebuild --all
 ```
 
-This rebuilds summaries from the current session accounts without re-extracting native sessions. Changing the extraction guidance does not rewrite existing accounts: both rebuild commands reuse completed extraction receipts, and unchanged source digests also allow existing summaries to be reused. Prompt changes alone do not invalidate either result. Rebuilding summaries cannot recover feedback omitted from those accounts; recovering it requires fresh extraction from the original evidence, which these commands do not force for completed accounts.
+This rebuilds summaries from existing accounts without re-reading native history. To apply new extraction policies to original evidence, use:
+
+```bash
+uv run nyanpasu memory-rebuild SOURCE_TASK_ID --fresh
+uv run nyanpasu memory-rebuild --all --fresh
+```
+
+Fresh rebuilding replays completed root contributions in the same audience, context, and generation through the selected source task. `--all --fresh` selects the latest completed source in each idle context with native turns, including contexts that have no existing memory. It does not reconstruct legacy accounts without original task evidence. Each rebuild stages its account and summary separately under `memory-rebuilds/`; live memory changes only after both succeed, through one manifest commit. Concurrent changes reject publication. A failed rebuild preserves the previous account and summary; unfinished jobs can recover their staged checkpoints after a service restart.
+
+Plugins can provide `memory_policies`, a mapping from task kind to `MemoryPolicy(extraction=..., summary=...)`. The runtime registers enabled plugins' policies before recovery; the rebuild CLI registers the same policies without starting pollers or external integrations. Selection uses both the source plugin ID and task kind. Unregistered types use the default policy. Batches split at policy boundaries, and a job rejects recovery if its policy changed. Policy changes require `--fresh` to replace completed historical extraction receipts.
+
+Common extraction rules discard recurring instructions, tool guides, workflow, and routine status, distinguish human opinions from verified facts and agent claims, and prohibit treating recalled memory as new evidence. The reviewer policy retains attributed human GitHub feedback and each PR's core behavior, design rationale, constraints, and technical retrieval terms. Review summaries lead with the technical change; no-op follow-ups preserve that substance. The PR maker policy retains requirements, implemented behavior, and design decisions instead of Git/publication operations. Frozen managed subtask results are included as agent reports within the parent account, rather than producing separate child memories.
 
 ## Run
 

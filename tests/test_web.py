@@ -33,6 +33,9 @@ class FakeAgent:
     async def shutdown(self) -> None:
         return None
 
+    def add_memory_policy(self, plugin_id, task_kind, policy) -> None:
+        pass
+
     def add_task_control_tools(self, plugin_id, tools) -> None:
         pass
 

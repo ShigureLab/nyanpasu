@@ -557,6 +557,43 @@ class MemoryService:
             self._commit(directory, manifest)
             return checkpoint
 
+    def publish_rebuilt_context(
+        self,
+        access: MemoryAccess,
+        source: MemorySourceCheckpoint,
+        summary: MemorySummary,
+        *,
+        expected_source_revision: str | None,
+        expected_summary_revision: str | None,
+    ) -> None:
+        """Commit a fresh account and its summary together; failed rebuilds leave live memory intact."""
+        domain = self._write_domain(access)
+        if source.domain != domain or summary.domain != domain or not source.complete:
+            raise ValueError("rebuilt memory must be complete and in the maintenance audience")
+        if (source.context_key, source.context_generation) != (summary.context_key, summary.context_generation):
+            raise ValueError("rebuilt source and summary must belong to the same context")
+        if summary.source_revisions != ({source.id: source.content_revision} if source.body else {}):
+            raise MemoryConflict("rebuilt summary does not match its source")
+        with self._locked(domain, write=True) as directory:
+            manifest = self._manifest(directory, domain)
+            filename = manifest["drafts"].get(source.id) or manifest["sources"].get(source.id)
+            previous = self._checkpoint(directory, domain, filename) if filename else None
+            filename = manifest["summaries"].get(summary.id)
+            prior_summary = (
+                self._summary(directory, domain, filename, self._sources(directory, domain, manifest))
+                if filename
+                else None
+            )
+            # Recovery can arrive after the manifest commit but before task completion.
+            if previous == source and prior_summary == summary:
+                return
+            self._check_revision(previous, expected_source_revision)
+            self._check_revision(prior_summary, expected_summary_revision)
+            manifest["sources"][source.id] = self._save_object(directory, source)
+            manifest["summaries"][summary.id] = self._save_object(directory, summary)
+            manifest["drafts"].pop(source.id, None)
+            self._commit(directory, manifest)
+
     def bind_source_contexts(self, access: MemoryAccess, mapping: dict[str, tuple[str, int, float]]) -> int:
         """Upgrade account scopes and summary content fingerprints without losing evidence."""
         domain = self._write_domain(access)
