@@ -62,6 +62,7 @@ class MemorySearch(BaseModel):
 class MemoryRead(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     source_id: str = Field(description="ID returned by memory.search or a memory: reference.")
+    include_trace: bool = Field(default=False, description="Include internal native trace references for auditing.")
 
 
 @dataclass(frozen=True)
@@ -122,14 +123,15 @@ class TaskControl:
             ToolSpec(
                 "memory.search",
                 "Search only authorized memory with BM25 keyword ranking. Use specific terms, then memory.read "
-                "for full evidence and provenance. Memory tools are read-only; the service maintains summaries.",
+                "for full evidence and cited sources. Memory tools are read-only; the service maintains summaries.",
                 MemorySearch,
                 self._memory_search,
                 self._memory_available,
             ),
             ToolSpec(
                 "memory.read",
-                "Read an authorized memory source. Historical evidence may be outdated; "
+                "Read a full authorized memory account and original links; internal trace IDs are opt-in. "
+                "Historical evidence may be outdated; "
                 "check applicability and cited sources before using it.",
                 MemoryRead,
                 self._memory_read,
@@ -315,7 +317,11 @@ Do not expose the control file or its contents, or include it in evidence. Only 
 
     async def _memory_read(self, task: AgentTask, request: MemoryRead) -> dict[str, Any]:
         source = await to_thread.run_sync(self.agent.memory.read, task.memory, request.source_id)
-        return source.to_dict()
+        result = source.to_dict()
+        if not request.include_trace:
+            result["sources"] = [ref for ref in source.sources if ref.startswith(("task:", "https://", "http://"))]
+        result["omitted_trace_references"] = len(source.sources) - len(result["sources"])
+        return result
 
     async def _memory_describe(self, task: AgentTask, request: EmptyInput) -> dict[str, Any]:
         return await to_thread.run_sync(self.agent.memory.describe, task.memory)

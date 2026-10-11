@@ -467,7 +467,7 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_memory_search_returns_focused_excerpt_and_read_retains_full_provenance(tmp_path):
+async def test_memory_read_keeps_full_body_and_original_links_with_opt_in_native_trace(tmp_path):
     agent = make_agent(config_for(tmp_path))
     body = "Earlier background. " * 100 + "Checkpoint receipt digest verification failed. " + "Later background. " * 50
     source = publish_source(
@@ -475,7 +475,8 @@ async def test_memory_search_returns_focused_excerpt_and_read_retains_full_prove
         PUBLIC,
         "verified-account",
         body=body,
-        sources=[f"tool:session:turn:{index}:" + "x" * 100 for index in range(300)],
+        sources=[f"tool:session:turn:{index}:" + "x" * 100 for index in range(300)]
+        + ["https://github.com/Org/Repo/pull/258#pullrequestreview-1"],
     )
     request = task("reader")
     agent.store.record_task(agent._admit(request))
@@ -497,8 +498,23 @@ async def test_memory_search_returns_focused_excerpt_and_read_retains_full_prove
                 {"action": "memory.read", "input": {"source_id": found[0]["id"]}},
             )
             assert detail["body"] == source.body
-            assert detail["sources"] == list(source.sources)
+            assert detail["sources"] == [
+                "https://github.com/Org/Repo/pull/258#pullrequestreview-1",
+                "task:verified-account",
+            ]
+            assert detail["omitted_trace_references"] == 300
+            assert len(json.dumps(detail).encode()) < 5_000
             assert detail["revision"] == found[0]["revision"]
+            audit = await asyncio.to_thread(
+                call_control,
+                control.file,
+                {"action": "memory.read", "input": {"source_id": source.id, "include_trace": True}},
+            )
+            assert audit["body"] == source.body
+            assert audit["sources"] == list(source.sources)
+            assert audit["omitted_trace_references"] == 0
+            # Presentation does not discard the authoritative audit trail.
+            assert agent.memory.read(PUBLIC, source.id).sources == source.sources
     finally:
         await agent.shutdown()
 
