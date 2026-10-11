@@ -53,6 +53,7 @@ class CodexAppServerBackend:
         return {
             "connection": "connected" if self._proc is not None and self._proc.returncode is None else "idle",
             "diagnostics": list(self.diagnostics),
+            "pids": [self._proc.pid] if self._proc is not None and self._proc.returncode is None else [],
         }
 
     async def run_turn(

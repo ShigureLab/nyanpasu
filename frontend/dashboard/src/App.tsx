@@ -36,7 +36,23 @@ interface Runtime {
   leases: Array<{ context_key: string; task_id: string; expires_at: number }>;
   backends: Record<
     string,
-    { driver: string; connection: string; command: string[]; diagnostics: Diagnostic[] }
+    {
+      driver: string;
+      connection: string;
+      command: string[];
+      diagnostics: Diagnostic[];
+      resources?: {
+        cpu_percent: number | null;
+        rss_bytes: number | null;
+        process_count: number;
+        instances: Array<{
+          pid: number;
+          cpu_percent: number | null;
+          rss_bytes: number | null;
+          process_count: number;
+        }>;
+      };
+    }
   >;
 }
 
@@ -609,6 +625,17 @@ function Plugins({
   );
 }
 
+function ramLabel(bytes: number | null) {
+  if (bytes === null) return 'Unavailable';
+  return bytes >= 1024 ** 3
+    ? `${(bytes / 1024 ** 3).toFixed(2)} GiB`
+    : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+}
+
+function cpuLabel(cpu: number | null, rss: number | null) {
+  return cpu === null ? (rss === null ? 'Unavailable' : 'Sampling…') : `${cpu.toFixed(1)}%`;
+}
+
 function RuntimeView({
   navigate,
   live,
@@ -641,6 +668,55 @@ function RuntimeView({
                 <h2>{name}</h2>
                 <code>{backend.command.join(' ')}</code>
                 <Status state={backend.connection} />
+                {backend.resources ? (
+                  <>
+                    <dl className="runtime-resources">
+                      <div>
+                        <dt>CPU</dt>
+                        <dd>
+                          {cpuLabel(backend.resources.cpu_percent, backend.resources.rss_bytes)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>RAM (RSS)</dt>
+                        <dd>{ramLabel(backend.resources.rss_bytes)}</dd>
+                      </div>
+                      <div>
+                        <dt>Processes</dt>
+                        <dd>{backend.resources.process_count}</dd>
+                      </div>
+                    </dl>
+                    {backend.resources.instances.length > 0 && (
+                      <details className="runtime-processes">
+                        <summary>Backend processes ({backend.resources.instances.length})</summary>
+                        <div className="runtime-process-table">
+                          <table aria-label={`${name} process resources`}>
+                            <thead>
+                              <tr>
+                                <th>PID</th>
+                                <th>CPU</th>
+                                <th>RAM (RSS)</th>
+                                <th>Processes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {backend.resources.instances.map((instance) => (
+                                <tr key={instance.pid}>
+                                  <td>{instance.pid}</td>
+                                  <td>{cpuLabel(instance.cpu_percent, instance.rss_bytes)}</td>
+                                  <td>{ramLabel(instance.rss_bytes)}</td>
+                                  <td>{instance.process_count}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
+                    )}
+                  </>
+                ) : (
+                  <p className="subtle">Resource usage unavailable.</p>
+                )}
               </article>
             ))}
             <article>
@@ -649,6 +725,10 @@ function RuntimeView({
               <p>Subtasks share their root’s slot, including while it waits.</p>
             </article>
           </div>
+          <p className="subtle">
+            Usage includes each backend’s child processes. CPU is measured between refreshes; 100%
+            equals one CPU core. RAM is summed RSS and may count shared memory more than once.
+          </p>
           <h2>Execution policies</h2>
           <p className="subtle">
             Defaults for newly submitted work. Each task retains its admitted target.

@@ -200,6 +200,8 @@ Each backend owns its native conversation history. Nyanpasu stores scheduling me
 
 The session list shows root sessions by default; enable **Show subtask sessions** to include children. Each session has **Conversation**, **Session details**, and **Sub tasks** tabs. Switching tabs preserves reading position, search input, and expanded task groups; the selected tab can be bookmarked. Subtask cards use consistent colors for independent design, module review, and test audit, with text labels and separate status indicators. They include nested children, waiting relationships, result summaries, and downloadable evidence. Open a child conversation and use **Back to parent session** to return to your reading position.
 
+**Runtime** shows each backend's CPU usage, RAM (RSS), and process count, including child processes across concurrent instances and history readers. Expand **Backend processes** for each instance's PID and resource usage. CPU is sampled between refreshes, with 100% representing one core; the first observation shows **Sampling…**. RSS is summed across processes and can count shared memory more than once. These are snapshots of currently running processes.
+
 The dashboard frontend is built with Vite+ and managed with pnpm. Use the pnpm
 version pinned in `package.json`. During development, use:
 

@@ -45,9 +45,14 @@ class JsonProcessRunner:
     def __init__(self):
         self.diagnostics: deque[Diagnostic] = deque(maxlen=100)
         self._runs: set[asyncio.Task] = set()
+        self._processes: set[asyncio.subprocess.Process] = set()
 
     def runtime_info(self) -> dict:
-        return {"connection": "running" if self._runs else "idle", "diagnostics": list(self.diagnostics)}
+        return {
+            "connection": "running" if self._runs else "idle",
+            "diagnostics": list(self.diagnostics),
+            "pids": sorted(proc.pid for proc in self._processes if proc.returncode is None),
+        }
 
     async def run(
         self,
@@ -59,6 +64,13 @@ class JsonProcessRunner:
         timeout: float,
         received: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> tuple[int, str]:
+        proc: asyncio.subprocess.Process | None = None
+
+        def started(process: asyncio.subprocess.Process) -> None:
+            nonlocal proc
+            proc = process
+            self._processes.add(process)
+
         async def receive(event: dict) -> None:
             if event.get("type", "").startswith("nyanpasu."):
                 self.diagnostics.append(diagnostic(str(redact(event))))
@@ -73,6 +85,7 @@ class JsonProcessRunner:
                 timeout=timeout,
                 received=receive,
                 diagnostic=lambda text: self.diagnostics.append(diagnostic(text[-8192:])),
+                started=started,
             )
         )
         self._runs.add(task)
@@ -80,6 +93,8 @@ class JsonProcessRunner:
             return await task
         finally:
             self._runs.discard(task)
+            if proc is not None:
+                self._processes.discard(proc)
 
     async def close(self) -> None:
         runs = tuple(self._runs)
@@ -117,6 +132,7 @@ async def run_json_process(
     timeout: float,
     received: Callable[[dict[str, Any]], Awaitable[None]],
     diagnostic: Callable[[str], None],
+    started: Callable[[asyncio.subprocess.Process], None] | None = None,
 ) -> tuple[int, str]:
     """Run JSONL output with stderr redacted before diagnostics or tail truncation."""
     proc = await asyncio.create_subprocess_exec(
@@ -177,6 +193,8 @@ async def run_json_process(
             await proc.wait()
 
     try:
+        if started is not None:
+            started(proc)
         await asyncio.wait_for(communicate(), timeout)
         assert proc.returncode is not None
         return proc.returncode, stderr_tail.strip()

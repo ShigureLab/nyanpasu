@@ -632,6 +632,57 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await expect(page.locator('.diagnostic pre')).toHaveCount(0);
 });
 
+test('runtime shows all backend process resources and refreshes sampled CPU', async ({ page }) => {
+  let sampled = false;
+  await page.route('**/api/runtime', async (route) => {
+    const response = await route.fetch();
+    const runtime = await response.json();
+    runtime.backends.codex.resources = {
+      cpu_percent: sampled ? 125.5 : null,
+      rss_bytes: 1.5 * 1024 ** 3,
+      process_count: 5,
+      instances: [
+        { pid: 1234, cpu_percent: sampled ? 100 : null, rss_bytes: 1024 ** 3, process_count: 3 },
+        {
+          pid: 5678,
+          cpu_percent: sampled ? 25.5 : null,
+          rss_bytes: 512 * 1024 ** 2,
+          process_count: 2,
+        },
+      ],
+    };
+    runtime.backends.claude.resources = {
+      cpu_percent: 0,
+      rss_bytes: 0,
+      process_count: 0,
+      instances: [],
+    };
+    await route.fulfill({ response, json: runtime });
+  });
+  await page.goto('/dashboard?view=runtime');
+  await page.getByRole('button', { name: '◉ Live', exact: true }).click();
+  const codex = page.getByRole('article', { name: 'Backend codex' });
+  const claude = page.getByRole('article', { name: 'Backend claude' });
+  await expect(codex.locator('.runtime-resources')).toContainText('Sampling…');
+  await expect(codex.locator('.runtime-resources')).toContainText('1.50 GiB');
+  await expect(claude.locator('.runtime-resources')).toContainText('0.0 MiB');
+  await codex.locator('summary').click();
+  const table = page.getByRole('table', { name: 'codex process resources' });
+  await expect(table.locator('tbody tr')).toHaveCount(2);
+  await expect(table).toContainText('1234');
+  await expect(table).toContainText('5678');
+  await expect(table).toContainText('512.0 MiB');
+  sampled = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(codex.locator('.runtime-resources')).toContainText('125.5%');
+  await expect(table).toContainText('100.0%');
+
+  await page.unroute('**/api/runtime');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(codex.locator('.runtime-processes')).toHaveCount(0);
+  await expect(codex.locator('.runtime-resources')).toContainText('0.0 MiB');
+});
+
 test('waiting parent links to child evidence and preserves task navigation', async ({ page }) => {
   await page.goto('/dashboard?view=tasks&task=fixture-review');
   await expect(page.getByRole('region', { name: 'Subtasks', exact: true })).toBeVisible();

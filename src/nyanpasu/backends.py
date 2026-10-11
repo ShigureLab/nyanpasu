@@ -9,6 +9,7 @@ from nyanpasu.claude import ClaudeBackend
 from nyanpasu.codex import CodexAppServerBackend
 from nyanpasu.environment import process_env
 from nyanpasu.native_home import seed_home
+from nyanpasu.resources import ProcessResources
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.transcript.codex import CodexHistorySource
 
@@ -36,8 +37,9 @@ class Backends:
         self._instances = dict(instances or {})
         self._provided = set(self._instances)
         self._history_limit = asyncio.Semaphore(2)
-        self._active: dict[int, tuple[str, Backend]] = {}
+        self._active: dict[int, tuple[str, Backend, str]] = {}
         self._latest: dict[str, dict] = {}
+        self._resources = ProcessResources()
         self._session_home: Callable[[str, str], NativeSessionLocation] | None = None
 
     def register_session_locator(self, locate: Callable[[str, str], NativeSessionLocation]) -> None:
@@ -84,10 +86,8 @@ class Backends:
             raise ValueError("registered native session driver differs from backend configuration")
         async with self._history_limit:
             backend = self._create(name, native_home=location.native_home, home=location.isolated_home)
-            try:
+            async with self._observe(name, backend, activity="history"):
                 yield backend
-            finally:
-                await backend.execution.close()
 
     @asynccontextmanager
     async def turn(self, name: str, *, home: Path):
@@ -104,12 +104,18 @@ class Backends:
             template=configured.home.template,
         )
         backend = self._create(name, native_home=native_home, home=home)
-        self._active[id(backend)] = (name, backend)
-        try:
+        async with self._observe(name, backend, activity="turn"):
             yield backend.execution
+
+    @asynccontextmanager
+    async def _observe(self, name: str, backend: Backend, *, activity: str):
+        self._active[id(backend)] = (name, backend, activity)
+        try:
+            yield backend
         finally:
             await backend.execution.close()
-            self._latest[name] = backend.execution.runtime_info()
+            if activity == "turn":
+                self._latest[name] = backend.execution.runtime_info()
             self._active.pop(id(backend), None)
 
     async def cleanup_session(self, name: str, thread_id: str) -> None:
@@ -119,28 +125,35 @@ class Backends:
         async with self.history(name, thread_id) as backend:
             await backend.execution.cleanup_thread(thread_id)
 
-    def _runtime_info(self, name: str) -> dict:
-        active = [backend for backend_name, backend in self._active.values() if backend_name == name]
-        if active:
-            return {
-                **active[-1].execution.runtime_info(),
-                "diagnostics": [
-                    entry for backend in active for entry in backend.execution.runtime_info().get("diagnostics", [])
-                ][-100:],
-            }
+    def _runtime_info(self, name: str, active: list[tuple[str, Backend, str]]) -> dict:
+        backends = [backend for backend_name, backend, _ in active if backend_name == name]
         if name in self._instances:
-            return self._instances[name].execution.runtime_info()
-        return self._latest.get(name, {"connection": "idle", "diagnostics": []})
+            backends.insert(0, self._instances[name])
+        if backends:
+            observed = [backend.execution.runtime_info() for backend in backends]
+            latest = next((info for info in reversed(observed) if info.get("pids")), observed[-1])
+            return {
+                **latest,
+                "pids": sorted({pid for info in observed for pid in info.get("pids", [])}),
+                "diagnostics": [entry for info in observed for entry in info.get("diagnostics", [])][-100:],
+            }
+        return {**self._latest.get(name, {"connection": "idle", "diagnostics": []}), "pids": []}
 
     def runtime_info(self) -> dict:
+        active = list(self._active.values())
+        observed = {name: self._runtime_info(name, active) for name in self.config.backends}
+        resources = self._resources.sample({name: info.get("pids", []) for name, info in observed.items()})
         return {
             "backends": {
                 name: {
                     "driver": configured.driver,
                     "bin": configured.process.command[0],
                     "defaults": configured.defaults.model_dump(),
-                    "active_turns": sum(backend_name == name for backend_name, _ in self._active.values()),
-                    **self._runtime_info(name),
+                    "active_turns": sum(
+                        backend_name == name and activity == "turn" for backend_name, _, activity in active
+                    ),
+                    **observed[name],
+                    "resources": resources[name],
                 }
                 for name, configured in self.config.backends.items()
             }

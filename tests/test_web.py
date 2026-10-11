@@ -219,6 +219,12 @@ async def test_runtime_exposes_configured_model_and_effort(tmp_path) -> None:
     )
     assert set(data["backends"]) == {"codex", "cheap"}
     assert data["backends"]["cheap"]["driver"] == "claude-code"
+    assert data["backends"]["cheap"]["resources"] == {
+        "cpu_percent": 0,
+        "rss_bytes": 0,
+        "process_count": 0,
+        "instances": [],
+    }
 
 
 @pytest.mark.parametrize("domain", ["private:alice", "shared:team"])

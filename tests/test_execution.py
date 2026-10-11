@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import os
+import sys
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from nyanpasu.execution import JsonProcessRunner
+from nyanpasu.resources import ProcessResources
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -77,3 +81,49 @@ async def test_stderr_preserves_individual_log_lines_and_decodes_unfinished_utf8
     }
     assert [entry["message"] for entry in diagnostics[1:]] == ["next", "last �"]
     assert tail.endswith("\nnext\nlast �")
+
+
+@pytest.mark.anyio
+async def test_runner_tracks_real_process_tree_resources_and_clears_them_on_cancellation(tmp_path):
+    child = """
+import json, os, time
+buffer = bytearray(32 * 1024 * 1024)
+print(json.dumps({"type": "ready", "pid": os.getpid()}), flush=True)
+while True:
+    until = time.process_time() + 0.2
+    while time.process_time() < until:
+        pass
+    print('{"type": "tick"}', flush=True)
+"""
+    parent = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child!r}]).wait()"
+    events = asyncio.Queue()
+    runner = JsonProcessRunner()
+    running = asyncio.create_task(
+        runner.run(
+            [sys.executable, "-c", parent],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            input_text="",
+            timeout=10,
+            received=events.put,
+        )
+    )
+    try:
+        ready = await asyncio.wait_for(events.get(), 5)
+        assert ready["type"] == "ready"
+        pids = runner.runtime_info()["pids"]
+        assert len(pids) == 1 and pids[0] != ready["pid"]
+        sampler = ProcessResources()
+        first = sampler.sample({"claude": pids})["claude"]
+        assert first["process_count"] == 2
+        assert first["rss_bytes"] >= 32 * 1024 * 1024
+        assert first["cpu_percent"] is None
+        assert (await asyncio.wait_for(events.get(), 5))["type"] == "tick"
+        second = sampler.sample({"claude": pids})["claude"]
+        assert second["cpu_percent"] > 0
+    finally:
+        await runner.close()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert runner.runtime_info()["pids"] == []
+    assert runner.runtime_info()["connection"] == "idle"

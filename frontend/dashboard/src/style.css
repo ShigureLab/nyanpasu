@@ -1106,6 +1106,47 @@ dd code {
   color: var(--muted);
   font-size: 11px;
 }
+.runtime-resources {
+  margin: 16px 0 0;
+}
+.runtime-resources > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 0;
+}
+.runtime-resources dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.runtime-processes {
+  margin-top: 14px;
+  font-size: 12px;
+}
+.runtime-processes summary {
+  cursor: pointer;
+}
+.runtime-process-table {
+  overflow-x: auto;
+}
+.runtime-processes table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.runtime-processes th,
+.runtime-processes td {
+  padding: 6px 10px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+.runtime-processes th:first-child,
+.runtime-processes td:first-child {
+  padding-left: 0;
+  text-align: left;
+}
 .index-toggle {
   display: none;
 }
