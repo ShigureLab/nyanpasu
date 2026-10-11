@@ -10,7 +10,7 @@ from nyanpasu.models import AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu.transcript.models import TranscriptChanges, TranscriptWindow
 from nyanpasu.transcript.queries import CursorError, TranscriptReader
-from nyanpasu.transcript.source import RecordNotFound
+from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
 from tests.session_source import MemorySessionSource, tool, turn
 
 if TYPE_CHECKING:
@@ -186,3 +186,56 @@ async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visibl
     record["payload"]["thread_id"] = "other-thread"
     path.write_text(json.dumps(record) + "\n")
     assert (await reader.entry("thread", "a"))["started_at"] is None
+
+
+@pytest.mark.anyio
+async def test_codex_prompts_read_native_rollout_with_turn_ownership_and_full_redacted_content(history, tmp_path: Path):
+    state, source, reader = history
+    path = tmp_path / "rollout.jsonl"
+    source.metadata["path"] = str(path)
+    source.turns.append(turn("turn-2", tool("b", "second result")))
+    state.bind_task_execution("task", "thread", "turn-2")
+    secret = "ghp_" + "a" * 30
+    full_text = "Review carefully.🙂\n" * 5000 + "PROMPT-END " + secret
+    records = [
+        {"type": "session_meta", "payload": {"id": "thread", "base_instructions": {"text": "CLI base rules"}}},
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}},
+        {
+            "type": "response_item",
+            "payload": {"role": "developer", "content": [{"type": "input_text", "text": full_text}]},
+        },
+        {
+            "type": "response_item",
+            "payload": {"role": "assistant", "content": [{"type": "input_text", "text": "Not instructions"}]},
+        },
+        {"type": "turn_context", "payload": {"turn_id": "turn-2"}},
+        {
+            "type": "response_item",
+            "payload": {"role": "system", "content": [{"type": "input_text", "text": "Second turn rules"}]},
+        },
+    ]
+    original = (
+        "".join(json.dumps({"timestamp": "2026-10-11T00:00:00Z", **record}) + "\n" for record in records)
+        + '{"partial":'
+    )
+    path.write_text(original)
+    prompts = await reader.prompts("thread")
+    assert len(prompts) == 3
+    assert [entry["turn_id"] for entry in prompts] == ["turn-1", "turn-1", "turn-2"]
+    assert all(entry["task_id"] == "task" and entry["source"]["origin"] == "native" for entry in prompts)
+    block = prompts[1]["blocks"][0]
+    assert block["preview_truncated"]
+    page = await reader.content("thread", block["content_ref"], limit=200_000)
+    assert page["text"].endswith("PROMPT-END [REDACTED]")
+    assert prompts[1]["coverage"]["redacted"]
+    hits = await reader.search("thread", "PROMPT-END", kind="instructions")
+    assert hits["items"][0]["entry_id"] == prompts[1]["entry_id"]
+    assert "CLI base rules" in await reader.export("thread", "markdown")
+    exported = await reader.export("thread", "jsonl")
+    assert secret not in exported and "Not instructions" not in exported
+    assert path.read_text() == original
+    assert all(row["developer_instructions"] is None for row in state.task_turns("task"))
+    records[0]["payload"]["id"] = "another-session"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    with pytest.raises(SourceUnavailable, match="different session"):
+        await reader.prompts("thread")

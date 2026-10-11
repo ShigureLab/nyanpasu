@@ -1041,6 +1041,34 @@ def fake_backends(config: NyanpasuConfig, execution: FakeCodex, name: str = "cod
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("backend", ["codex", "claude"])
+async def test_capture_only_claude_instructions_matches_the_actual_backend_call(tmp_path: Path, backend: str):
+    config = _with_backend(_config(tmp_path), backend)
+    execution = FakeCodex()
+    store = StateStore(config.db_path)
+    agent = AgentService(
+        config,
+        store=store,
+        worktrees=FakeWorktrees(tmp_path / "worktrees"),
+        backends=fake_backends(config, execution, backend),
+    )
+    task = _task("captured").model_copy(
+        update={
+            "developer_instructions": "Review the required behavior.",
+            "instruction_docs": (InstructionDocument(name="AGENTS.md", content="Keep the project rules."),),
+        }
+    )
+    await agent.run_now(task)
+    captured = store.task_turns(task.task_id)[0]["developer_instructions"]
+    if backend == "claude":
+        assert captured == execution.instructions[0]
+        assert "Keep the project rules." in captured
+        assert "Nyanpasu task control" in captured
+    else:
+        assert captured is None
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("initial_backend", ["codex", "claude"])
 async def test_backend_switch_starts_fresh_session_and_preserves_history(
     tmp_path: Path, initial_backend: Literal["codex", "claude"]

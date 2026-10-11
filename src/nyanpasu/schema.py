@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE agent_contexts (
@@ -48,6 +48,7 @@ CREATE TABLE task_turns (
     turn_id TEXT NOT NULL,
     started_at REAL NOT NULL,
     memory_context_json TEXT,
+    developer_instructions TEXT,
     PRIMARY KEY (task_id, backend, thread_id, turn_id)
 );
 CREATE TABLE native_sessions (
@@ -82,7 +83,7 @@ CREATE TABLE subtask_requests (
 
 
 def initialize(conn: sqlite3.Connection) -> None:
-    """Create state or atomically add memory receipts to the previous schema."""
+    """Create state or atomically add turn receipts to earlier schemas."""
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'").fetchone()
@@ -90,6 +91,9 @@ def initialize(conn: sqlite3.Connection) -> None:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version == 1:
                 conn.execute("ALTER TABLE task_turns ADD COLUMN memory_context_json TEXT")
+                version = 2
+            if version == 2:
+                conn.execute("ALTER TABLE task_turns ADD COLUMN developer_instructions TEXT")
             elif version != SCHEMA_VERSION:
                 raise ValueError(f"Unsupported state schema version {version}; expected {SCHEMA_VERSION}")
         else:

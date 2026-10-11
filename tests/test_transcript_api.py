@@ -21,6 +21,62 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.anyio
+async def test_claude_prompt_api_uses_captured_instructions_and_marks_missing_history(tmp_path: Path):
+    config = NyanpasuConfig(state_dir=tmp_path / "state")
+    state = StateStore(config.db_path)
+    task = AgentTask(
+        execution=config.resolve_execution(override=ExecutionOverride(backend="claude")),
+        task_id="task",
+        context_key="claude",
+        action=TaskAction.RUN,
+        prompt="Request",
+        developer_instructions="Current configuration, not the captured prompt",
+    )
+    state.record_task(task)
+    home = tmp_path / "claude"
+    path = write_session(home)
+    original = path.read_bytes()
+    state.bind_task_execution(task.task_id, SESSION, "claude-input", "claude")
+    app = create_app(config, session_sources=lambda _: ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(home)}))
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        base = f"/api/sessions/claude:{SESSION}"
+        assert (await client.get(base + "/prompts")).json() == []
+        assert (await client.get("/api/sessions/claude:unrelated/prompts")).status_code == 404
+        # A different actual turn has a receipt; old turns must not be reconstructed from task JSON.
+        data = records()
+        data.append(
+            {
+                "type": "user",
+                "uuid": "next-input",
+                "parentUuid": "claude-final",
+                "sessionId": SESSION,
+                "timestamp": "2026-10-11T00:00:00Z",
+                "message": {"content": "Continue"},
+            }
+        )
+        write_session(home, data)
+        captured = "Actual runtime injection🙂\n" * 4000 + "CAPTURE-END ghp_" + "x" * 30
+        state.bind_task_execution(task.task_id, SESSION, "next-input", "claude", developer_instructions=captured)
+        state.bind_task_execution(
+            task.task_id, SESSION, "next-input", "claude", developer_instructions="Later configuration"
+        )
+        prompts = (await client.get(base + "/prompts")).json()
+        assert len(prompts) == 1
+        assert prompts[0]["source"]["origin"] == "nyanpasu"
+        assert prompts[0]["task_id"] == task.task_id
+        assert prompts[0]["turn_id"] == "next-input"
+        assert prompts[0]["coverage"]["redacted"]
+        ref = prompts[0]["blocks"][0]["content_ref"]
+        response = await client.get(base + "/content/" + ref, params={"download": True})
+        assert response.text.endswith("CAPTURE-END [REDACTED]")
+        assert response.text.startswith("Actual runtime injection")
+        exported = (await client.get(base + "/export", params={"format": "markdown"})).text
+        assert "CAPTURE-END [REDACTED]" in exported
+        assert "Current configuration" not in exported and "Later configuration" not in exported
+        assert path.read_bytes().startswith(original)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "metadata,prompt,expected",
     [

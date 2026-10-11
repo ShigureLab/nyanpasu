@@ -93,7 +93,8 @@ export function ContentBlock({
   const followingOutput = useRef(false);
   const endpoint = `/api/sessions/${session}/content/${block.content_ref}`;
   const isOutput = block.kind === 'combined_output' || block.kind === 'error';
-  const longMessage = block.preview_truncated && block.kind === 'markdown';
+  const longMessage =
+    block.preview_truncated && (block.kind === 'markdown' || (eager && block.kind === 'text'));
   const readFullMessage = longMessage && (nearby || eager);
   useEffect(() => {
     setPosition(null);
@@ -319,6 +320,7 @@ export const Entry = memo(function Entry({
     'plan',
     'collaboration',
     'attachment',
+    'instructions',
   ].includes(entry.kind);
   const open =
     manualOpen ??
@@ -337,6 +339,12 @@ export const Entry = memo(function Entry({
             {entry.phase === 'final_answer' ? 'Final response' : entry.kind}
           </span>
           <strong>{entry.tool_name ?? entry.title}</strong>
+          {entry.kind === 'instructions' && (
+            <small>
+              {entry.blocks.reduce((sum, block) => sum + block.recorded_bytes, 0).toLocaleString()}{' '}
+              bytes
+            </small>
+          )}
           <span aria-hidden="true">{open ? '▾' : '▸'}</span>
         </button>
         <Status state={entry.state} />

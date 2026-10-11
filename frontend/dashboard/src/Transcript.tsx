@@ -12,6 +12,7 @@ import { ContentBlock, Copy, Entry, Status } from './Entry';
 import { Download } from './Download';
 import { openTask, SessionTasks } from './SessionTasks';
 import { SessionDetails } from './SessionDetails';
+import { Prompts } from './Prompts';
 import {
   applyChanges,
   type TranscriptState,
@@ -24,6 +25,7 @@ import {
 
 const tabs = [
   { id: 'conversation', label: 'Conversation' },
+  { id: 'prompts', label: 'Prompts' },
   { id: 'details', label: 'Session details' },
   { id: 'subtasks', label: 'Sub tasks' },
 ] as const;
@@ -354,6 +356,18 @@ export function Transcript({
       </div>
       <div
         role="tabpanel"
+        id="session-panel-prompts"
+        aria-labelledby="session-tab-prompts"
+        className="session-panel session-information"
+        hidden={tab !== 'prompts'}
+        tabIndex={0}
+      >
+        {tab === 'prompts' && (
+          <Prompts session={session} live={live} refresh={refresh} navigate={navigate} />
+        )}
+      </div>
+      <div
+        role="tabpanel"
         id="session-panel-details"
         aria-labelledby="session-tab-details"
         className="session-panel session-information"
@@ -420,6 +434,7 @@ export function Transcript({
             <option value="">All content</option>
             {[
               'input',
+              'instructions',
               'message',
               'tool',
               'file_change',

@@ -602,6 +602,27 @@ async def test_extraction_reads_only_bound_turns_across_backend_handoffs(tmp_pat
             ),
         ]
     )
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        "".join(
+            json.dumps(record) + "\n"
+            for record in [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "shared", "base_instructions": {"text": "FIXED INSTRUCTIONS NOT EVIDENCE"}},
+                },
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "first"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "role": "developer",
+                        "content": [{"type": "input_text", "text": "REINJECTED MEMORY NOT EVIDENCE"}],
+                    },
+                },
+            ]
+        )
+    )
+    first.metadata["path"] = str(rollout)
     last = MemorySessionSource(
         [
             turn("resumed", tool("last", "final observed tool result")),
@@ -628,7 +649,14 @@ async def test_extraction_reads_only_bound_turns_across_backend_handoffs(tmp_pat
         chunks = await agent._source_chunks(request)
         material = json.dumps(chunks)
         assert all(
-            value not in material for value in ("PRIVATE UNRELATED TASK", "OTHER TASK LATER", "INTERNAL REASONING")
+            value not in material
+            for value in (
+                "PRIVATE UNRELATED TASK",
+                "OTHER TASK LATER",
+                "INTERNAL REASONING",
+                "FIXED INSTRUCTIONS NOT EVIDENCE",
+                "REINJECTED MEMORY NOT EVIDENCE",
+            )
         )
         references = {item["reference"] for chunk in chunks for item in chunk}
         assert references == {

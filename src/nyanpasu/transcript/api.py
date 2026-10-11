@@ -80,6 +80,10 @@ def dashboard_router(
     def task_tree(session_id: str, offset: Offset = 0, limit: PageSize = 10):
         return reader.task_tree(session_id, offset, limit)
 
+    @router.get("/sessions/{session_id}/prompts", response_model=list[TranscriptEntry])
+    async def prompts(session_id: str):
+        return await reader.prompts(session_id)
+
     @router.get("/sessions/{session_id}/transcript", response_model=TranscriptWindow | TranscriptChanges)
     async def transcript(
         session_id: str,

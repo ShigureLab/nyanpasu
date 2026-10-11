@@ -360,32 +360,48 @@ def test_unsupported_conversation_schema_is_not_modified(tmp_path: Path) -> None
         assert conn.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 1
 
 
-def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory_receipts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory_receipts(
+    tmp_path: Path, version: int
+) -> None:
     path = tmp_path / "state.db"
     state = StateStore(path)
     original = _task("original")
     state.record_task(original)
     state.bind_task_execution(original.task_id, "thread", "old-turn")
     with sqlite3.connect(path) as conn:
-        conn.execute("ALTER TABLE task_turns DROP COLUMN memory_context_json")
-        conn.execute("PRAGMA user_version=1")
-        before = conn.execute("SELECT * FROM task_turns").fetchall()
+        conn.execute("ALTER TABLE task_turns DROP COLUMN developer_instructions")
+        if version == 1:
+            conn.execute("ALTER TABLE task_turns DROP COLUMN memory_context_json")
+        conn.execute(f"PRAGMA user_version={version}")
+        before = conn.execute("SELECT task_id,backend,thread_id,turn_id,started_at FROM task_turns").fetchall()
 
     migrated = StateStore(path)
     assert migrated.task_request(original.task_id) == original
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("SELECT task_id,backend,thread_id,turn_id,started_at FROM task_turns").fetchall() == before
         assert conn.execute("SELECT memory_context_json FROM task_turns").fetchall() == [(None,)]
+        assert conn.execute("SELECT developer_instructions FROM task_turns").fetchall() == [(None,)]
 
     receipt = {"prompt": "Historical evidence: 修复已验证", "bytes": 42, "selected": [], "skipped": []}
-    migrated.bind_task_execution(original.task_id, "thread", "new-turn", memory_context=receipt)
-    migrated.bind_task_execution(original.task_id, "thread", "new-turn", memory_context={"prompt": "changed"})
+    migrated.bind_task_execution(
+        original.task_id, "thread", "new-turn", memory_context=receipt, developer_instructions="Sent instructions"
+    )
+    migrated.bind_task_execution(
+        original.task_id,
+        "thread",
+        "new-turn",
+        memory_context={"prompt": "changed"},
+        developer_instructions="Later configuration",
+    )
     reopened = StateStore(path)
     turns = reopened.task_turns(original.task_id)
     assert len(turns) == 2
     assert json.loads(turns[1]["memory_context_json"]) == receipt
     assert turns[0]["memory_context_json"] is None
+    assert turns[1]["developer_instructions"] == "Sent instructions"
+    assert turns[0]["developer_instructions"] is None
 
 
 def test_memory_sources_use_execution_order_and_isolate_contribution_audiences(tmp_path: Path) -> None:

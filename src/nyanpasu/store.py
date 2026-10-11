@@ -477,6 +477,7 @@ class StateStore:
         isolated_home: Path | None = None,
         driver: str | None = None,
         memory_context: dict[str, Any] | None = None,
+        developer_instructions: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -495,7 +496,8 @@ class StateStore:
             if turn_id is not None:
                 conn.execute(
                     """INSERT OR IGNORE INTO task_turns
-                    (task_id,backend,thread_id,turn_id,started_at,memory_context_json) VALUES (?,?,?,?,?,?)""",
+                    (task_id,backend,thread_id,turn_id,started_at,memory_context_json,developer_instructions)
+                    VALUES (?,?,?,?,?,?,?)""",
                     (
                         task_id,
                         backend,
@@ -503,6 +505,7 @@ class StateStore:
                         turn_id,
                         time.time(),
                         json_dumps(memory_context) if memory_context is not None else None,
+                        developer_instructions,
                     ),
                 )
             if native_home is not None:

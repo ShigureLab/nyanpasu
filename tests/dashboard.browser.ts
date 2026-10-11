@@ -2,6 +2,37 @@ import { expect, test } from '@playwright/test';
 import type { TranscriptWindow } from '../frontend/dashboard/src/api-types';
 import type { Page, Session } from '../frontend/dashboard/src/api';
 
+test('native and injected prompts show their source, full content and conversation links', async ({
+  page,
+}) => {
+  await page.goto('/dashboard?session=fixture-thread&tab=prompts');
+  const prompts = page.locator('.prompt-list');
+  await expect(prompts).toContainText('2 records');
+  await expect(prompts).toContainText('System prompt · Codex base instructions');
+  const developer = prompts
+    .locator('.prompt-record')
+    .filter({ hasText: 'Developer instructions · Codex' });
+  await expect(developer).not.toHaveAttribute('open');
+  await developer.locator('summary').click();
+  await expect(developer.locator('pre')).toContainText('PROMPT-END [REDACTED]');
+  await expect(developer).not.toContainText('ghp_');
+  await expect(developer.getByRole('button', { name: 'Copy source', exact: true })).toBeVisible();
+  await developer.getByRole('button', { name: 'Inspect in conversation' }).click();
+  await expect(page.getByRole('tab', { name: 'Conversation', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.locator('.entry.selected')).toContainText('Developer instructions · Codex');
+  await expect(page.locator('.inspector')).toContainText('codex-instructions-2');
+  await page.goto('/dashboard?context=demo%3Aclaude&tab=prompts');
+  await expect(prompts).toContainText('Injected instructions · Nyanpasu');
+  await expect(prompts).toContainText("excluding the CLI's built-in system prompt");
+  await prompts.locator('summary').first().click();
+  await expect(prompts.locator('pre').first()).toContainText('Captured Claude instructions');
+  await page.goto('/dashboard?session=fixture-audit-thread&tab=prompts');
+  await expect(prompts).toContainText('No system or developer instructions were recorded');
+});
+
 test('session list scrolls across pages and refreshes the loaded range without duplicates', async ({
   page,
   request,
@@ -551,7 +582,7 @@ test('earlier history is prepended and asynchronous message expansion preserves 
     )!;
     return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
   });
-  await expect(page.locator('[data-entry-id]')).toHaveCount(79);
+  await expect(page.locator('[data-entry-id]')).toHaveCount(81);
   await expect(page.locator('[data-entry-id="message-0"]')).not.toContainText('EARLIER-END');
   expect(fullReads).toBe(0);
   const offset = await scroll.evaluate(
@@ -573,7 +604,7 @@ test('later history appends to a deep-linked window without losing earlier entri
   page,
 }) => {
   await page.goto('/dashboard?session=fixture-thread&entry=input');
-  await expect(page.locator('[data-entry-id]')).toHaveCount(25);
+  await expect(page.locator('[data-entry-id]')).toHaveCount(27);
   await page.route('**/transcript?after_window=*', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     await route.continue();
@@ -593,7 +624,7 @@ test('later history appends to a deep-linked window without losing earlier entri
     )!;
     return { id: entry.dataset.entryId!, offset: entry.getBoundingClientRect().top - top };
   });
-  await expect(page.locator('[data-entry-id]')).toHaveCount(75);
+  await expect(page.locator('[data-entry-id]')).toHaveCount(77);
   await expect(page.locator('[data-entry-id="input"]')).toHaveCount(1);
   const offset = await scroll.evaluate(
     (element, id) =>

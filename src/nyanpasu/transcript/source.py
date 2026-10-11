@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from nyanpasu.transcript.content import PREVIEW_BYTES, content_ref, fingerprint
-from nyanpasu.transcript.history import SessionHistory, SessionMetadata, session_key
+from nyanpasu.transcript.history import HistoryItem, SessionHistory, SessionMetadata, session_key
 from nyanpasu.transcript.models import Coverage, Source, TranscriptBlock, TranscriptEntry
 
 if TYPE_CHECKING:
@@ -82,7 +82,9 @@ def make_snapshot(history: SessionHistory, task_by_turn: dict[str, str], read_at
                 started_at=timing.get("started_at"),
                 completed_at=timing.get("completed_at"),
                 recorded_at=timing.get("recorded_at"),
-                source=Source(backend=history.metadata.backend, version=history.metadata.cli_version, origin="native"),
+                source=Source(
+                    backend=history.metadata.backend, version=history.metadata.cli_version, origin=item.origin
+                ),
                 coverage=Coverage(redacted=item.redacted, source_truncated=update.source_truncated),
             ).model_copy(update=update.fields())
             for change in update.blocks:
@@ -105,10 +107,27 @@ def make_snapshot(history: SessionHistory, task_by_turn: dict[str, str], read_at
     return Snapshot(history.metadata, turns, tuple(entries), contents, read_at)
 
 
-async def read_snapshot(source: SessionSource, thread_id: str, task_by_turn: dict[str, str]) -> Snapshot:
+async def read_snapshot(
+    source: SessionSource,
+    thread_id: str,
+    task_by_turn: dict[str, str],
+    injected_instructions: dict[str, HistoryItem] | None = None,
+) -> Snapshot:
     read_at = iso_time()
     try:
         history = await source.read_session(thread_id)
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         raise SourceUnavailable(f"Cannot read this session: {exc}") from exc
+    if injected_instructions:
+        history = history.model_copy(
+            update={
+                "turns": tuple(
+                    turn.model_copy(update={"items": (injected_instructions[turn.id], *turn.items)})
+                    if turn.id in injected_instructions
+                    and not any(item.presentation.kind == "instructions" for item in turn.items)
+                    else turn
+                    for turn in history.turns
+                )
+            }
+        )
     return make_snapshot(history, task_by_turn, read_at)

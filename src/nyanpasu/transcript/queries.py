@@ -13,6 +13,7 @@ from nyanpasu.presentation import task_execution, task_title
 from nyanpasu.redaction import redact
 from nyanpasu.store import TASK_RUNS
 from nyanpasu.transcript.content import CHUNK_BYTES, content_page, decode, encode, fingerprint
+from nyanpasu.transcript.instructions import instruction_item
 from nyanpasu.transcript.models import Coverage, TranscriptEntry
 from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
 
@@ -78,7 +79,7 @@ def take(
 
 
 class TranscriptReader:
-    """Task metadata comes from Nyanpasu; every conversation read comes from its native runtime."""
+    """Combine task metadata and instruction receipts with native conversation history."""
 
     def __init__(self, db_path: Path, sources: Callable[[str], SessionSource]):
         self.db_path = db_path
@@ -105,9 +106,34 @@ class TranscriptReader:
     async def snapshot(self, session_id: str) -> Snapshot:
         tasks = self._tasks(session_id)
         task_by_turn = {row["turn_id"]: row["task_id"] for row in tasks if row["turn_id"] and not row["coalesced_into"]}
+        with self.connect() as conn:
+            turns = conn.execute(
+                "SELECT * FROM task_turns WHERE backend=? AND thread_id=? ORDER BY started_at,turn_id",
+                (tasks[0]["session_backend"], tasks[0]["session_thread_id"]),
+            ).fetchall()
+        task_by_turn.update({row["turn_id"]: row["task_id"] for row in turns})
+        instructions = {
+            row["turn_id"]: instruction_item(
+                f"nyanpasu-instructions-{row['turn_id']}",
+                row["developer_instructions"],
+                title="Injected instructions · Nyanpasu",
+                raw={"type": "instructions", "text": row["developer_instructions"]},
+                recorded_at=iso_time(row["started_at"]),
+                origin="nyanpasu",
+            )
+            for row in turns
+            if row["developer_instructions"]
+        }
         return await read_snapshot(
-            self.sources(tasks[0]["session_backend"]), tasks[0]["session_thread_id"], task_by_turn
+            self.sources(tasks[0]["session_backend"]), tasks[0]["session_thread_id"], task_by_turn, instructions
         )
+
+    async def prompts(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            entry.model_dump(mode="json")
+            for entry in (await self.snapshot(session_id)).entries
+            if entry.kind == "instructions"
+        ]
 
     async def sessions(
         self,

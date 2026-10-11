@@ -19,6 +19,7 @@ class HistoryItem(BaseModel):
     presentation: EntryUpdate
     raw: dict[str, Any]
     redacted: bool = False
+    origin: str = "native"
     started_at: str | None = None
     completed_at: str | None = None
     recorded_at: str | None = None

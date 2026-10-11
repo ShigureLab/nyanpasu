@@ -389,6 +389,17 @@ small {
   padding: 24px 25px 80px;
   scrollbar-gutter: stable;
 }
+.prompt-record {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+}
+.prompt-record > summary {
+  color: var(--text);
+  font-size: 12px;
+}
+.prompt-record > .block-toolbar {
+  padding: 8px 14px;
+}
 .parent-session-link {
   display: flex;
   flex-wrap: wrap;

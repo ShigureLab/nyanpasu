@@ -292,6 +292,31 @@ def fixture_app():
     rollout = config.state_dir / "fixture-rollout.jsonl"
     rollout.write_text(
         "".join(
+            json.dumps(record) + "\n"
+            for record in [
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "fixture-thread",
+                        "base_instructions": {"text": "Native CLI system instructions"},
+                    },
+                },
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "fixture-turn"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "Native developer instructions🙂\n" * 3000 + "PROMPT-END ghp_" + "a" * 30,
+                            }
+                        ],
+                    },
+                },
+            ]
+        )
+        + "".join(
             json.dumps(
                 {
                     "timestamp": "2026-09-14T00:00:01.000Z",
@@ -310,7 +335,15 @@ def fixture_app():
             for index, item in enumerate(items)
         )
     )
-    source = MemorySessionSource(
+
+    class FixtureCodexSource(MemorySessionSource):
+        async def read_thread(self, thread_id: str) -> dict[str, Any]:
+            native = await super().read_thread(thread_id)
+            if thread_id != "fixture-thread":
+                native.pop("path", None)
+            return native
+
+    source = FixtureCodexSource(
         [turn("fixture-turn", *items)],
         metadata={
             "path": str(rollout),
@@ -375,6 +408,9 @@ def fixture_app():
                 turn_id=turn_id,
                 final_message="",
             )
+        )
+        state.bind_task_execution(
+            task_id, SESSION, turn_id, "claude", developer_instructions=f"Captured Claude instructions for {title}."
         )
     claude_source = ClaudeHistorySource({"CLAUDE_CONFIG_DIR": str(claude_home)})
 
