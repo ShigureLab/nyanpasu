@@ -154,3 +154,52 @@ async def test_empty_fresh_account_withdraws_polluted_memory_and_summary(tmp_pat
         assert [kind for kind, _ in model.events] == ["extraction"]
     finally:
         await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_plugin_feedback_is_collected_at_latest_contribution_and_failure_preserves_memory(tmp_path, fails):
+    model = MemoryModel()
+    agent = batched_agent(tmp_path, model, count=2)
+    calls = []
+
+    async def feedback(source, cutoff):
+        calls.append((source.task_id, cutoff))
+        if fails:
+            raise RuntimeError("GitHub unavailable")
+        return [
+            {
+                "kind": "github_feedback",
+                "title": "Human maintainer advice",
+                "origin": "github",
+                "reference": "https://github.com/Org/Repo/pull/258#pullrequestreview-1",
+                "blocks": ["SUBSTANTIVE_HUMAN_ADVICE_ABSENT_FROM_NATIVE_HISTORY"],
+            }
+        ]
+
+    agent.add_memory_policy(
+        "test", "review", MemoryPolicy("Capture full advice", "Summarize advice", evidence_provider=feedback)
+    )
+    try:
+        for name in ["first", "second"]:
+            await agent.run_now(
+                continuing_task(name).model_copy(update={"kind": "review", "metadata": {"plugin_id": "test"}})
+            )
+        old = publish_source(agent.memory, ALICE, "second", context_key=CONTEXT, body="OLD STATUS")
+        old_summary = publish_summary(agent.memory, ALICE, f"Old [status](memory:{old.id})", context_key=CONTEXT)
+        job = await agent.rebuild_memory("second", fresh=True)
+        result = await agent.wait_for_memory(job.task_id)
+        assert result.status is (TaskStatus.FAILED if fails else TaskStatus.COMPLETED)
+        assert all(name == "second" and cutoff == agent.store.task_run("second").updated_at for name, cutoff in calls)
+        if fails:
+            assert agent.memory.source_state(ALICE, CONTEXT) == old
+            assert agent.memory.snapshot_context(ALICE, CONTEXT, 1).summary == old_summary
+        else:
+            assert len(calls) == 2  # Input freezing and execution use the same external evidence.
+            material = model.events[0][1]
+            external = [item for item in material["evidence"] if item["origin"] == "github"]
+            assert len(external) == 1 and "SUBSTANTIVE_HUMAN_ADVICE" in external[0]["text"]
+            assert external[0]["source_task_id"] == "second"
+            assert external[0]["text"] in agent.memory.source_state(ALICE, CONTEXT).body
+    finally:
+        await agent.shutdown()

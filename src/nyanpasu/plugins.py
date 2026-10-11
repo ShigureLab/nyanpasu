@@ -81,10 +81,11 @@ class PluginManager:
         """Register policies without starting plugin pollers or external integrations."""
         for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
-            provider: dict[str, MemoryPolicy] | Callable[[BaseModel | dict[str, Any]], dict[str, MemoryPolicy]] = (
-                getattr(plugin, "memory_policies", {})
-            )
-            policies = provider if isinstance(provider, dict) else provider(self._plugin_config(plugin))
+            provider: (
+                dict[str, MemoryPolicy]
+                | Callable[[BaseModel | dict[str, Any], NyanpasuConfig], dict[str, MemoryPolicy]]
+            ) = getattr(plugin, "memory_policies", {})
+            policies = provider if isinstance(provider, dict) else provider(self._plugin_config(plugin), self.config)
             for kind, policy in policies.items():
                 self.runtime.add_memory_policy(plugin_id, kind, policy)
 

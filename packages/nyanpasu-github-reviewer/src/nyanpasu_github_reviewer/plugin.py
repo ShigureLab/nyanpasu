@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import time
@@ -23,6 +24,7 @@ from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
+from nyanpasu_github_reviewer.memory_evidence import fetch_review_feedback
 from nyanpasu_github_reviewer.models import (
     GitHubReviewerConfig,
     PullRequestRef,
@@ -54,6 +56,7 @@ from nyanpasu_github_reviewer.store import GitHubReviewerStore
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from nyanpasu.config import NyanpasuConfig
     from nyanpasu.plugins import PluginRuntime
 
 PLUGIN_ID = "github_reviewer"
@@ -67,9 +70,26 @@ class GitHubReviewerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubReviewerConfig
 
-    def memory_policies(self, config: BaseModel | dict[str, Any]) -> dict[str, MemoryPolicy]:
+    def memory_policies(
+        self, config: BaseModel | dict[str, Any], runtime_config: NyanpasuConfig
+    ) -> dict[str, MemoryPolicy]:
         if not isinstance(config, GitHubReviewerConfig):
             config = GitHubReviewerConfig.model_validate(config)
+        github = github_integration_from_config(runtime_config.integrations.get("github"), cwd=runtime_config.state_dir)
+
+        async def evidence(source: AgentTask, cutoff: float) -> list[dict[str, Any]]:
+            pr = source.metadata["pull_request"]
+            return await asyncio.to_thread(
+                functools.partial(
+                    fetch_review_feedback,
+                    pr["repo"],
+                    pr["number"],
+                    agent_login=config.github_login,
+                    cutoff=cutoff,
+                    gh_env=github.gh_env(),
+                )
+            )
+
         identity = (
             "\nThe serving review agent's configured GitHub login is "
             + json.dumps(config.github_login)
@@ -80,6 +100,7 @@ class GitHubReviewerPlugin:
             "github_reviewer.review": MemoryPolicy(
                 extraction=(INSTRUCTIONS_DIR / "memory-extraction.md").read_text() + identity,
                 summary=(INSTRUCTIONS_DIR / "memory-summary.md").read_text(),
+                evidence_provider=evidence,
             )
         }
 

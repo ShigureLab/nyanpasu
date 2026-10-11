@@ -1041,7 +1041,9 @@ class AgentService:
             raise ValueError("memory source must be a completed root in the same maintenance audience")
         return source
 
-    async def _source_chunks(self, source: AgentTask) -> list[list[dict[str, Any]]]:
+    async def _source_chunks(
+        self, source: AgentTask, *, include_plugin_evidence: bool = True
+    ) -> list[list[dict[str, Any]]]:
         bindings = await to_thread.run_sync(self.store.task_turns, source.task_id)
         if not bindings:
             raise ValueError("memory source has no native turns")
@@ -1078,6 +1080,10 @@ class AgentService:
                         "blocks": [json.dumps(result, ensure_ascii=False)],
                     }
                 )
+        provider = self._memory_policy(source).evidence_provider
+        if include_plugin_evidence and provider is not None:
+            result = await to_thread.run_sync(self.store.task_run, source.task_id)
+            evidence.extend(await provider(source, result.updated_at))
         return evidence_chunks(source.task_id, source.prompt, evidence)
 
     async def _prepare_memory_task(self, task: AgentTask) -> AgentTask:
@@ -1095,7 +1101,8 @@ class AgentService:
                 self._memory_service(task).snapshot_context, task.memory, source.context_key, source.context_generation
             )
             digest = snapshot.input_digest
-        policy_digest = input_digest([MEMORY_PROMPT_VERSION, asdict(self._memory_policy(source))])
+        policy = self._memory_policy(source)
+        policy_digest = input_digest([MEMORY_PROMPT_VERSION, policy.extraction, policy.summary])
         prior_policy = task.metadata.get("memory_policy_digest")
         if prior_policy is not None and prior_policy != policy_digest:
             raise MemoryConflict("memory policy changed; start a fresh rebuild")
@@ -1244,7 +1251,10 @@ class AgentService:
             pending = await self._pending_memory_sources(source, checkpoint)
             evidence = [
                 SourceEvidence(
-                    item.task_id, contexts[item.task_id][2], await self._source_chunks(item), self._memory_policy(item)
+                    item.task_id,
+                    contexts[item.task_id][2],
+                    await self._source_chunks(item, include_plugin_evidence=item.task_id == source.task_id),
+                    self._memory_policy(item),
                 )
                 for item in pending
             ]

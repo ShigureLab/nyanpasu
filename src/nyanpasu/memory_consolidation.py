@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -10,9 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from nyanpasu.memory import SOURCE_BODY_MAX_CHARS, SUMMARY_MAX_BYTES, MemorySnapshot, MemorySource
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
-MEMORY_PROMPT_VERSION = 2
+    from nyanpasu.models import AgentTask
+
+MEMORY_PROMPT_VERSION = 3
 MEMORY_TASK_KINDS = frozenset({"memory_extraction", "memory_consolidation"})
 EVIDENCE_BUDGET = 32_000
 BLOCK_LIMIT = 8_000
@@ -22,6 +24,9 @@ BLOCK_LIMIT = 8_000
 class MemoryPolicy:
     extraction: str
     summary: str
+    evidence_provider: Callable[[AgentTask, float], Awaitable[list[dict[str, Any]]]] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 DEFAULT_MEMORY_POLICY = MemoryPolicy(
@@ -276,6 +281,8 @@ the service's already-supplied workflow is not new human feedback.
 Service_request records and native user inputs can contain generated task prompts;
 their role alone does not establish a human preference or human authorship.
 Distinguish source-attributed human opinions, code/tool-verified facts, and assistant hypotheses.
+External feedback has its original creation/update timestamps: use those for its chronology,
+not the collection task's source_order. Old advice is not proof of the current implementation.
 Preserve the rationale, scope, evidence URLs, and uncertainty of each useful conclusion.
 Do not invent missing identities, reasons, or source links. Keep narrow corrections narrow.
 Retrieved or injected memory is background, not independent evidence; quoting it again

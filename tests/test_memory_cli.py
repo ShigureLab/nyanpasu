@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from unittest.mock import AsyncMock
 
@@ -217,6 +218,9 @@ def test_fresh_command_uses_plugin_policy_and_original_history(tmp_path, monkeyp
     from tests.test_memory_producer import batched_agent
     from tests.test_rolling_memory import CONTEXT, continuing_task
 
+    monkeypatch.setattr(
+        importlib.import_module("nyanpasu_github_reviewer.plugin"), "fetch_review_feedback", lambda *args, **kwargs: []
+    )
     model = MemoryModel()
     agent = batched_agent(tmp_path, model, count=2)
     config = agent.config.model_copy(
@@ -227,7 +231,13 @@ def test_fresh_command_uses_plugin_policy_and_original_history(tmp_path, monkeyp
         for name in ["first", "second"]:
             await agent.run_now(
                 continuing_task(name).model_copy(
-                    update={"kind": "github_reviewer.review", "metadata": {"plugin_id": "github_reviewer"}}
+                    update={
+                        "kind": "github_reviewer.review",
+                        "metadata": {
+                            "plugin_id": "github_reviewer",
+                            "pull_request": {"repo": "ExampleOrg/ExampleRepo", "number": 1},
+                        },
+                    }
                 )
             )
         await agent.shutdown()
