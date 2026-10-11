@@ -12,6 +12,7 @@ from nyanpasu.memory import SOURCE_BODY_MAX_CHARS, SUMMARY_MAX_BYTES, MemorySnap
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+MEMORY_PROMPT_VERSION = 2
 MEMORY_TASK_KINDS = frozenset({"memory_extraction", "memory_consolidation"})
 EVIDENCE_BUDGET = 32_000
 BLOCK_LIMIT = 8_000

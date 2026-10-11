@@ -66,12 +66,22 @@ class ReviewScopeInput(RootModel[ScopePlan | EmptyInput]):
 class GitHubReviewerPlugin:
     id = PLUGIN_ID
     config_model: type[BaseModel] | None = GitHubReviewerConfig
-    memory_policies = {
-        "github_reviewer.review": MemoryPolicy(
-            extraction=(INSTRUCTIONS_DIR / "memory-extraction.md").read_text(),
-            summary=(INSTRUCTIONS_DIR / "memory-summary.md").read_text(),
+
+    def memory_policies(self, config: BaseModel | dict[str, Any]) -> dict[str, MemoryPolicy]:
+        if not isinstance(config, GitHubReviewerConfig):
+            config = GitHubReviewerConfig.model_validate(config)
+        identity = (
+            "\nThe serving review agent's configured GitHub login is "
+            + json.dumps(config.github_login)
+            + ". Comments/reviews from this login are agent reports, even when GitHub says account type User. "
+            "Never classify them as human advice. Preserve their verified technical mechanisms under PR substance.\n"
         )
-    }
+        return {
+            "github_reviewer.review": MemoryPolicy(
+                extraction=(INSTRUCTIONS_DIR / "memory-extraction.md").read_text() + identity,
+                summary=(INSTRUCTIONS_DIR / "memory-summary.md").read_text(),
+            )
+        }
 
     def __init__(self, config: GitHubReviewerConfig | None = None) -> None:
         self.config = config

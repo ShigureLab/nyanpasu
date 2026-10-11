@@ -73,24 +73,26 @@ class PluginManager:
         self.registry = registry or discover_plugins()
         self.enabled: list[NyanpasuPlugin] = []
 
+    def _plugin_config(self, plugin: NyanpasuPlugin) -> BaseModel | dict[str, Any]:
+        raw = self.config.plugins.settings.get(plugin.id, {})
+        return plugin.config_model.model_validate(raw) if plugin.config_model is not None else raw
+
     def register_memory_policies(self) -> None:
-        """Register static policies without starting plugin pollers or external integrations."""
+        """Register policies without starting plugin pollers or external integrations."""
         for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
-            for kind, policy in getattr(plugin, "memory_policies", {}).items():
+            provider: dict[str, MemoryPolicy] | Callable[[BaseModel | dict[str, Any]], dict[str, MemoryPolicy]] = (
+                getattr(plugin, "memory_policies", {})
+            )
+            policies = provider if isinstance(provider, dict) else provider(self._plugin_config(plugin))
+            for kind, policy in policies.items():
                 self.runtime.add_memory_policy(plugin_id, kind, policy)
 
     async def setup(self) -> None:
         self.register_memory_policies()
         for plugin_id in self.config.enabled_plugin_ids:
             plugin = self.registry.get(plugin_id)
-            raw_config = self.config.plugins.settings.get(plugin_id, {})
-            plugin_config: BaseModel | dict[str, Any]
-            if plugin.config_model is not None:
-                plugin_config = plugin.config_model.model_validate(raw_config)
-            else:
-                plugin_config = raw_config
-            await plugin.setup(self.runtime, plugin_config)
+            await plugin.setup(self.runtime, self._plugin_config(plugin))
             self.enabled.append(plugin)
 
     async def shutdown(self) -> None:

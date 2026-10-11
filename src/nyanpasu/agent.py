@@ -30,6 +30,7 @@ from nyanpasu.memory import (
 )
 from nyanpasu.memory_consolidation import (
     DEFAULT_MEMORY_POLICY,
+    MEMORY_PROMPT_VERSION,
     MEMORY_TASK_KINDS,
     ContextSummaryOutput,
     MemoryPolicy,
@@ -1094,7 +1095,7 @@ class AgentService:
                 self._memory_service(task).snapshot_context, task.memory, source.context_key, source.context_generation
             )
             digest = snapshot.input_digest
-        policy_digest = input_digest(asdict(self._memory_policy(source)))
+        policy_digest = input_digest([MEMORY_PROMPT_VERSION, asdict(self._memory_policy(source))])
         prior_policy = task.metadata.get("memory_policy_digest")
         if prior_policy is not None and prior_policy != policy_digest:
             raise MemoryConflict("memory policy changed; start a fresh rebuild")

@@ -4,7 +4,13 @@ Maintain two complementary parts of this PR's memory:
    from human GitHub participants, including the body of APPROVED reviews. For each, retain
    who said what, the problem and reason, applicability, and the original comment/review URL.
    Record adoption, rejection, correction, or verification only when evidence supports it.
+   Only classify feedback as human when its author identity is established by the supplied
+   evidence. Preserve the author's login; an unnamed 'reviewer' does not establish human authorship.
+   GitHub account type User alone is insufficient: automation can use ordinary accounts.
    The serving agent's own comments and bot status messages are not human feedback.
+   Relabel mistakenly attributed agent comments as agent reports; keep independently verified
+   technical mechanisms under PR substance. If identity is unknown, explicitly say so rather
+   than asserting human authorship.
    Preserve new human advice about review methods, but exclude the fixed reviewer workflow.
 
 2. PR substance: explain the problem solved and the core before/after behavior or contract,
