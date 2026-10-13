@@ -40,6 +40,7 @@ from nyanpasu_github_reviewer.prompt import (
     build_review_instructions,
     build_review_prompt,
     cleanup_prompt,
+    review_testing_instructions,
     review_trigger,
 )
 from nyanpasu_github_reviewer.reference import prepare_reference
@@ -287,8 +288,15 @@ class GitHubReviewerPlugin:
         files = inputs.pop("review_files", None)
         if not isinstance(files, list) or not files or not all(isinstance(path, str) for path in files):
             raise ValueError("inputs.review_files must list the accepted changed files owned by this child")
-        if len(files) != len(set(files)) or not set(files) <= allowed:
-            raise ValueError("child scope must be unique accepted files within its parent's responsibility")
+        if len(files) != len(set(files)):
+            raise ValueError("inputs.review_files must contain unique accepted files; remove duplicate path tokens")
+        outside_scope = sorted(set(files) - allowed)
+        if outside_scope:
+            raise ValueError(
+                "child scope includes files outside its parent's accepted files: "
+                + json.dumps(outside_scope, ensure_ascii=False)
+                + ". Remove them from inputs.review_files; related files may still be read as context."
+            )
         if request.purpose != "independent-design" and request.revision not in {None, inventory["head_sha"]}:
             raise ValueError("deep review must use the inventory head")
         prepared = prepare_reference(self.runtime.config, parent, request.model_copy(update={"inputs": inputs}))
@@ -303,7 +311,9 @@ class GitHubReviewerPlugin:
                     "For percent encoding, decode with urllib.parse.unquote_to_bytes before filesystem access; "
                     "keep the original tokens in scope reports."
                     + "\nRead other files for context when needed; report on your owned scope. "
-                    "Do not expand into deferred evidence, demos or other unassigned review work.",
+                    "Do not expand into deferred evidence, demos or other unassigned review work."
+                    + "\n\n"
+                    + review_testing_instructions(),
                 }
             )
         # The independent designer's prompt contains requirements only, not author paths.

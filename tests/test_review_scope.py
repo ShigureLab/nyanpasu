@@ -266,6 +266,15 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert report["scope"][inventory["inventory_id"]]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
         agent.store = StateStore(config.db_path)
         assert (await agent.control.dispatch(task.task_id, "review-scope", {}))["scope"] == report["scope"]
+        for paths, error in [
+            (["author-only.txt", "contract.txt"], r'accepted files: \["contract.txt"\]'),
+            (["author-only.txt", "author-only.txt"], "remove duplicate path tokens"),
+        ]:
+            with pytest.raises(ValueError, match=error):
+                await agent.control.dispatch(
+                    task.task_id, "create", request.model_copy(update={"inputs": {"review_files": paths}}).model_dump()
+                )
+        assert agent.store.subtasks(task.task_id) == []
         for purpose in ["independent-design", "test-audit", "module-review", "custom-expert"]:
             rejected = request.model_copy(
                 update={"purpose": purpose, "inputs": {"review_files": ["demos/result.json"]}}
@@ -286,6 +295,14 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]
+        overlapping = await agent.create_subtask(
+            task.task_id,
+            request.model_copy(update={"request_key": "other-question", "prompt": "check another contract"}),
+        )
+        assert overlapping.task_id != child["task_id"]
+        assert (
+            overlapping.metadata["inputs"]["review_scope"]["files"] == saved.metadata["inputs"]["review_scope"]["files"]
+        )
         with pytest.raises(ValueError, match="not available"):
             await agent.control.dispatch(child["task_id"], "review-scope", plan)
         with pytest.raises(ValueError, match="accepted files"):

@@ -17,6 +17,10 @@ INSTRUCTIONS_DIR = Path(__file__).with_name("instructions")
 TEMPLATES_DIR = Path(__file__).with_name("templates")
 
 
+def review_testing_instructions() -> str:
+    return (INSTRUCTIONS_DIR / "review-testing.md").read_text(encoding="utf-8")
+
+
 def publication_mode(config: GitHubReviewerConfig) -> str:
     if config.dry_run or not config.post_reviews:
         return "read-only; do not write to GitHub, including reviews, replies, or the dashboard"
@@ -24,7 +28,7 @@ def publication_mode(config: GitHubReviewerConfig) -> str:
 
 
 def build_review_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) -> str:
-    return Template((INSTRUCTIONS_DIR / "reviewer.md").read_text(encoding="utf-8")).substitute(
+    instructions = Template((INSTRUCTIONS_DIR / "reviewer.md").read_text(encoding="utf-8")).substitute(
         repo=pr.repo,
         pr_number=pr.number,
         agent_name=config.agent_name,
@@ -38,6 +42,7 @@ def build_review_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) 
         output_reference=INSTRUCTIONS_DIR / "review-output.md",
         dashboard_config=TEMPLATES_DIR / "boards.toml",
     )
+    return instructions + "\n\n" + review_testing_instructions()
 
 
 def review_trigger(event: ReviewEvent) -> ReviewTrigger:
@@ -113,6 +118,8 @@ def build_ci_followup_instructions(config: GitHubReviewerConfig, pr: PullRequest
         f"This turn handles CI only. Use concise {config.review_language} in public output.\n"
         f"Publication mode: {publication_mode(config)}.\n\n"
         + (INSTRUCTIONS_DIR / "ci-followup.md").read_text(encoding="utf-8")
+        + "\n\n"
+        + review_testing_instructions()
     )
 
 
@@ -148,11 +155,12 @@ def build_ci_followup_prompt(
 
 
 def build_ci_analysis_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) -> str:
-    return Template((INSTRUCTIONS_DIR / "ci-analysis.md").read_text(encoding="utf-8")).substitute(
+    instructions = Template((INSTRUCTIONS_DIR / "ci-analysis.md").read_text(encoding="utf-8")).substitute(
         repo=pr.repo,
         pr_number=pr.number,
         review_language=config.review_language,
     )
+    return instructions + "\n\n" + review_testing_instructions()
 
 
 def build_ci_analysis_prompt(pr: PullRequestRef, *, snapshot: dict) -> str:

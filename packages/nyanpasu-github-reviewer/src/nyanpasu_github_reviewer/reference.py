@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nyanpasu_github_reviewer.prompt import review_testing_instructions
 from nyanpasu_github_reviewer.scope import build_inventory
 
 if TYPE_CHECKING:
@@ -50,7 +51,7 @@ def prepare_reference(config: NyanpasuConfig, parent: AgentTask, request: Subtas
         raise ValueError("independent design requires a repository")
     inventory = parent.metadata.get("review_inventory") or build_inventory(config, parent)
     source = inventory["merge_base_sha"]
-    policy = (INSTRUCTIONS / "independent-design.md").read_text()
+    policy = (INSTRUCTIONS / "independent-design.md").read_text() + "\n\n" + review_testing_instructions()
     requirements = json.dumps(inputs.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     manifest = {
         "head_sha": inventory["head_sha"],
