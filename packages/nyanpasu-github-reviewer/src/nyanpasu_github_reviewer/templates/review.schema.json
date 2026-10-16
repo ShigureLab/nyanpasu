@@ -39,7 +39,7 @@
     "simplification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["production", "tests"],
+      "minProperties": 1,
       "properties": {
         "production": { "$ref": "#/$defs/necessityAudit" },
         "tests": { "$ref": "#/$defs/necessityAudit" }
@@ -137,26 +137,6 @@
               "general": {
                 "properties": { "status": { "enum": ["running", "completed", "incomplete"] } }
               }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "stages": {
-            "properties": { "deep": { "properties": { "status": { "const": "completed" } } } }
-          }
-        }
-      },
-      "then": {
-        "required": ["simplification"],
-        "properties": {
-          "simplification": {
-            "properties": {
-              "production": { "properties": { "status": { "enum": ["completed", "skipped"] } } },
-              "tests": { "properties": { "status": { "enum": ["completed", "skipped"] } } }
             }
           }
         }

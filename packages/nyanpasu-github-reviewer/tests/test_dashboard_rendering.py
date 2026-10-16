@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 import pytest
 from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.rendering.jinja import render_jinja
+from jsonschema import Draft202012Validator, ValidationError
 
 from nyanpasu_github_reviewer.prompt import TEMPLATES_DIR
 
@@ -40,10 +41,12 @@ def report() -> dict:
     data = json.loads((TEMPLATES_DIR / "review.example.json").read_text())
     data["scope"] = {
         INVENTORY_ID: {
+            "inventory_id": INVENTORY_ID,
             "counts": {"accept": 1, "relocate": 0, "clarify": 0},
             "groups": [
                 {
                     "files": ["service/config.py"],
+                    "category": "production",
                     "decision": "accept",
                     "reason": "实现请求的配置行为。",
                     "source": "功能需求。",
@@ -61,6 +64,53 @@ def render(report: dict, meta: MetaSnapshot | None = None) -> tuple[str, list[tu
     parser = Links()
     parser.feed(output)
     return output, parser.links
+
+
+def test_completed_review_needs_no_simplification_audit(report: dict) -> None:
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    report.pop("simplification")
+    report.pop("ci")
+    report.update(status="approved", findings={})
+
+    # A completed deeper correctness investigation does not require deletion/retention paperwork.
+    validator.validate(report)
+    output, _ = render(report)
+    assert "✅ 已通过" in output
+    assert "精简审查与验证依据" not in output
+
+    # Removing that audit gate must not allow approval of unfinished coverage.
+    for stage in ("general", "deep"):
+        report["stages"][stage]["status"] = "running"
+        with pytest.raises(ValidationError):
+            validator.validate(report)
+        report["stages"][stage]["status"] = "completed"
+
+
+def test_findings_can_be_delivered_before_general_completion(report: dict) -> None:
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    report.pop("simplification")
+    report.update(status="reviewing", summary="已确认配置状态问题；恢复路径仍在检查。")
+    report["stages"]["general"].update(status="running", summary="配置入口已查；恢复路径待查。")
+    report["stages"]["deep"].update(status="pending", summary="尚未选择额外调查。")
+
+    validator.validate(report)
+    output, links = render(report)
+    finding = report["findings"]["F1"]
+    assert (finding["url"], finding["title"]) in links
+    assert report["summary"] in output
+    assert "✅ 已通过" not in output
+
+
+@pytest.mark.parametrize("scope", ["production", "tests"])
+def test_simplification_can_cover_only_the_investigated_scope(report: dict, scope: str) -> None:
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    other_scope = "tests" if scope == "production" else "production"
+    omitted = report["simplification"].pop(other_scope)
+
+    validator.validate(report)
+    output, _ = render(report)
+    assert report["simplification"][scope]["summary"] in output
+    assert omitted["summary"] not in output
 
 
 @pytest.mark.parametrize(

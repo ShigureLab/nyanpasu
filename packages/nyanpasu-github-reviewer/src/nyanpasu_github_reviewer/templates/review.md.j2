@@ -133,16 +133,18 @@
 </thead>
 <tbody>
 {% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
+{% if data.simplification[key] is defined -%}
 <tr>
 <td nowrap valign="top">{{ label }}</td>
 <td nowrap valign="top">{{ stage_states[data.simplification[key].status] }}</td>
 <td valign="top">{{ data.simplification[key].summary | md_body }}</td>
 </tr>
+{% endif -%}
 {% endfor -%}
 </tbody>
 </table>
 
-{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
+{% for key, label in [("production", "生产代码"), ("tests", "测试")] if data.simplification[key] is defined -%}
 {% set audit = data.simplification[key] -%}
 {% if audit.entries -%}
 #### {{ label }}的必要性与替代方案
