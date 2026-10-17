@@ -1,4 +1,11 @@
 // https://docs.renovatebot.com/configuration-options/
 {
   extends: ["github>SigureMo/renovate-config"],
+  packageRules: [
+    {
+      matchPackageNames: ["vite-plus", "@voidzero-dev/vite-plus-core"],
+      groupName: "Vite Plus",
+      groupSlug: "vite-plus",
+    },
+  ],
 }

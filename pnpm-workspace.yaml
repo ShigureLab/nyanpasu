@@ -4,4 +4,4 @@ overrides:
 peerDependencyRules:
   allowedVersions:
     # The Vite-compatible fork reports its own package version.
-    vite: 0.3.0
+    vite: 1.2.0
