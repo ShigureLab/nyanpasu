@@ -133,8 +133,6 @@ def create_app(
         state_store.has_restricted_memory() or any(domain != "public" for domain in memory.list_domains())
     ):
         raise ValueError("non-public history requires authenticated service endpoints")
-    if owned_backends is not None:
-        owned_backends.register_session_locator(state_store.native_home)
     reader = TranscriptReader(state_store.db_path, session_sources)
 
     protected = APIRouter(dependencies=[Depends(require_server_token)])

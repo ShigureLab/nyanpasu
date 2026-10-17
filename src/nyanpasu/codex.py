@@ -13,7 +13,6 @@ from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
-from nyanpasu.native_home import native_env
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,12 +31,12 @@ class CodexSessionSource(Protocol):
 
 
 class CodexAppServerBackend:
-    def __init__(self, config: NyanpasuConfig, name: str = "codex", *, home: Path | None = None) -> None:
+    def __init__(self, config: NyanpasuConfig, name: str = "codex") -> None:
         configured = config.backends[name]
         if not isinstance(configured, CodexBackendConfig):
             raise ValueError(f"backend {name} is not a Codex backend")
         self.config = configured
-        self._env = MappingProxyType(safe_codex_env(config, name, home=home))
+        self._env = MappingProxyType(safe_codex_env(config, name))
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -85,6 +84,7 @@ class CodexAppServerBackend:
                 thread_params["config"] = {"model_reasoning_effort": execution.reasoning}
             thread = await self._request("thread/resume" if thread_id else "thread/start", thread_params)
             active_thread_id = str(thread["thread"]["id"])
+            await self._request("thread/memoryMode/set", {"threadId": active_thread_id, "mode": "disabled"})
             if on_started:
                 await on_started(active_thread_id, None)
             start = asyncio.create_task(
@@ -433,5 +433,5 @@ class CodexAppServerBackend:
         self._fail_pending(RuntimeError("codex app-server closed"))
 
 
-def safe_codex_env(config: NyanpasuConfig, name: str = "codex", *, home: Path | None = None) -> dict[str, str]:
-    return native_env(process_env(config.backends[name].process, cwd=config.state_dir, backend="codex"), home=home)
+def safe_codex_env(config: NyanpasuConfig, name: str = "codex") -> dict[str, str]:
+    return process_env(config.backends[name].process, cwd=config.state_dir, backend="codex")

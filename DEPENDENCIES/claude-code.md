@@ -17,4 +17,4 @@ Nyanpasu requires a CLI compatible with its stream output, session resume, and c
 
 Install the [reviewer skills](index.md#agent-skills) for Claude and configure credentials through `backends.claude.process.env` or `backends.claude.process.pass_env`. Set `backends.claude.process.command` for a custom executable. Preserve its configuration and native session history across restarts.
 
-Configure the required skills through [native session homes](../README.md#native-session-homes) and the native CLI’s discovery settings. Verify discovery inside a Nyanpasu task; a normal interactive CLI session uses a different home.
+Configure the required skills through [native session homes](../README.md#native-session-homes) and the native CLI’s discovery settings. Verify discovery as the service account with the backend’s configured environment.

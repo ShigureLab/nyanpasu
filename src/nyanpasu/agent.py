@@ -88,7 +88,6 @@ class AgentService:
         self.store = store or StateStore(config.db_path)
         self.worktrees = worktrees or WorktreeManager(config)
         self.backends = backends or Backends(config)
-        self.backends.register_session_locator(self.store.native_home)
         self.memory = MemoryService(config.state_dir / "memory")
         self.control = TaskControl(self)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
@@ -538,9 +537,6 @@ class AgentService:
                     turn_id,
                     backend_name,
                     context=context,
-                    native_home=native_home,
-                    isolated_home=home,
-                    driver=execution.driver,
                     memory_context=memory_context,
                     developer_instructions=developer_instructions if execution.driver == "claude-code" else None,
                 )
@@ -548,25 +544,12 @@ class AgentService:
             if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 raise asyncio.CancelledError
 
-        home_key = hashlib.sha256(json.dumps([task.context_key, backend_name, memory_key]).encode()).hexdigest()
-        home = self.config.state_dir / "native" / home_key
-        native_home = home / self.config.backends[backend_name].home.native_directory
-        if context.thread_id is not None:
-            location = await to_thread.run_sync(self.store.native_home, backend_name, context.thread_id)
-            if (
-                location.native_home != native_home
-                or location.isolated_home != home
-                or location.driver != execution.driver
-            ):
-                raise ValueError(
-                    "native home configuration changed for this session; use its original configuration or a fresh context"
-                )
         control_context = contextlib.nullcontext(None) if memory_job else self.control.turn(task.task_id)
         async with control_context as control:
             if control is not None:
                 memory_context = asdict(control.memory_context)
                 developer_instructions = self._runtime_instructions(task) + control.prompt
-            async with self.backends.turn(backend_name, home=home) as backend:
+            async with self.backends.turn(backend_name) as backend:
                 if memory_job:
                     result = await self._run_memory_job(task, backend, context.session_worktree, on_started)
                 else:
@@ -594,9 +577,6 @@ class AgentService:
                 result.turn_id,
                 backend_name,
                 context=context,
-                native_home=native_home,
-                isolated_home=home,
-                driver=execution.driver,
                 memory_context=memory_context,
                 developer_instructions=developer_instructions if execution.driver == "claude-code" else None,
             )

@@ -58,6 +58,7 @@ COMMON_ENV = frozenset(
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
         "all_proxy",
         "http_proxy",
         "https_proxy",
@@ -80,4 +81,8 @@ def process_env(config: ProcessConfig, *, cwd: Path, backend: str) -> dict[str, 
     for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
         if key in env:
             env[key] = str(Path(env[key]).expanduser().resolve())
-    return env
+    return {
+        key: value
+        for key, value in env.items()
+        if key not in {"NYANPASU_HOME", "NYANPASU_TOKEN"} and not key.startswith("NYANPASU__")
+    }

@@ -146,11 +146,16 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
 
     assert [method for method, _ in backend.requests] == [
         "thread/start",
+        "thread/memoryMode/set",
         "turn/start",
         "thread/resume",
+        "thread/memoryMode/set",
         "turn/start",
     ]
-    for _, params in backend.requests:
+    for method, params in backend.requests:
+        if method == "thread/memoryMode/set":
+            assert params == {"threadId": "thread-1", "mode": "disabled"}
+            continue
         assert params["model"] == "configured-model"
         assert params["approvalPolicy"] == "on-request"
         assert params["approvalsReviewer"] == "auto_review"
@@ -159,10 +164,10 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
         assert "experimentalRawEvents" not in params
         assert "baseInstructions" not in params
     assert backend.requests[0][1]["developerInstructions"] == "review role"
-    assert backend.requests[2][1]["developerInstructions"] == "updated review role"
-    for _, params in backend.requests[::2]:
+    assert backend.requests[3][1]["developerInstructions"] == "updated review role"
+    for _, params in backend.requests[::3]:
         assert params["config"] == {"model_reasoning_effort": "medium"}
-    for (_, params), text in zip(backend.requests[1::2], ("review", "new commit"), strict=True):
+    for (_, params), text in zip(backend.requests[2::3], ("review", "new commit"), strict=True):
         assert params["effort"] == "medium"
         assert params["input"] == [{"type": "text", "text": text, "text_elements": []}]
         assert "developerInstructions" not in params
@@ -212,7 +217,7 @@ def test_structured_output_schema_reaches_codex_turn(tmp_path: Path) -> None:
         )
 
     result = asyncio.run(run())
-    assert backend.requests[1][1]["outputSchema"] == schema
+    assert backend.requests[2][1]["outputSchema"] == schema
     assert "outputSchema" not in backend.requests[0][1]
     assert result.final_message == '{"summary":"verified"}'
 
@@ -231,6 +236,8 @@ class RecordingAppServerBackend(CodexAppServerBackend):
         self.requests.append((method, params))
         if method in {"thread/start", "thread/resume"}:
             return {"thread": {"id": "thread-1"}}
+        if method == "thread/memoryMode/set":
+            return {}
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         raise AssertionError(f"unexpected request: {method}")
@@ -385,6 +392,8 @@ async def test_concurrent_requests_use_each_tasks_execution(tmp_path):
             if method == "thread/start":
                 await asyncio.sleep(0)
                 return {"thread": {"id": params["model"]}}
+            if method == "thread/memoryMode/set":
+                return {}
             thread = params["threadId"]
             self._completed_turns[(thread, "turn")] = {
                 "turn": {"status": "completed", "items": [{"type": "agentMessage", "text": "done"}]}

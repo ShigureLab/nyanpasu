@@ -14,8 +14,8 @@ Choose an installation method supported by your agent:
 | Claude Code skills/plugins | [Claude Code](claude-code.md)                            | Follow [Claude's skill documentation](https://code.claude.com/docs/en/skills) and the skill publisher's installer           |
 | `gh skill`                 | A [gh](github-cli.md) version supporting that command    | Follow the skill publisher's instructions, such as [gh-slate](gh-slate-skill.md)                                            |
 
-Agent tasks execute in managed workspaces with separate homes. Install the required skills into each backend’s curated `home.template`, using its native discovery layout and real files rather than symbolic links. Alternatively, configure the native CLI to discover a shared skill directory. Installing only into the Nyanpasu source checkout or the service account’s personal home does not make the skills available to workers.
+Agent tasks use the service account's native home and managed workspaces. Install required skills in the CLI's normal user skill directory, or configure the CLI to discover a shared skill directory. Nyanpasu does not copy skills into context-specific homes.
 
-Confirm the required skill names are discoverable in an actual Nyanpasu task. Workers use separate native homes, so discovery in the service account’s normal interactive CLI is insufficient. See [native session homes](../README.md#native-session-homes) for configuration.
+Confirm the required skill names are discoverable with the service account and the backend's configured `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. See [native session homes](../README.md#native-session-homes).
 
 The [Skills directory](https://www.skills.sh/docs) is one public discovery option. Follow each skill publisher's installation instructions for its prerequisites.

@@ -8,13 +8,18 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from nyanpasu.claude import ClaudeBackend
 from nyanpasu.codex import CodexAppServerBackend, safe_codex_env
 from nyanpasu.config import (
+    ClaudeBackendConfig,
     CodexBackendConfig,
     EnvCommand,
     NyanpasuConfig,
     ProcessConfig,
+    TaskPolicy,
+    TasksConfig,
 )
+from nyanpasu.targets import ExecutionOverride
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -202,3 +207,36 @@ def test_importing_cli_does_not_resolve_environment(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr.decode()
     assert not marker.exists()
     assert not (tmp_path / "state.sqlite3").exists()
+
+
+@pytest.mark.parametrize("backend", ["codex", "claude-code"])
+@pytest.mark.parametrize("source", ["pass_env", "env"])
+def test_explicit_backend_credentials_survive_without_service_configuration(tmp_path, monkeypatch, backend, source):
+    credential = {"NYANPASU_GITHUB_TOKEN": "agent-credential"}
+    administrative = {
+        "NYANPASU_HOME": "/operator/service",
+        "NYANPASU_TOKEN": "old-admin-token",
+        "NYANPASU__SERVER__TOKEN": "admin-token",
+        "NYANPASU__BACKENDS__CODEX__PROCESS__ENV__SECRET": "service-config",
+    }
+    for key, value in {**credential, **administrative, "NYANPASU_NOT_GRANTED": "not-authorized"}.items():
+        monkeypatch.setenv(key, value)
+    granted = {**credential, **administrative}
+    configured = (
+        ProcessConfig(command=("true",), pass_env=tuple(granted))
+        if source == "pass_env"
+        else ProcessConfig(command=("true",), env=granted)
+    )
+    config = NyanpasuConfig(
+        state_dir=tmp_path / "state",
+        backends={
+            "worker": CodexBackendConfig(process=configured)
+            if backend == "codex"
+            else ClaudeBackendConfig(process=configured)
+        },
+        tasks=TasksConfig(defaults=TaskPolicy(execution=ExecutionOverride(backend="worker"))),
+    )
+    env = CodexAppServerBackend(config, "worker")._env if backend == "codex" else ClaudeBackend(config, "worker").env
+    assert env["NYANPASU_GITHUB_TOKEN"] == "agent-credential"
+    assert not set(administrative).intersection(env)
+    assert "NYANPASU_NOT_GRANTED" not in env

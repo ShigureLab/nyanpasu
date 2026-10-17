@@ -14,11 +14,6 @@ driver = "codex"
 command = ["codex"]
 pass_env = ["NYANPASU_GITHUB_TOKEN"]
 
-[backends.codex.home]
-native_directory = ".codex"
-# Optional minimal HOME tree with config/auth/skills, never a personal HOME.
-# template = "/opt/nyanpasu-home-templates/codex"
-
 [backends.codex.defaults]
 # model = "your-codex-model"
 # reasoning = "high"
@@ -35,11 +30,6 @@ driver = "claude-code"
 [backends.claude.process]
 command = ["claude", "--permission-prompts", "none", "--system-prompt-snapshot", "off"]
 pass_env = ["ANTHROPIC_API_KEY", "NYANPASU_GITHUB_TOKEN"]
-
-[backends.claude.home]
-native_directory = ".claude"
-# Wrappers may require another relative native path and matching template layout.
-# template = "/opt/nyanpasu-home-templates/claude"
 
 [backends.claude.defaults]
 # model = "your-claude-model"

@@ -15,8 +15,8 @@ codex --version
 codex
 ```
 
-Nyanpasu uses Codex's app-server interface. Select a CLI supporting the runtime settings in [config.py](../src/nyanpasu/config.py) and the interface used by [codex.py](../src/nyanpasu/codex.py), including automatic permission review. Configure `backends.codex.process.command` when the executable is not on the service's `PATH`.
+Nyanpasu uses Codex's app-server interface. Select a CLI supporting the runtime settings in [config.py](../src/nyanpasu/config.py) and the interface used by [codex.py](../src/nyanpasu/codex.py), including automatic permission review and `thread/memoryMode/set`. Configure `backends.codex.process.command` when the executable is not on the service's `PATH`.
 
 Install the [reviewer skills](index.md#agent-skills) for this backend and configure credentials through `backends.codex.process.env` or `backends.codex.process.pass_env`. See [runtime configuration](../README.md#runtime-configuration); retain the backend's native history so the Dashboard can read earlier sessions.
 
-Configure the required skills through [native session homes](../README.md#native-session-homes) and the native CLI’s discovery settings. Verify discovery inside a Nyanpasu task; a normal interactive CLI session uses a different home.
+Configure the required skills through [native session homes](../README.md#native-session-homes) and the native CLI’s discovery settings. Verify discovery as the service account with the backend’s configured environment.

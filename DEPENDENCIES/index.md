@@ -24,7 +24,7 @@ Package versions and complete transitive dependencies remain authoritative in [p
 
 ## Agent skills
 
-Skills contain instructions; their command-line tools are separate installations. Provision skills for each selected backend’s separate home. See [skill installation and discovery](skill-management.md) for home templates, discovery, and backend differences.
+Skills contain instructions; their command-line tools are separate installations. Install skills in each selected backend’s native skill directory. See [skill installation and discovery](skill-management.md) for discovery and backend differences.
 
 | Skill                                                                        | Required?                                 | Tool prerequisites                       |
 | ---------------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------- |

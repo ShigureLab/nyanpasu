@@ -7,7 +7,6 @@ import pytest
 
 from nyanpasu.backends import Backend, Backends
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import NativeSessionLocation
 from nyanpasu.transcript.history import SessionMetadata
 
 if TYPE_CHECKING:
@@ -18,11 +17,6 @@ if TYPE_CHECKING:
 @pytest.mark.anyio
 async def test_native_history_processes_are_bounded_and_closed_after_each_request(tmp_path, monkeypatch):
     backends = Backends(NyanpasuConfig(state_dir=tmp_path))
-    backends.register_session_locator(
-        lambda backend, thread: NativeSessionLocation(
-            native_home=tmp_path / thread / ".codex", isolated_home=tmp_path / thread, driver="codex"
-        )
-    )
     active = maximum = closed = 0
 
     class HistoryProcess:

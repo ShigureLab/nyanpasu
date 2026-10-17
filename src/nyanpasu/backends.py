@@ -3,23 +3,18 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nyanpasu.claude import ClaudeBackend
 from nyanpasu.codex import CodexAppServerBackend
-from nyanpasu.environment import process_env
-from nyanpasu.native_home import seed_home
 from nyanpasu.resources import ProcessResources
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.transcript.codex import CodexHistorySource
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from pathlib import Path
-
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.execution import ExecutionBackend
-    from nyanpasu.models import NativeSessionLocation
     from nyanpasu.transcript.history import SessionSource
 
 
@@ -40,32 +35,17 @@ class Backends:
         self._active: dict[int, tuple[str, Backend, str]] = {}
         self._latest: dict[str, dict] = {}
         self._resources = ProcessResources()
-        self._session_home: Callable[[str, str], NativeSessionLocation] | None = None
 
-    def register_session_locator(self, locate: Callable[[str, str], NativeSessionLocation]) -> None:
-        self._session_home = locate
-
-    def _create(self, name: str, *, native_home: Path | None = None, home: Path | None = None) -> Backend:
+    def _create(self, name: str) -> Backend:
         configured = self.config.backends[name]
-        config = self.config
-        if native_home is not None:
-            field = "CODEX_HOME" if configured.driver == "codex" else "CLAUDE_CONFIG_DIR"
-            configured = configured.model_copy(
-                update={
-                    "process": configured.process.model_copy(
-                        update={"env": {**configured.process.env, field: str(native_home)}}
-                    )
-                }
-            )
-            config = config.model_copy(update={"backends": {**config.backends, name: configured}})
         if configured.driver == "codex":
-            codex = CodexAppServerBackend(config, name, home=home)
-            return Backend(
-                codex,
-                CodexHistorySource(codex, native_home=native_home, root=home or native_home),
+            codex = CodexAppServerBackend(self.config, name)
+            native_home = Path(
+                codex._env.get("CODEX_HOME") or Path(codex._env.get("HOME", str(Path.home()))) / ".codex"
             )
-        claude = ClaudeBackend(config, name, home=home)
-        return Backend(claude, ClaudeHistorySource(claude.env, root=home or native_home))
+            return Backend(codex, CodexHistorySource(codex, native_home=native_home, root=native_home))
+        claude = ClaudeBackend(self.config, name)
+        return Backend(claude, ClaudeHistorySource(claude.env))
 
     def get(self, name: str) -> Backend:
         if name not in self._instances:
@@ -78,33 +58,17 @@ class Backends:
         return RoutedHistory(self, name)
 
     @asynccontextmanager
-    async def history(self, name: str, thread_id: str):
-        if self._session_home is None:
-            raise RuntimeError("native session locator is not registered")
-        location = self._session_home(name, thread_id)
-        if self.config.backends[name].driver != location.driver:
-            raise ValueError("registered native session driver differs from backend configuration")
+    async def history(self, name: str):
         async with self._history_limit:
-            backend = self._create(name, native_home=location.native_home, home=location.isolated_home)
-            async with self._observe(name, backend, activity="history"):
+            async with self._observe(name, self._create(name), activity="history") as backend:
                 yield backend
 
     @asynccontextmanager
-    async def turn(self, name: str, *, home: Path):
+    async def turn(self, name: str):
         if name in self._provided:
             yield self.get(name).execution
             return
-        configured = self.config.backends[name]
-        env = process_env(configured.process, cwd=self.config.state_dir, backend=configured.driver)
-        native_home = seed_home(
-            home,
-            configured.driver,
-            env,
-            native_directory=configured.home.native_directory,
-            template=configured.home.template,
-        )
-        backend = self._create(name, native_home=native_home, home=home)
-        async with self._observe(name, backend, activity="turn"):
+        async with self._observe(name, self._create(name), activity="turn") as backend:
             yield backend.execution
 
     @asynccontextmanager
@@ -122,7 +86,7 @@ class Backends:
         if name in self._provided:
             await self.get(name).execution.cleanup_thread(thread_id)
             return
-        async with self.history(name, thread_id) as backend:
+        async with self.history(name) as backend:
             await backend.execution.cleanup_thread(thread_id)
 
     def _runtime_info(self, name: str, active: list[tuple[str, Backend, str]]) -> dict:
@@ -173,11 +137,11 @@ class RoutedHistory:
         self.name = name
 
     async def read_metadata(self, thread_id: str):
-        async with self.backends.history(self.name, thread_id) as backend:
+        async with self.backends.history(self.name) as backend:
             metadata = await backend.history.read_metadata(thread_id)
             return metadata.model_copy(update={"backend": self.name})
 
     async def read_session(self, thread_id: str):
-        async with self.backends.history(self.name, thread_id) as backend:
+        async with self.backends.history(self.name) as backend:
             history = await backend.history.read_session(thread_id)
             return history.model_copy(update={"metadata": history.metadata.model_copy(update={"backend": self.name})})

@@ -170,17 +170,6 @@ class CancellableCodex(FakeCodex):
         raise AssertionError("unreachable")
 
 
-def _native_binding(config: NyanpasuConfig, task: AgentTask) -> dict:
-    assert task.execution is not None
-    key = hashlib.sha256(json.dumps([task.context_key, task.execution.backend, _memory_key(task)]).encode()).hexdigest()
-    home = config.state_dir / "native" / key
-    return {
-        "native_home": home / config.backends[task.execution.backend].home.native_directory,
-        "isolated_home": home,
-        "driver": task.execution.driver,
-    }
-
-
 def _config(tmp_path: Path, *, concurrency: int = 4) -> NyanpasuConfig:
     return NyanpasuConfig(
         state_dir=tmp_path / "state",
@@ -667,9 +656,7 @@ async def test_interrupted_start_keeps_admitted_backend_after_default_changes(tm
         revision=None,
     )
     store.record_task(task)
-    store.bind_task_execution(
-        task.task_id, "old-claude-session", "old-turn", "claude", context=context, **_native_binding(config, task)
-    )
+    store.bind_task_execution(task.task_id, "old-claude-session", "old-turn", "claude", context=context)
     started = asyncio.Event()
 
     class InterruptedStart(FakeCodex):
@@ -746,9 +733,7 @@ async def test_crash_recovery_waits_for_stale_lease_then_resumes_original_backen
         workspace_key=None,
         revision=None,
     )
-    state.bind_task_execution(
-        task.task_id, "original-session", "old-turn", "claude", context=context, **_native_binding(config, task)
-    )
+    state.bind_task_execution(task.task_id, "original-session", "old-turn", "claude", context=context)
     state.try_acquire_context_lease(task.context_key, owner_id="previous-process", task_id=task.task_id, ttl_seconds=60)
     backend = FakeCodex()
     agent = AgentService(

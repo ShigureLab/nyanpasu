@@ -61,6 +61,7 @@ for line in sys.stdin:
     method=request.get("method")
     if method=="initialize": send({{"id":request["id"],"result":{{}}}})
     elif method=="thread/start": send({{"id":request["id"],"result":{{"thread":{{"id":"thread"}}}}}})
+    elif method=="thread/memoryMode/set": send({{"id":request["id"],"result":{{}}}})
     elif method=="turn/start":
         send({{"id":request["id"],"result":{{"turn":{{"id":"turn"}}}}}})
         send({{"method":"item/started","params":{{"threadId":"thread","turnId":"turn","item":{{"id":"item","type":"agentMessage","text":"before crash"}}}}}})

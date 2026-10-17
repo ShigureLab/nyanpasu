@@ -26,7 +26,7 @@ Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh
 
 ## Configuration
 
-Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, separate native homes, and memory live below the same directory. `state_dir` is not a TOML option.
+Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, and Nyanpasu memory live below the same directory; native CLI data stays in the service account’s native home. `state_dir` is not a TOML option.
 
 Backends have names and separate process settings, model defaults, and adapter options. Tasks select a backend independently, so Codex and Claude can run in the same service. Plugin activation lives under `plugins.enabled`, with plugin configuration under `plugins.settings.<id>`.
 
@@ -99,9 +99,11 @@ The Runtime page shows configured backends, task-kind routing, and the source of
 
 ### Native session homes
 
-Each context/backend/memory-audience combination has a separate native home for configuration and session history. `backends.<name>.home.native_directory` is relative to that home and defaults to `.codex` or `.claude`. An optional `home.template` supplies a minimal home tree containing configuration, authentication, and skills as real files; symbolic links are rejected. Without a template, the service seeds only the driver's supported configuration and authentication files. Existing context files are retained.
+Workers use the service account's native `HOME`, configuration, credentials, skills, plugins, and caches. `backends.<name>.process.env` can set `CODEX_HOME` or `CLAUDE_CONFIG_DIR` when the CLI uses a custom configuration directory. Nyanpasu does not copy configuration or create per-context homes. Sessions retain separate thread IDs, managed workspaces, and Nyanpasu memory audiences.
 
-Both native automatic memory systems are disabled for Nyanpasu workers; normal interactive CLI settings remain unchanged. Keep personal memories, conversation histories, and service administrative credentials out of templates. Backend processes run directly with the service user's filesystem access and the native CLI's configured permissions.
+Both native automatic memory systems are disabled for Nyanpasu workers, and Codex threads are marked as excluded from native memory generation; normal interactive CLI settings remain unchanged. Service administrative environment variables are filtered from workers. Backend processes run directly with the service user's filesystem access and the native CLI's configured permissions.
+
+When upgrading from separate context homes, stop the service and merge their native session histories into the selected CLI directories before restarting. Preserve Codex rollout files and its SQLite thread/history records together, including compressed rollouts. Remove the obsolete `backends.<name>.home` configuration blocks. State schema 4 removes the old session-to-home index; it does not migrate native CLI files.
 
 ## Background memory
 

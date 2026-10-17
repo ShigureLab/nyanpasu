@@ -17,7 +17,6 @@ from nyanpasu.models import (
     DashboardSnapshot,
     DashboardTaskItem,
     DashboardTotals,
-    NativeSessionLocation,
     SubtaskRequest,
     TaskAction,
     TaskRunResult,
@@ -473,9 +472,6 @@ class StateStore:
         backend: str = "codex",
         *,
         context: AgentContext | None = None,
-        native_home: Path | None = None,
-        isolated_home: Path | None = None,
-        driver: str | None = None,
         memory_context: dict[str, Any] | None = None,
         developer_instructions: str | None = None,
     ) -> None:
@@ -507,22 +503,6 @@ class StateStore:
                         json_dumps(memory_context) if memory_context is not None else None,
                         developer_instructions,
                     ),
-                )
-            if native_home is not None:
-                assert isolated_home is not None and driver is not None
-                existing = conn.execute(
-                    "SELECT home_dir, isolated_home, driver FROM native_sessions WHERE backend=? AND thread_id=?",
-                    (backend, thread_id),
-                ).fetchone()
-                if existing is not None and (existing["home_dir"], existing["isolated_home"], existing["driver"]) != (
-                    str(native_home),
-                    str(isolated_home),
-                    driver,
-                ):
-                    raise ValueError("native session is already registered in another home")
-                conn.execute(
-                    "INSERT OR IGNORE INTO native_sessions VALUES (?,?,?,?,?)",
-                    (backend, thread_id, str(native_home), str(isolated_home), driver),
                 )
             if context is not None:
                 self._upsert_context(conn, replace_context(context, thread_id=thread_id))
@@ -600,18 +580,6 @@ class StateStore:
                 (idle_before,),
             ).fetchall()
         return [AgentTask.model_validate_json(row["task_json"]) for row in rows]
-
-    def native_home(self, backend: str, thread_id: str) -> NativeSessionLocation:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT home_dir, isolated_home, driver FROM native_sessions WHERE backend=? AND thread_id=?",
-                (backend, thread_id),
-            ).fetchone()
-        if row is None:
-            raise ValueError("native session is not registered")
-        return NativeSessionLocation(
-            native_home=Path(row["home_dir"]), isolated_home=Path(row["isolated_home"]), driver=row["driver"]
-        )
 
     def mark_task_done(self, result: TaskRunResult, *, followup: AgentTask | None = None) -> bool:
         return self._update_task(

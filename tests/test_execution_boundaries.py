@@ -94,54 +94,6 @@ async def test_recovery_rejects_repurposed_backend_driver(tmp_path: Path, interr
         assert restarted.store.task_request(task.task_id).execution == saved.execution
         assert (result.backend, result.thread_id, result.turn_id) == (before.backend, before.thread_id, before.turn_id)
         assert restarted.store.get_context(task.context_key) == context
-        if before.thread_id is not None:
-            history = Backends(changed)
-            history.register_session_locator(restarted.store.native_home)
-            with pytest.raises(ValueError, match="native session driver differs"):
-                await history.source("worker").read_metadata(before.thread_id)
-            await history.close()
-    finally:
-        await restarted.shutdown()
-
-
-@pytest.mark.anyio
-async def test_recovery_rejects_changed_native_home_without_losing_saved_session(tmp_path: Path):
-    original = config_for(tmp_path)
-    first = make_agent(original, Interrupted())
-    saved = await interrupt(
-        first, AgentTask(task_id="original", context_key="context", action=TaskAction.RUN, prompt="work")
-    )
-    before = first.store.task_run(saved.task_id)
-    assert before.thread_id is not None
-    location = first.store.native_home("worker", before.thread_id)
-    context = first.store.get_context(saved.context_key)
-    assert context is not None and context.session_worktree is not None
-    artifact = context.session_worktree / "unfinished.txt"
-    artifact.write_text("preserve unfinished work")
-    changed = NyanpasuConfig.model_validate(
-        {
-            **original.model_dump(),
-            "backends": {
-                "worker": {
-                    **original.backends["worker"].model_dump(),
-                    "home": {"native_directory": ".moved-native-home"},
-                }
-            },
-        }
-    )
-    backend = FakeCodex()
-    restarted = make_agent(changed, backend)
-    try:
-        result = await recover(restarted, saved.task_id)
-        assert result.status is TaskStatus.FAILED
-        assert result.error is not None and "native home configuration changed" in result.error
-        assert backend.calls == []
-        assert restarted.store.native_home("worker", before.thread_id) == location
-        assert restarted.store.get_context(saved.context_key) == context
-        assert restarted.store.task_request(saved.task_id).execution == saved.execution
-        assert result.thread_id == before.thread_id and result.turn_id == before.turn_id
-        assert artifact.read_text() == "preserve unfinished work"
-        assert not (location.isolated_home / ".moved-native-home").exists()
     finally:
         await restarted.shutdown()
 

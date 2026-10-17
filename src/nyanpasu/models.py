@@ -116,12 +116,6 @@ class AgentContext(NyanpasuModel):
         return Path(value).expanduser().resolve()
 
 
-class NativeSessionLocation(NyanpasuModel):
-    native_home: Path
-    isolated_home: Path
-    driver: Literal["codex", "claude-code"]
-
-
 class TaskRunResult(NyanpasuModel):
     backend: str = "codex"
     task_id: str
