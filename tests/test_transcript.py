@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,6 +13,11 @@ from nyanpasu.transcript.models import TranscriptChanges, TranscriptWindow
 from nyanpasu.transcript.queries import CursorError, TranscriptReader
 from nyanpasu.transcript.source import RecordNotFound, SourceUnavailable
 from tests.session_source import MemorySessionSource, tool, turn
+
+if sys.version_info >= (3, 14):
+    from compression import zstd
+else:
+    from backports import zstd
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -156,7 +162,10 @@ async def test_source_redaction_and_unknown_items_remain_inspectable(history):
 
 
 @pytest.mark.anyio
-async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visible(history, tmp_path: Path):
+@pytest.mark.parametrize("compressed", [False, True])
+async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visible(
+    history, tmp_path: Path, compressed: bool
+):
     _, source, reader = history
     path = tmp_path / "rollout.jsonl"
     source.metadata = {"path": str(path), "cwd": "/native/worktree", "model": "native-model"}
@@ -174,7 +183,9 @@ async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visibl
             "completed_at_ms": 1789344002456,
         },
     }
-    path.write_text(json.dumps(record) + '\n{"partial":')
+    storage = path.with_suffix(".jsonl.zst") if compressed else path
+    data = (json.dumps(record) + '\n{"partial":').encode()
+    storage.write_bytes(zstd.compress(data) if compressed else data)
     changes = await reader.window("thread", after=initial["change_cursor"])
     entry = changes["changes"][0]["upserts"][0]
     assert entry["started_at"] == "2026-09-14T00:00:00.123000+00:00"
@@ -184,12 +195,16 @@ async def test_step_times_are_read_from_codex_and_late_timing_updates_are_visibl
     assert detail["runtime"]["model"] == "native-model"
     assert detail["runtime"]["cwd"] == "/native/worktree"
     record["payload"]["thread_id"] = "other-thread"
-    path.write_text(json.dumps(record) + "\n")
+    data = (json.dumps(record) + "\n").encode()
+    storage.write_bytes(zstd.compress(data) if compressed else data)
     assert (await reader.entry("thread", "a"))["started_at"] is None
 
 
 @pytest.mark.anyio
-async def test_codex_prompts_read_native_rollout_with_turn_ownership_and_full_redacted_content(history, tmp_path: Path):
+@pytest.mark.parametrize("storage_kind", ["plain", "compressed", "compressed_path"])
+async def test_codex_prompts_read_native_rollout_with_turn_ownership_and_full_redacted_content(
+    history, tmp_path: Path, storage_kind: str
+):
     state, source, reader = history
     path = tmp_path / "rollout.jsonl"
     source.metadata["path"] = str(path)
@@ -218,7 +233,13 @@ async def test_codex_prompts_read_native_rollout_with_turn_ownership_and_full_re
         "".join(json.dumps({"timestamp": "2026-10-11T00:00:00Z", **record}) + "\n" for record in records)
         + '{"partial":'
     )
-    path.write_text(original)
+    compressed = storage_kind != "plain"
+    storage = path.with_suffix(".jsonl.zst") if compressed else path
+    if storage_kind == "compressed_path":
+        source.metadata["path"] = str(storage)
+    data = original.encode()
+    original_bytes = zstd.compress(data) if compressed else data
+    storage.write_bytes(original_bytes)
     prompts = await reader.prompts("thread")
     assert len(prompts) == 3
     assert [entry["turn_id"] for entry in prompts] == ["turn-1", "turn-1", "turn-2"]
@@ -233,9 +254,10 @@ async def test_codex_prompts_read_native_rollout_with_turn_ownership_and_full_re
     assert "CLI base rules" in await reader.export("thread", "markdown")
     exported = await reader.export("thread", "jsonl")
     assert secret not in exported and "Not instructions" not in exported
-    assert path.read_text() == original
+    assert storage.read_bytes() == original_bytes
     assert all(row["developer_instructions"] is None for row in state.task_turns("task"))
     records[0]["payload"]["id"] = "another-session"
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    data = "".join(json.dumps(record) + "\n" for record in records).encode()
+    storage.write_bytes(zstd.compress(data) if compressed else data)
     with pytest.raises(SourceUnavailable, match="different session"):
         await reader.prompts("thread")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,8 +16,31 @@ from nyanpasu.transcript.history import HistoryItem, HistoryTurn, SessionHistory
 from nyanpasu.transcript.instructions import instruction_item
 from nyanpasu.transcript.source import iso_time
 
+if sys.version_info >= (3, 14):
+    from compression import zstd
+else:
+    from backports import zstd
+
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from typing import TextIO
+
     from nyanpasu.codex import CodexSessionSource
+
+
+@contextmanager
+def _open_rollout(path: Path, root: Path) -> Iterator[TextIO]:
+    with ExitStack() as stack:
+        try:
+            raw = stack.enter_context(open_regular_file(root, path.relative_to(root)))
+        except FileNotFoundError:
+            # Codex keeps returning the logical .jsonl path after compressing a cold rollout.
+            path = path.with_name(path.name + ".zst")
+            raw = stack.enter_context(open_regular_file(root, path.relative_to(root)))
+        stream = (
+            zstd.open(raw, "rt", encoding="utf-8") if path.suffix == ".zst" else io.TextIOWrapper(raw, encoding="utf-8")
+        )
+        yield stack.enter_context(stream)
 
 
 def rollout_annotations(
@@ -32,10 +57,7 @@ def rollout_annotations(
     turn_id = None
     try:
         anchor = root or Path(path).parent
-        with (
-            open_regular_file(anchor, Path(path).resolve(strict=True).relative_to(anchor)) as raw,
-            io.TextIOWrapper(raw, encoding="utf-8") as rollout,
-        ):
+        with _open_rollout(Path(path), anchor) as rollout:
             for index, line in enumerate(rollout):
                 try:
                     record = json.loads(line)
