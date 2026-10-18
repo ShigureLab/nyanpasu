@@ -61,6 +61,94 @@ class MemoryModel(FakeCodex):
         return result.model_copy(update={"final_message": json.dumps(output)})
 
 
+class FreshMemoryModel(MemoryModel):
+    async def run_turn(self, **kwargs):
+        self.sessions.clear()
+        self.new_session_id = f"memory-session-{len(self.events)}"
+        return await super().run_turn(**kwargs)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("oversized_summary", [False, True])
+async def test_memory_sessions_are_archived_before_the_next_chunk_or_summary_attempt(tmp_path, oversized_summary):
+    from nyanpasu.config import CodexBackendConfig
+
+    config = config_for(tmp_path, consolidate=True)
+    backend = CodexBackendConfig()
+    config = config.model_copy(update={"backends": {**config.backends, "cheap": backend}})
+
+    class ArchiveBeforeNextCall(FreshMemoryModel):
+        async def run_turn(self, **kwargs):
+            assert set(self.archived) == {f"memory-session-{index}" for index in range(len(self.events))}
+            return await super().run_turn(**kwargs)
+
+    model = ArchiveBeforeNextCall()
+    if oversized_summary:
+        model.responses[2] = json.dumps({"body": "x" * (2 * SUMMARY_MAX_BYTES), "source_ids": []})
+    evidence = [] if oversized_summary else [tool("large", "proof" * EVIDENCE_BUDGET)]
+    source = MemorySessionSource([turn("turn-1", *evidence)])
+    agent = make_agent(config, cheap=model, source=source)
+    try:
+        await agent.run_now(task("source", memory=ALICE))
+        summary = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
+        assert summary.status is TaskStatus.COMPLETED
+        sessions = {
+            row["thread_id"]
+            for identity in [SOURCE_EXTRACTION_ID, f"{SOURCE_EXTRACTION_ID}:summary"]
+            for row in agent.store.task_turns(identity)
+        }
+        assert len(sessions) == len(model.events) > 2
+        assert set(model.archived) == sessions
+        assert len(model.archived) == len(sessions)
+        if oversized_summary:
+            assert [kind for kind, _ in model.events] == ["extraction", "summary", "summary"]
+        assert agent.memory.list_summaries(ALICE)
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_archive_failure_does_not_lose_published_memory_or_summary(tmp_path):
+    class UnavailableArchive(FreshMemoryModel):
+        async def archive(self, thread_id):
+            raise RuntimeError("archive unavailable")
+
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True), cheap=UnavailableArchive(), source=MemorySessionSource([turn("turn-1")])
+    )
+    try:
+        await agent.run_now(task("source", memory=ALICE))
+        result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
+        assert result.status is TaskStatus.COMPLETED
+        assert agent.memory.list_sources(ALICE) and agent.memory.list_summaries(ALICE)
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_interrupted_memory_session_is_kept_for_recovery(tmp_path):
+    started = asyncio.Event()
+
+    class InterruptedMemory(FreshMemoryModel):
+        async def run_turn(self, **kwargs):
+            await super().run_turn(**kwargs)
+            started.set()
+            await asyncio.Event().wait()
+
+    model = InterruptedMemory()
+    agent = make_agent(
+        config_for(tmp_path, consolidate=True), cheap=model, source=MemorySessionSource([turn("turn-1")])
+    )
+    try:
+        await agent.run_now(task("source", memory=ALICE))
+        async with asyncio.timeout(3):
+            await started.wait()
+    finally:
+        await agent.shutdown()
+    assert model.archived == []
+    assert agent.store.task_status(SOURCE_EXTRACTION_ID) == TaskStatus.QUEUED
+
+
 def publish_source(
     service,
     access,

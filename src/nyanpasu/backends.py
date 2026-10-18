@@ -82,12 +82,16 @@ class Backends:
                 self._latest[name] = backend.execution.runtime_info()
             self._active.pop(id(backend), None)
 
-    async def cleanup_session(self, name: str, thread_id: str) -> None:
-        if name in self._provided:
-            await self.get(name).execution.cleanup_thread(thread_id)
-            return
-        async with self.history(name) as backend:
-            await backend.execution.cleanup_thread(thread_id)
+    async def archive_sessions(self, sessions: set[tuple[str, str]]) -> None:
+        for name in sorted({name for name, _ in sessions}):
+            thread_ids = sorted(thread_id for backend, thread_id in sessions if backend == name)
+            if name in self._provided:
+                for thread_id in thread_ids:
+                    await self.get(name).execution.archive(thread_id)
+            else:
+                async with self.history(name) as backend:
+                    for thread_id in thread_ids:
+                        await backend.execution.archive(thread_id)
 
     def _runtime_info(self, name: str, active: list[tuple[str, Backend, str]]) -> dict:
         backends = [backend for backend_name, backend, _ in active if backend_name == name]

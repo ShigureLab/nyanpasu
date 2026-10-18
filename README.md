@@ -24,6 +24,8 @@ See the [dependency index](DEPENDENCIES/index.md) for required and optional tool
 
 Anything domain-specific belongs in a plugin. GitHub event parsing, polling, `gh-llm` prompts, review submission, and PR creation live under `packages/`. Reusable GitHub primitives live in `packages/nyanpasu-github`; the core package remains GitHub-agnostic.
 
+When a context closes, the runtime calls each backend's session cleanup hook for all its native sessions, including earlier sessions from backend switches, before removing its workspace. Codex uses its native archive RPC and Dashboard history remains readable afterward; Claude Code has no archive RPC, so its hook is a no-op. Each one-shot memory session is archived as soon as its model call returns, before the next evidence chunk or summary retry starts. A failed memory job also cleans up any remaining sessions; an interrupted call retains its session for recovery. Ordinary completed turns keep their session available for the next task in the same context.
+
 ## Configuration
 
 Nyanpasu reads `$NYANPASU_HOME/config.toml`, with `NYANPASU_HOME` defaulting to `~/.nyanpasu`. State, logs, managed workspaces, and Nyanpasu memory live below the same directory; native CLI data stays in the service account’s native home. `state_dir` is not a TOML option.

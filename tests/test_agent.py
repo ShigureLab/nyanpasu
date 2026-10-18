@@ -76,7 +76,7 @@ class FakeCodex:
     async def list_turns(self, thread_id: str, cursor: str | None = None) -> dict:
         return {"data": [], "nextCursor": None}
 
-    async def cleanup_thread(self, thread_id: str) -> None:
+    async def archive(self, thread_id: str) -> None:
         self.archived.append(thread_id)
 
     async def close(self) -> None:
@@ -233,6 +233,7 @@ async def test_agent_reuses_context_thread_and_workspace(tmp_path: Path) -> None
     assert context.revision == "def"
     assert worktrees.event_paths == []
     assert worktrees.removed == []
+    assert codex.archived == []  # A completed turn still belongs to a reusable context.
 
 
 @pytest.mark.anyio
@@ -277,6 +278,31 @@ async def test_agent_cleanup_archives_thread_and_deletes_context(tmp_path: Path)
 
     assert codex.archived == ["thread-1"]
     assert store.get_context("demo:1") is None
+
+
+@pytest.mark.anyio
+async def test_context_cleanup_archives_all_sessions_across_backend_changes_before_removing_worktree(tmp_path):
+    config = _config(tmp_path)
+    codex, claude = FakeCodex(), FakeCodex()
+    backends = Backends(
+        config,
+        {"codex": Backend(codex, Mock()), "claude": Backend(claude, Mock())},
+    )
+
+    class Worktrees(FakeWorktrees):
+        def remove_worktree(self, workspace, path):
+            assert codex.archived == ["thread-1", "thread-3"]
+            assert claude.archived == ["thread-2"]
+            super().remove_worktree(workspace, path)
+
+    agent = AgentService(config, backends=backends, worktrees=Worktrees(tmp_path / "worktrees"))
+    await agent.run_now(_task("task-1"))
+    agent.store.bind_task_execution("task-1", "thread-2", "turn-2", "claude")
+    agent.store.bind_task_execution("task-1", "thread-3", "turn-3", "codex")
+    assert codex.archived == claude.archived == []
+    await agent.run_now(_task("cleanup").model_copy(update={"action": TaskAction.CLEANUP}))
+    assert agent.store.context_scope("demo:1").lifecycle == "closed"
+    assert len(agent.store.task_turns("task-1")) == 3
 
 
 @pytest.mark.anyio

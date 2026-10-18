@@ -276,7 +276,7 @@ class ClaudeBackend:
             final_message = result["result"]
         return RunResult(thread_id=session_id, turn_id=turn_id, final_message=final_message)
 
-    async def cleanup_thread(self, thread_id: str) -> None:
+    async def archive(self, thread_id: str) -> None:
         # There is no archive RPC. Keep Claude's history available after task cleanup.
         pass
 

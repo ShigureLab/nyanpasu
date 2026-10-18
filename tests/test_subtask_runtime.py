@@ -288,7 +288,7 @@ async def test_failed_cleanup_is_retried_after_restart_without_resuming_children
     worktrees = FakeWorktrees(tmp_path / "worktrees")
 
     class CannotArchive(FakeCodex):
-        async def cleanup_thread(self, thread_id):
+        async def archive(self, thread_id):
             raise RuntimeError("archive unavailable")
 
     first = AgentService(config, worktrees=worktrees, backends=fake_backends(config, CannotArchive()))

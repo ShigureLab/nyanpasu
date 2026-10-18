@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 from collections import deque
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -15,8 +16,6 @@ from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.diagnostics import Diagnostic
     from nyanpasu.targets import ExecutionTarget
@@ -418,9 +417,17 @@ class CodexAppServerBackend:
             return {"type": "readOnly", "networkAccess": True}
         return {"type": "dangerFullAccess"}
 
-    async def cleanup_thread(self, thread_id: str) -> None:
+    async def archive(self, thread_id: str) -> None:
         await self._ensure_started()
-        await self._request("thread/archive", {"threadId": thread_id})
+        try:
+            await self._request("thread/archive", {"threadId": thread_id})
+        except RuntimeError:
+            # Repeated cleanup returns "no rollout found" for an already archived thread.
+            # Read its authoritative path before treating the archive as complete.
+            thread = await self.read_thread(thread_id)
+            path = thread.get("path")
+            if path is None or Path(path).parent.name != "archived_sessions":
+                raise
 
     async def close(self) -> None:
         if self._proc is None:

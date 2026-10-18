@@ -49,6 +49,7 @@ from nyanpasu.memory_consolidation import (
 from nyanpasu.models import (
     AgentContext,
     AgentTask,
+    RunResult,
     SubtaskRequest,
     TaskAction,
     TaskRunResult,
@@ -61,6 +62,7 @@ from nyanpasu.task_control import TaskControl
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.control_tools import ToolSpec
+    from nyanpasu.execution import ExecutionBackend, ExecutionStarted
     from nyanpasu.plugins import SubtaskPreparer, TaskPreparer
 
 PostProcessHook = Callable[[AgentTask, TaskRunResult], Awaitable[None]]
@@ -363,6 +365,8 @@ class AgentService:
             else:
                 await to_thread.run_sync(self.store.mark_task_failed, task.task_id, f"{exc}\n{traceback.format_exc()}")
                 await self._stop_descendants(task.task_id)
+                if task.kind in MEMORY_TASK_KINDS:
+                    await self._archive_memory_sessions(task)
             raise
         return None
 
@@ -630,6 +634,18 @@ class AgentService:
             await self.sweep_memory()
         return True
 
+    async def _archive_memory_sessions(self, task: AgentTask) -> None:
+        turns = await to_thread.run_sync(self.store.task_turns, task.task_id)
+        sessions = {(turn["backend"], turn["thread_id"]) for turn in turns}
+        record = await to_thread.run_sync(self.store.task_run, task.task_id)
+        if record.thread_id:
+            sessions.add((record.backend, record.thread_id))
+        try:
+            await self.backends.archive_sessions(sessions)
+        except Exception:
+            # Housekeeping must not invalidate published memory or its queued summary.
+            logger.exception("memory session archive failed task_id={}", task.task_id)
+
     async def _prepare_workspace(
         self, task: AgentTask, existing: AgentContext | None
     ) -> tuple[AgentContext, Path | None]:
@@ -692,13 +708,13 @@ class AgentService:
         scopes = await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
         for scope in reversed(scopes):
             if scope.context_key == task.context_key:
-                await self._cleanup_scope(scope.context_key, scope.generation, task.workspace)
+                await self._cleanup_thread(scope.context_key, scope.generation, task.workspace)
             else:
                 child_cleanup = task.model_copy(update={"context_key": scope.context_key})
                 async with self._context_execution(child_cleanup):
                     records = await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation)
                     source = await to_thread.run_sync(self.store.task_request, records[0].task_id)
-                    await self._cleanup_scope(scope.context_key, scope.generation, source.workspace)
+                    await self._cleanup_thread(scope.context_key, scope.generation, source.workspace)
         result = TaskRunResult(
             task_id=task.task_id,
             status=TaskStatus.COMPLETED,
@@ -718,11 +734,14 @@ class AgentService:
         await self._run_post_process_hooks(task, result)
         return result
 
-    async def _cleanup_scope(self, key: str, generation: int, workspace) -> None:
+    async def _cleanup_thread(self, key: str, generation: int, workspace) -> None:
+        """Archive ended sessions, remove their workspaces, then close the context lifecycle."""
         context = await to_thread.run_sync(self.store.get_context, key)
+        sessions = await to_thread.run_sync(self.store.sessions_for_scope, key, generation)
+        if context is not None and context.thread_id:
+            sessions.add((context.backend, context.thread_id))
+        await self.backends.archive_sessions(sessions)
         if context is not None:
-            if context.thread_id:
-                await self.backends.cleanup_session(context.backend, context.thread_id)
             await to_thread.run_sync(self.worktrees.remove_worktree, workspace, context.session_worktree)
         for record in await to_thread.run_sync(self.store.tasks_for_scope, key, generation):
             if record.event_worktree:
@@ -1154,6 +1173,34 @@ class AgentService:
             return {"summary_id": summary.id, "revision": summary.revision}
         return None
 
+    async def _run_memory_turn(
+        self,
+        task: AgentTask,
+        backend: ExecutionBackend,
+        *,
+        cwd: Path,
+        prompt: str,
+        on_started: ExecutionStarted,
+        output_schema: dict[str, Any],
+    ) -> RunResult:
+        """A memory session ends with this one model call, independently of the enclosing job."""
+        assert task.execution is not None
+        result = await backend.run_turn(
+            cwd=cwd,
+            prompt=prompt,
+            developer_instructions=MEMORY_JOB_INSTRUCTIONS,
+            thread_id=None,
+            execution=task.execution,
+            on_started=on_started,
+            output_schema=output_schema,
+        )
+        try:
+            await backend.archive(result.thread_id)
+        except Exception:
+            # A housekeeping failure must not discard a completed model result.
+            logger.exception("memory session archive failed task_id={} thread_id={}", task.task_id, result.thread_id)
+        return result
+
     async def _extract_memory_batch(self, task, batch, checkpoint, backend, cwd, on_started):
         """Advance a bounded batch; a failed draft never replaces published memory or its receipts."""
         last = batch[-1]
@@ -1184,7 +1231,9 @@ class AgentService:
             item["reference"] for chunk in chunks[:cursor] for item in chunk if item["kind"] != "retained_memory"
         )
         for index in range(cursor, len(chunks)):
-            result = await backend.run_turn(
+            result = await self._run_memory_turn(
+                task,
+                backend,
                 cwd=cwd,
                 prompt=extraction_prompt(
                     source.task_id,
@@ -1196,9 +1245,6 @@ class AgentService:
                     source_order=last.source_order,
                     policy=last.policy,
                 ),
-                developer_instructions=MEMORY_JOB_INSTRUCTIONS,
-                thread_id=None,
-                execution=task.execution,
                 on_started=on_started,
                 output_schema=SourceSummaryOutput.model_json_schema(),
             )
@@ -1271,7 +1317,9 @@ class AgentService:
         for batch in source_chunks(pending):
             feedback = None
             for attempt in range(2):
-                result = await backend.run_turn(
+                result = await self._run_memory_turn(
+                    task,
+                    backend,
                     cwd=cwd,
                     prompt=summary_prompt(
                         draft,
@@ -1281,9 +1329,6 @@ class AgentService:
                         size_feedback=feedback,
                         policy=self._memory_policy(source),
                     ),
-                    developer_instructions=MEMORY_JOB_INSTRUCTIONS,
-                    thread_id=None,
-                    execution=task.execution,
                     on_started=on_started,
                     output_schema=ContextSummaryOutput.model_json_schema(),
                 )

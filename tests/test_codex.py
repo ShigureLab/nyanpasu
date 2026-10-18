@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,6 +29,31 @@ def _target(backend):
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("archived", [True, False])
+async def test_cleanup_retry_only_accepts_a_verified_archived_thread(tmp_path, monkeypatch, archived):
+    backend = CodexAppServerBackend(NyanpasuConfig(state_dir=tmp_path))
+    monkeypatch.setattr(backend, "_ensure_started", AsyncMock())
+    request = AsyncMock(
+        side_effect=[
+            RuntimeError("no rollout found"),
+            {
+                "thread": {
+                    "id": "session",
+                    "path": "/home/.codex/" + ("archived_sessions" if archived else "sessions") + "/rollout.jsonl",
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(backend, "_request", request)
+    if archived:
+        await backend.archive("session")
+    else:
+        with pytest.raises(RuntimeError, match="no rollout found"):
+            await backend.archive("session")
+    assert [call.args[0] for call in request.await_args_list] == ["thread/archive", "thread/read"]
 
 
 def test_safe_codex_env_filters_by_default_and_honors_pass_env(tmp_path: Path, monkeypatch) -> None:
