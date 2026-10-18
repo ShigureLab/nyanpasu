@@ -636,6 +636,78 @@ function cpuLabel(cpu: number | null, rss: number | null) {
   return cpu === null ? (rss === null ? 'Unavailable' : 'Sampling…') : `${cpu.toFixed(1)}%`;
 }
 
+function RuntimeBackend({ name, backend }: { name: string; backend: Runtime['backends'][string] }) {
+  const resources = backend.resources;
+  return (
+    <article aria-label={`Backend ${name}`}>
+      <details className="runtime-backend">
+        <summary>
+          <span className="runtime-backend-name">
+            <strong>{name}</strong>
+            <small>{backendLabel(backend.driver)}</small>
+          </span>
+          <Status state={backend.connection} />
+          <dl className="runtime-resources">
+            <div>
+              <dt>CPU</dt>
+              <dd>
+                {resources ? cpuLabel(resources.cpu_percent, resources.rss_bytes) : 'Unavailable'}
+              </dd>
+            </div>
+            <div>
+              <dt>RAM (RSS)</dt>
+              <dd>{resources ? ramLabel(resources.rss_bytes) : 'Unavailable'}</dd>
+            </div>
+            <div>
+              <dt>Processes</dt>
+              <dd>{resources?.process_count ?? 'Unavailable'}</dd>
+            </div>
+          </dl>
+          <span className="runtime-expand" aria-hidden="true">
+            Details <span className="runtime-chevron">⌄</span>
+          </span>
+        </summary>
+        <div className="runtime-backend-detail">
+          <div className="runtime-command-heading">
+            <h3>Launch command</h3>
+            <Copy text={backend.command.join(' ')} label="Copy command" />
+          </div>
+          <pre className="runtime-command">
+            <code>{backend.command.join(' ')}</code>
+          </pre>
+          {resources && resources.instances.length > 0 && (
+            <div className="runtime-processes">
+              <h3>Backend processes ({resources.instances.length})</h3>
+              <div className="runtime-process-table">
+                <table aria-label={`${name} process resources`}>
+                  <thead>
+                    <tr>
+                      <th>PID</th>
+                      <th>CPU</th>
+                      <th>RAM (RSS)</th>
+                      <th>Processes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resources.instances.map((instance) => (
+                      <tr key={instance.pid}>
+                        <td>{instance.pid}</td>
+                        <td>{cpuLabel(instance.cpu_percent, instance.rss_bytes)}</td>
+                        <td>{ramLabel(instance.rss_bytes)}</td>
+                        <td>{instance.process_count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
+    </article>
+  );
+}
+
 function RuntimeView({
   navigate,
   live,
@@ -655,161 +727,146 @@ function RuntimeView({
     (item) => !level || item.level === level,
   );
   return (
-    <section className="full-view">
+    <section className="full-view runtime-view">
       <span className="eyebrow">SERVICE OBSERVATIONS</span>
       <h1>Runtime</h1>
       {data.error && <p className="notice error">{data.error}</p>}
       {data.data && (
         <>
-          <div className="runtime-cards">
-            {Object.entries(data.data.backends).map(([name, backend]) => (
-              <article key={name} aria-label={`Backend ${name}`}>
-                <span>{backendLabel(backend.driver)}</span>
-                <h2>{name}</h2>
-                <code>{backend.command.join(' ')}</code>
-                <Status state={backend.connection} />
-                {backend.resources ? (
-                  <>
-                    <dl className="runtime-resources">
-                      <div>
-                        <dt>CPU</dt>
-                        <dd>
-                          {cpuLabel(backend.resources.cpu_percent, backend.resources.rss_bytes)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>RAM (RSS)</dt>
-                        <dd>{ramLabel(backend.resources.rss_bytes)}</dd>
-                      </div>
-                      <div>
-                        <dt>Processes</dt>
-                        <dd>{backend.resources.process_count}</dd>
-                      </div>
-                    </dl>
-                    {backend.resources.instances.length > 0 && (
-                      <details className="runtime-processes">
-                        <summary>Backend processes ({backend.resources.instances.length})</summary>
-                        <div className="runtime-process-table">
-                          <table aria-label={`${name} process resources`}>
-                            <thead>
-                              <tr>
-                                <th>PID</th>
-                                <th>CPU</th>
-                                <th>RAM (RSS)</th>
-                                <th>Processes</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {backend.resources.instances.map((instance) => (
-                                <tr key={instance.pid}>
-                                  <td>{instance.pid}</td>
-                                  <td>{cpuLabel(instance.cpu_percent, instance.rss_bytes)}</td>
-                                  <td>{ramLabel(instance.rss_bytes)}</td>
-                                  <td>{instance.process_count}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </details>
-                    )}
-                  </>
-                ) : (
-                  <p className="subtle">Resource usage unavailable.</p>
-                )}
-              </article>
-            ))}
-            <article>
-              <span>Root task concurrency</span>
-              <h2>{data.data.concurrency}</h2>
-              <p>Subtasks share their root’s slot, including while it waits.</p>
-            </article>
-          </div>
-          <p className="subtle">
-            Usage includes each backend’s child processes. CPU is measured between refreshes; 100%
-            equals one CPU core. RAM is summed RSS and may count shared memory more than once.
-          </p>
-          <h2>Execution policies</h2>
-          <p className="subtle">
-            Defaults for newly submitted work. Each task retains its admitted target.
-          </p>
-          <div className="execution-policies">
-            {Object.entries({ default: data.data.default_execution, ...data.data.task_kinds }).map(
-              ([kind, target]) => (
-                <details key={kind}>
-                  <summary>
-                    <ExecutionSummary kind={kind} backend={target.backend} execution={target} />
-                  </summary>
-                  <ExecutionDetails kind={kind} execution={target} />
-                </details>
-              ),
-            )}
-          </div>
-          <h2>Task activity</h2>
-          <div className="execution-activity">
-            {executions.map((item) => (
-              <button
-                key={`${item.backend}:${item.kind}:${item.status}`}
-                onClick={() => navigate({ view: 'tasks', backend: item.backend, kind: item.kind })}
-              >
-                {backendLabel(item.backend)} · {item.kind} <Status state={item.status} />{' '}
-                {item.count}
-              </button>
-            ))}
-            {executions.length === 0 && <p className="empty">No recorded tasks.</p>}
-          </div>
-          <h2>Context leases</h2>
-          {data.data.leases.map((lease) => (
-            <div className="task-row" key={lease.context_key}>
-              <code>{lease.context_key}</code>
-              <Status state={lease.expires_at * 1000 > Date.now() ? 'active' : 'expired'} />
-              <button onClick={() => navigate({ view: 'tasks', task: lease.task_id })}>
-                Open task →
-              </button>
+          <dl className="runtime-overview">
+            <div>
+              <dt>Configured backends</dt>
+              <dd>{Object.keys(data.data.backends).length}</dd>
             </div>
-          ))}
-          <div className="diagnostics-heading">
-            <h2>Backend diagnostics</h2>
-            <select
-              aria-label="Diagnostic backend"
-              value={selectedBackend}
-              onChange={(event) => setDiagnosticBackend(event.target.value)}
-            >
-              {Object.keys(data.data.backends).map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
+            <div>
+              <dt>Root task concurrency</dt>
+              <dd>{data.data.concurrency}</dd>
+            </div>
+            <div>
+              <dt>Context leases</dt>
+              <dd>{data.data.leases.length}</dd>
+            </div>
+          </dl>
+          <section className="runtime-section" aria-labelledby="runtime-backends-heading">
+            <h2 id="runtime-backends-heading">Backends</h2>
+            <div className="runtime-backend-list">
+              <div className="runtime-backend-columns" aria-hidden="true">
+                <span>Backend</span>
+                <span>Connection</span>
+                <div>
+                  <span>CPU</span>
+                  <span>RAM (RSS)</span>
+                  <span>Processes</span>
+                </div>
+                <span />
+              </div>
+              {Object.entries(data.data.backends).map(([name, backend]) => (
+                <RuntimeBackend key={name} name={name} backend={backend} />
               ))}
-            </select>
-            <select
-              aria-label="Diagnostic level"
-              value={level}
-              onChange={(event) => setLevel(event.target.value)}
-            >
-              <option value="">All levels</option>
-              {['error', 'warn', 'info', 'debug', 'trace', 'stderr'].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-          </div>
-          <p className="subtle">Recent backend log messages. Times use your local timezone.</p>
-          <div className="diagnostic-list">
-            {diagnostics.length === 0 && (
-              <p className="empty">
-                {level ? 'No matching diagnostics.' : 'No backend diagnostics.'}
+            </div>
+            <details className="runtime-notes">
+              <summary>How usage is measured</summary>
+              <p>
+                Usage includes each backend’s child processes. CPU is measured between refreshes;
+                100% equals one CPU core. RAM is summed RSS and may count shared memory more than
+                once.
               </p>
-            )}
-            {diagnostics.map((item, index) => (
-              <article className="diagnostic" key={`${item.timestamp}:${index}`}>
-                <header>
-                  <Time value={item.timestamp} />
-                  <span className={`diagnostic-level ${item.level}`}>{item.level}</span>
-                  {item.target && <code>{item.target}</code>}
-                </header>
-                <div className="diagnostic-message">{item.message}</div>
-              </article>
-            ))}
+            </details>
+          </section>
+          <div className="runtime-workload">
+            <section className="runtime-section" aria-labelledby="runtime-policies-heading">
+              <h2 id="runtime-policies-heading">Execution policies</h2>
+              <p className="subtle">Defaults for new work. Admitted tasks retain their target.</p>
+              <div className="execution-policies">
+                {Object.entries({
+                  default: data.data.default_execution,
+                  ...data.data.task_kinds,
+                }).map(([kind, target]) => (
+                  <details key={kind}>
+                    <summary>
+                      <ExecutionSummary kind={kind} backend={target.backend} execution={target} />
+                    </summary>
+                    <ExecutionDetails kind={kind} execution={target} />
+                  </details>
+                ))}
+              </div>
+            </section>
+            <section className="runtime-section" aria-labelledby="runtime-activity-heading">
+              <h2 id="runtime-activity-heading">Task activity</h2>
+              <p className="subtle">Subtasks share their root’s slot, including while it waits.</p>
+              <div className="execution-activity">
+                {executions.map((item) => (
+                  <button
+                    key={`${item.backend}:${item.kind}:${item.status}`}
+                    onClick={() =>
+                      navigate({ view: 'tasks', backend: item.backend, kind: item.kind })
+                    }
+                  >
+                    {backendLabel(item.backend)} · {item.kind} <Status state={item.status} />{' '}
+                    {item.count}
+                  </button>
+                ))}
+                {executions.length === 0 && <p className="empty">No recorded tasks.</p>}
+              </div>
+              <h3 className="runtime-leases-heading">Context leases</h3>
+              {data.data.leases.length === 0 && <p className="empty">No context leases.</p>}
+              {data.data.leases.map((lease) => (
+                <div className="task-row" key={lease.context_key}>
+                  <code>{lease.context_key}</code>
+                  <Status state={lease.expires_at * 1000 > Date.now() ? 'active' : 'expired'} />
+                  <button onClick={() => navigate({ view: 'tasks', task: lease.task_id })}>
+                    Open task →
+                  </button>
+                </div>
+              ))}
+            </section>
           </div>
+          <section className="runtime-section" aria-labelledby="runtime-diagnostics-heading">
+            <div className="diagnostics-heading">
+              <h2 id="runtime-diagnostics-heading">Backend diagnostics</h2>
+              <div className="runtime-diagnostic-filters">
+                <select
+                  aria-label="Diagnostic backend"
+                  value={selectedBackend}
+                  onChange={(event) => setDiagnosticBackend(event.target.value)}
+                >
+                  {Object.keys(data.data.backends).map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Diagnostic level"
+                  value={level}
+                  onChange={(event) => setLevel(event.target.value)}
+                >
+                  <option value="">All levels</option>
+                  {['error', 'warn', 'info', 'debug', 'trace', 'stderr'].map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <p className="subtle">Recent backend log messages. Times use your local timezone.</p>
+            <div className="diagnostic-list">
+              {diagnostics.length === 0 && (
+                <p className="empty">
+                  {level ? 'No matching diagnostics.' : 'No backend diagnostics.'}
+                </p>
+              )}
+              {diagnostics.map((item, index) => (
+                <article className="diagnostic" key={`${item.timestamp}:${index}`}>
+                  <header>
+                    <Time value={item.timestamp} />
+                    <span className={`diagnostic-level ${item.level}`}>{item.level}</span>
+                    {item.target && <code>{item.target}</code>}
+                  </header>
+                  <div className="diagnostic-message">{item.message}</div>
+                </article>
+              ))}
+            </div>
+          </section>
         </>
       )}
     </section>
