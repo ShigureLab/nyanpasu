@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from nyanpasu.memory_search import bm25_scores, tokenize
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Generator, Sequence
 
 logger = logging.getLogger(__name__)
 SOURCE_BODY_MAX_CHARS = 16_000
@@ -276,7 +276,7 @@ class MemoryService:
         return tuple(sorted(json.loads(path.read_text())["domain"] for path in self.root.glob("*/manifest.json")))
 
     @contextlib.contextmanager
-    def _locked(self, domain: str, *, write: bool = False) -> Iterator[Path]:
+    def _locked(self, domain: str, *, write: bool = False) -> Generator[Path]:
         directory = self._directory(domain)
         if write:
             directory.mkdir(mode=0o700, exist_ok=True)

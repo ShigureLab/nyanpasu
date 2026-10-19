@@ -18,7 +18,7 @@ from nyanpasu.transcript.models import Coverage, TranscriptEntry
 from nyanpasu.transcript.source import RecordNotFound, Snapshot, iso_time, read_snapshot
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
     from nyanpasu.transcript.history import SessionSource
@@ -86,7 +86,7 @@ class TranscriptReader:
         self.sources = sources
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
