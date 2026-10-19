@@ -22,14 +22,14 @@ else:
     from backports import zstd
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from typing import TextIO
 
     from nyanpasu.codex import CodexSessionSource
 
 
 @contextmanager
-def _open_rollout(path: Path, root: Path) -> Iterator[TextIO]:
+def _open_rollout(path: Path, root: Path) -> Generator[TextIO]:
     with ExitStack() as stack:
         try:
             raw = stack.enter_context(open_regular_file(root, path.relative_to(root)))

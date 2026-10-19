@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 
 @contextmanager
-def open_regular_file(root: Path, relative_path: str | Path) -> Iterator[BinaryIO]:
+def open_regular_file(root: Path, relative_path: str | Path) -> Generator[BinaryIO]:
     """Read an agent-owned regular file without following any symlinks.
 
     The service owns the stable root and its ancestors. Everything underneath
