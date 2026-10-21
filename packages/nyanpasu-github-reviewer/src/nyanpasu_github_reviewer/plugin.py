@@ -217,6 +217,19 @@ class GitHubReviewerPlugin:
         )
 
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        if request.developer_instructions.strip():
+            destination = "inputs.constraints" if request.purpose == "independent-design" else "prompt"
+            raise ValueError(
+                "reviewer child roles are supplied by the plugin; omit developer_instructions, "
+                f"move task-specific constraints to {destination}, and retry the create request"
+            )
+        if request.purpose != "independent-design":
+            field = "fingerprint" if request.purpose == "ci-analysis" else "review_files"
+            if extra := request.inputs.keys() - {field}:
+                raise ValueError(
+                    f"{request.purpose} inputs only accept {field}; "
+                    f"move {', '.join(sorted(extra))} into the self-contained prompt and retry the create request"
+                )
         if request.purpose == "ci-analysis":
             return await asyncio.to_thread(self._prepare_ci_subtask, parent, request)
         return await asyncio.to_thread(self._prepare_scoped_subtask, parent, request)
@@ -301,19 +314,25 @@ class GitHubReviewerPlugin:
             raise ValueError("deep review must use the inventory head")
         prepared = prepare_reference(self.runtime.config, parent, request.model_copy(update={"inputs": inputs}))
         if request.purpose != "independent-design":
+            assignment = {
+                "source": review_source(inventory),
+                "review_files": files,
+                "path_encoding": inventory.get("path_encoding", "utf-8"),
+            }
             prepared = prepared.model_copy(
                 update={
                     "revision": inventory["head_sha"],
                     "developer_instructions": prepared.developer_instructions
-                    + "\nOwned changed files (JSON data): "
-                    + json.dumps(files)
-                    + f"\nPath encoding: {inventory.get('path_encoding', 'utf-8')}. "
+                    + "\nRead the pinned assignment in the task input. "
                     "For percent encoding, decode with urllib.parse.unquote_to_bytes before filesystem access; "
                     "keep the original tokens in scope reports."
                     + "\nRead other files for context when needed; report on your owned scope. "
                     "Do not expand into deferred evidence, demos or other unassigned review work."
                     + "\n\n"
                     + review_testing_instructions(),
+                    "prompt": prepared.prompt
+                    + "\n\nPinned review assignment (JSON data):\n"
+                    + json.dumps(assignment, ensure_ascii=False),
                 }
             )
         # The independent designer's prompt contains requirements only, not author paths.

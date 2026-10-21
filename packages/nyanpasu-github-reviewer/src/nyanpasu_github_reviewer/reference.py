@@ -35,14 +35,13 @@ class DesignInputs(BaseModel):
 
 def prepare_reference(config: NyanpasuConfig, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
     """Pin common inputs after the reviewer decides that a reference is useful."""
-    if request.purpose == "test-audit":
+    if request.purpose != "independent-design":
+        role = "test-review.md" if request.purpose == "test-audit" else "investigator.md"
         return request.model_copy(
             update={
-                "developer_instructions": (INSTRUCTIONS / "test-review.md").read_text(),
+                "developer_instructions": (INSTRUCTIONS / role).read_text(),
             }
         )
-    if request.purpose != "independent-design":
-        return request
     if parent.spawned_by_task_id is not None:
         raise ValueError("independent design must be requested by the root reviewer")
     inputs = DesignInputs.model_validate(request.inputs)
