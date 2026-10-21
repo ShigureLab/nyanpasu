@@ -15,7 +15,13 @@ codex --version
 codex
 ```
 
-Nyanpasu uses Codex's app-server interface. Select a CLI supporting the runtime settings in [config.py](../src/nyanpasu/config.py) and the interface used by [codex.py](../src/nyanpasu/codex.py), including automatic permission review and `thread/memoryMode/set`. Configure `backends.codex.process.command` when the executable is not on the service's `PATH`.
+Nyanpasu uses Codex's app-server interface. Select a CLI supporting the runtime settings in [config.py](../src/nyanpasu/config.py) and the interface used by [codex.py](../src/nyanpasu/codex.py), including automatic permission review, `thread/memoryMode/set`, and application context in `turn/start.additionalContext`. Configure `backends.codex.process.command` when the executable is not on the service's `PATH`.
+
+Role instructions and task-control commands are delivered as application context on every turn. Updating `thread/resume.developerInstructions` alone does not add the new instructions to the resumed model input in CLI 0.159.0 or 0.163.0. The offline regression test runs the actual app-server against a local Responses fixture; it needs no API credentials or model access:
+
+```bash
+NYANPASU_TEST_CODEX=/path/to/codex uv run pytest tests/test_codex_instructions.py -q
+```
 
 Install the [reviewer skills](index.md#agent-skills) for this backend and configure credentials through `backends.codex.process.env` or `backends.codex.process.pass_env`. See [runtime configuration](../README.md#runtime-configuration); retain the backend's native history so the Dashboard can read earlier sessions.
 

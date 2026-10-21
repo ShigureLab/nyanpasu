@@ -189,13 +189,15 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
         assert "persistExtendedHistory" not in params
         assert "experimentalRawEvents" not in params
         assert "baseInstructions" not in params
-    assert backend.requests[0][1]["developerInstructions"] == "review role"
-    assert backend.requests[3][1]["developerInstructions"] == "updated review role"
     for _, params in backend.requests[::3]:
         assert params["config"] == {"model_reasoning_effort": "medium"}
-    for (_, params), text in zip(backend.requests[2::3], ("review", "new commit"), strict=True):
+        assert "developerInstructions" not in params
+    for (_, params), text, instructions in zip(
+        backend.requests[2::3], ("review", "new commit"), ("review role", "updated review role"), strict=True
+    ):
         assert params["effort"] == "medium"
         assert params["input"] == [{"type": "text", "text": text, "text_elements": []}]
+        assert params["additionalContext"] == {"nyanpasu": {"kind": "application", "value": instructions}}
         assert "developerInstructions" not in params
 
 

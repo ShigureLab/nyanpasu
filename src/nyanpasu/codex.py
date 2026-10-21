@@ -77,8 +77,6 @@ class CodexAppServerBackend:
             }
             if thread_id:
                 thread_params["threadId"] = thread_id
-            if developer_instructions:
-                thread_params["developerInstructions"] = developer_instructions
             if execution.reasoning:
                 thread_params["config"] = {"model_reasoning_effort": execution.reasoning}
             thread = await self._request("thread/resume" if thread_id else "thread/start", thread_params)
@@ -92,6 +90,18 @@ class CodexAppServerBackend:
                     {
                         "threadId": active_thread_id,
                         "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                        # Resume restores historical developer messages; put changing
+                        # instructions (including the turn's control capability) in
+                        # application context so they reach the model on every turn.
+                        **(
+                            {
+                                "additionalContext": {
+                                    "nyanpasu": {"kind": "application", "value": developer_instructions}
+                                }
+                            }
+                            if developer_instructions
+                            else {}
+                        ),
                         "cwd": str(cwd),
                         "approvalPolicy": self.config.options.approval_policy,
                         "approvalsReviewer": self.config.options.approvals_reviewer,
