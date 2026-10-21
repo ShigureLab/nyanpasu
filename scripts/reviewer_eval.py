@@ -243,7 +243,8 @@ def prepare(
     guidance = instructions.read_bytes()
     branch = output / arm
     identity_path = branch / "identity.json"
-    expected = {
+    identity: dict[str, Any]
+    expected: dict[str, Any] = {
         "target": override.model_dump(),
         "instructions_sha256": sha256(guidance),
         "tool_sha256": sha256(Path(__file__).read_bytes()),
@@ -539,6 +540,7 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                     counts[finding.verdict] += 1
                     counts[f"occurrence_{finding.occurrence}"] += 1
                     if finding.verdict == "confirmed_defect":
+                        assert finding.root_cause is not None  # Validated by FindingJudgment.
                         if finding.root_cause not in roots and finding.first_present_step is not None:
                             prior_steps = set(range(steps[finding.first_present_step], prepared["step_index"]))
                             if prior_steps:
