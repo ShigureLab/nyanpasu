@@ -106,7 +106,7 @@ class FindingJudgment(FrozenModel):
     verdict: Literal[
         "confirmed_defect", "useful_simplification", "false_positive", "harmful_suggestion", "inconclusive"
     ]
-    artifact: str = "report.txt"
+    artifact: Literal["report.txt"] = "report.txt"
     quote: Nonempty
     evidence: list[Nonempty] = Field(min_length=1)
     root_cause: str | None = None
@@ -488,6 +488,8 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
         counts: Counter[str] = Counter()
         roots = set()
         late_roots = set()
+        unknown_late_roots = set()
+        confirmed_steps = set()
         timings = []
         costs = {"root": [], "tree": []}
         results = []
@@ -538,9 +540,14 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                     counts[f"occurrence_{finding.occurrence}"] += 1
                     if finding.verdict == "confirmed_defect":
                         if finding.root_cause not in roots and finding.first_present_step is not None:
-                            if steps[finding.first_present_step] < prepared["step_index"]:
-                                late_roots.add(finding.root_cause)
+                            prior_steps = set(range(steps[finding.first_present_step], prepared["step_index"]))
+                            if prior_steps:
+                                if finding.occurrence == "new" and prior_steps <= confirmed_steps:
+                                    late_roots.add(finding.root_cause)
+                                else:
+                                    unknown_late_roots.add(finding.root_cause)
                         roots.add(finding.root_cause)
+                confirmed_steps.add(prepared["step_index"])
             results.append(
                 {"sample_id": result["sample_id"], "step_id": prepared["step_id"], "status": result["status"]}
             )
@@ -549,6 +556,7 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                 "counts": dict(counts),
                 "confirmed_root_causes": sorted(roots),
                 "late_first_findings": sorted(late_roots),
+                "late_status_unknown": sorted(unknown_late_roots),
                 "first_useful_feedback_seconds": timings,
                 "cost_usd_by_scope": {
                     scope: {"observed_runs": len(values), "total": sum(values) if values else None}

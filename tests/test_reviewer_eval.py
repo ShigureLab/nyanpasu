@@ -366,3 +366,42 @@ def test_neutral_brief_preserves_actual_authorship_and_runtime_changes_are_rejec
     monkeypatch.setattr(evaluation, "runtime_identity", lambda: {**previous, "source_sha256": "changed-runtime"})
     with pytest.raises(ValueError, match="condition changes"):
         stage(case)
+
+
+@pytest.mark.anyio
+async def test_evaluator_attachment_cannot_be_counted_as_a_model_finding(case, tmp_path):
+    prepared = stage(case)
+    backend = await execute(prepared, message="No supported findings.")
+    attachment = tmp_path / "evaluator-source.txt"
+    attachment.write_text("Retry can duplicate work.")
+    result = await record(Path(prepared["task_path"]).parent, [attachment], None, source=CodexHistorySource(backend))
+    judgments = tmp_path / "judgments"
+    judgments.mkdir()
+    proposed = assessment(result["sample_id"])
+    proposed["findings"][0]["artifact"] = attachment.name
+    path = judgments / "one.json"
+    path.write_text(json.dumps(proposed))
+    with pytest.raises(ValidationError, match="report.txt"):
+        report(case["output"], judgments)
+    proposed["findings"][0]["artifact"] = "report.txt"
+    path.write_text(json.dumps(proposed))
+    with pytest.raises(ValueError, match="quote is absent"):
+        report(case["output"], judgments)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("occurrence", ["new", "revalidation"])
+async def test_missing_earlier_judgment_is_not_counted_as_a_missed_finding(case, tmp_path, occurrence):
+    first = stage(case)
+    backend = await execute(first)
+    await record(Path(first["task_path"]).parent, [], None, source=CodexHistorySource(backend))
+    second = stage(case, step="revision")
+    await execute(second, backend=backend)
+    result = await record(Path(second["task_path"]).parent, [], None, source=CodexHistorySource(backend))
+    judgments = tmp_path / "judgments"
+    judgments.mkdir()
+    (judgments / "one.json").write_text(json.dumps(assessment(result["sample_id"], occurrence=occurrence)))
+    observed = report(case["output"], judgments)["arms"]["A"]
+    assert observed["late_first_findings"] == []
+    assert observed["late_status_unknown"] == ["retry"]
+    assert observed["counts"]["unconfirmed_runs"] == 1
