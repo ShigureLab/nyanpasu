@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "smokes": [
+    {
+      "case_id": "nyanpasu-48",
+      "priority": 1,
+      "scope": "one immutable commit metadata claim",
+      "revision": "b38d8b8e41c65c3908efc0e81b4af64c97fc4328",
+      "comparison_base": "6169dff71f8962c01b726f4b2f2926abd7bf2936",
+      "read_only_probe": [
+        "git",
+        "show",
+        "-s",
+        "--format=%B",
+        "b38d8b8e41c65c3908efc0e81b4af64c97fc4328"
+      ],
+      "execution_status": "Static git-object fact checked during collection. No repository code executed.",
+      "why_lightweight": "No package installation or network required. This is false-positive calibration, not a code execution benchmark.",
+      "repository": "ShigureLab/nyanpasu",
+      "candidate_check": "The specific absent-Codex-trailer claim is false: the exact commit message contains the required trailer.",
+      "reviewer_brief": "Review the pinned change for reachable correctness defects and evidence gaps. This is an evaluator-authored neutral brief, not reconstructed original PR text.",
+      "input_caveat": "The default replay replaces source commits with neutral synthetic commits. This metadata case needs the exact original commit message as explicitly sourced historical input, or a separate static Git-object probe. Never judge the original trailer from the synthetic commit message."
+    },
+    {
+      "case_id": "nyanpasu-36",
+      "priority": 2,
+      "scope": "one test-only change",
+      "base": "c4eac5a0b09b5ff4056ada39142efc1d3f2b38a9",
+      "head": "640806055839fd15d8cd10fdd31c5ae38ae696e7",
+      "test": "tests/test_agent.py::test_reviewer_merged_events_produce_one_coherent_turn",
+      "recommended_probe": "In an isolated historical environment, run the targeted test on base/head with varying workspace-path lengths. Mutate duplicate trigger/current head to ensure replacement assertions still detect behavioral regressions.",
+      "execution_status": "Diff stat and assertion changes inspected only; no test execution by collector.",
+      "why_lightweight": "One test file; avoids GPU, remote service and whole reviewer lifecycle.",
+      "repository": "ShigureLab/nyanpasu",
+      "candidate_check": "Fixed character limit depends on footer/path length. Replacement must retain exact request/trigger count and existing head/placeholder assertions.",
+      "reviewer_brief": "Review the pinned change for reachable correctness defects and evidence gaps. This is an evaluator-authored neutral brief, not reconstructed original PR text.",
+      "test_provenance": "Targeted test and mutation suggestions are evaluator-only; omit them from a generic blind review input."
+    },
+    {
+      "case_id": "nyanpasu-39",
+      "priority": 3,
+      "scope": "multi-round poller closure discovery",
+      "base": "1634f3b9a07c2fb494b6c9e3fb9c8a02c47aa384",
+      "revisions": [
+        "3d098cce67d1d8965a752fb4e4669a690b294702",
+        "797aa33e0430b16751f98a190e8c8ab119d93da4",
+        "55c85c8c7a8b33043466ff26954bd215ac6e5966"
+      ],
+      "tests": [
+        "packages/nyanpasu-github-reviewer/tests/test_poller.py::test_pr_state_poll_cleans_up_closures_outside_unfiltered_page",
+        "packages/nyanpasu-github-reviewer/tests/test_poller.py::test_pr_state_poll_keeps_missing_snapshot_until_closure_is_confirmed"
+      ],
+      "recommended_probe": "Use fake GitHub pages and temporary SQLite. Overflow recent pages, omit a previously open upper layer from open list, then return closed from point fetch. Require exactly one cleanup, persisted closed state and retry on fetch failure. Re-run across all three revisions with the same independent probe.",
+      "execution_status": "All historical commit objects and final test names verified; no behavioral test execution by collector.",
+      "why_lightweight": "CPU-only fake API/database tests; captures a real partially fixed finding and a genuinely new counterexample.",
+      "split_note": "If used for calibration now, move the entire poller-closure-discovery group out of holdout.",
+      "repository": "ShigureLab/nyanpasu",
+      "candidate_check": "797aa33 remains vulnerable for tracked upper layers whose direct base is lower rather than trunk. Final point fetch confirms closed state and cleans once; transient failures and still-open results must not prematurely clean.",
+      "reviewer_brief": "Review the pinned change for reachable correctness defects and evidence gaps. This is an evaluator-authored neutral brief, not reconstructed original PR text."
+    }
+  ],
+  "audience": "evaluator-only",
+  "repository_selection": "Run probes from the operator-provided source checkout. Pass that checkout to prepare with --repo; no machine-specific location is part of this catalog.",
+  "truth_policy": "Plans are proposed checks, not executed review outcomes. Read each execution_status before assigning any label."
+}
