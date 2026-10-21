@@ -157,6 +157,86 @@ def test_cannot_wait_on_other_roots_or_an_ancestor(tmp_path):
         store.wait_for_subtasks(parent.task_id, [unrelated.task_id])
 
 
+@pytest.mark.parametrize("mode", ["any", "all"])
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+def test_wait_mode_and_unconsumed_results_survive_restart(tmp_path, mode, terminal):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    parent = root(store)
+    first, second = [
+        store.create_subtask(parent.task_id, request(key), execution=CONFIG.resolve_execution("subtask"))
+        for key in ("first", "second")
+    ]
+    store.wait_for_subtasks(parent.task_id, [first.task_id, second.task_id], mode)
+    if terminal == "failed":
+        store.mark_task_failed(first.task_id, "investigation failed")
+    elif terminal == "cancelled":
+        store.cancel_task_tree(first.task_id)
+    else:
+        finish(store, first)
+    store = StateStore(path)
+    assert store.wait_is_ready(parent.task_id) is (mode == "any")
+    if mode == "all":
+        with pytest.raises(ValueError, match="not finished"):
+            store.resume_subtasks(parent.task_id)
+        finish(store, second)
+    delivered = tuple(child.task_id for child in store.resume_subtasks(parent.task_id))
+    assert set(delivered) == ({first.task_id} if mode == "any" else {first.task_id, second.task_id})
+    store = StateStore(path)
+    assert set(store.pending_subtask_deliveries(parent.task_id)) == set(delivered)
+    # Merely starting (or interrupting) the consuming turn cannot acknowledge evidence.
+    store.mark_task_running(parent.task_id, "parent-session")
+    store.mark_task_interrupted(parent.task_id, "restart")
+    assert set(StateStore(path).pending_subtask_deliveries(parent.task_id)) == set(delivered)
+    store.mark_task_done(
+        TaskRunResult(
+            task_id=parent.task_id, status=TaskStatus.WAITING, thread_id=None, turn_id=None, final_message="wait"
+        ),
+        consumed_subtasks=delivered,
+    )
+    assert StateStore(path).pending_subtask_deliveries(parent.task_id) == []
+    assert set(store.unconsumed_subtasks(parent.task_id)) == ({second.task_id} if mode == "any" else set())
+
+
+def test_v4_upgrade_preserves_wait_and_pending_continuation(tmp_path):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    parent = root(store)
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
+    finish(store, child)
+    store.wait_for_subtasks(parent.task_id, [child.task_id])
+    store.update_task_input(parent.model_copy(update={"metadata": {"resumed_subtasks": [child.task_id]}}))
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE task_runs DROP COLUMN wait_mode")
+        conn.execute("DROP TABLE subtask_deliveries")
+        conn.execute("PRAGMA user_version=4")
+    store = StateStore(path)
+    assert store.wait_is_ready(parent.task_id)
+    assert store.pending_subtask_deliveries(parent.task_id) == [child.task_id]
+    assert "resumed_subtasks" not in store.task_request(parent.task_id).metadata
+
+
+def test_receipt_and_successful_turn_commit_atomically(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    parent = root(store)
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
+    finish(store, child)
+    store.wait_for_subtasks(parent.task_id, [child.task_id])
+    store.resume_subtasks(parent.task_id)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("""CREATE TRIGGER reject_receipt BEFORE UPDATE ON subtask_deliveries
+            BEGIN SELECT RAISE(ABORT, 'receipt failed'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="receipt failed"):
+        store.mark_task_done(
+            TaskRunResult(
+                task_id=parent.task_id, status=TaskStatus.COMPLETED, thread_id=None, turn_id=None, final_message="done"
+            ),
+            consumed_subtasks=(child.task_id,),
+        )
+    assert store.task_status(parent.task_id) == "queued"
+    assert store.pending_subtask_deliveries(parent.task_id) == [child.task_id]
+
+
 def test_closing_tree_rejects_creation_and_recovery_and_reopen_fences_old_results(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)

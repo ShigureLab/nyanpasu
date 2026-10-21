@@ -323,16 +323,20 @@ class StateStore:
             if task.spawned_by_task_id is None and self.task_is_active(task.task_id)
         ]
 
-    def wait_for_subtasks(self, task_id: str, children: list[str]) -> None:
+    def wait_for_subtasks(self, task_id: str, children: list[str], mode: str = "all") -> None:
         if not children or len(children) != len(set(children)):
             raise ValueError("specify distinct descendant task IDs")
+        if mode not in {"any", "all"}:
+            raise ValueError("wait mode must be any or all")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._active_task(conn, task_id)
             descendants = {row["task_id"] for row in self._descendants(conn, task_id)}
             if not set(children) <= descendants:
                 raise ValueError("may only wait for descendant tasks")
-            conn.execute("UPDATE task_runs SET wait_for=? WHERE task_id=?", (json_dumps(children), task_id))
+            conn.execute(
+                "UPDATE task_runs SET wait_for=?,wait_mode=? WHERE task_id=?", (json_dumps(children), mode, task_id)
+            )
 
     def waiting_for(self, task_id: str) -> list[str]:
         with self._connect() as conn:
@@ -340,8 +344,17 @@ class StateStore:
         return json.loads(row["wait_for"]) if row and row["wait_for"] else []
 
     def wait_is_ready(self, task_id: str) -> bool:
-        children = self.waiting_for(task_id)
-        return all(self.task_status(child) in {"completed", "failed", "cancelled"} for child in children)
+        with self._connect() as conn:
+            parent = conn.execute("SELECT * FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
+            rows = self._wait_results(conn, parent)
+        return rows is not None
+
+    @staticmethod
+    def _wait_results(conn: sqlite3.Connection, parent: sqlite3.Row) -> list[sqlite3.Row] | None:
+        children = json.loads(parent["wait_for"]) if parent["wait_for"] else []
+        rows = [conn.execute("SELECT * FROM task_runs WHERE task_id=?", (child,)).fetchone() for child in children]
+        ready = [row for row in rows if row["status"] in {"completed", "failed", "cancelled"}]
+        return ready if not children or len(ready) == len(rows) or (parent["wait_mode"] == "any" and ready) else None
 
     def mark_task_waiting(self, task_id: str) -> None:
         self._update_task(task_id, TaskStatus.WAITING)
@@ -353,17 +366,44 @@ class StateStore:
             children = json.loads(parent["wait_for"]) if parent["wait_for"] else []
             if not children:
                 return []
-            rows = [conn.execute("SELECT * FROM task_runs WHERE task_id=?", (child,)).fetchone() for child in children]
-            if any(row["status"] not in {"completed", "failed", "cancelled"} for row in rows):
+            rows = self._wait_results(conn, parent)
+            if rows is None:
                 raise ValueError("subtasks are not finished")
-            request = AgentTask.model_validate(json.loads(parent["task_json"]))
-            request = request.model_copy(update={"metadata": {**request.metadata, "resumed_subtasks": children}})
+            conn.executemany(
+                """INSERT INTO subtask_deliveries (parent_task_id,child_task_id) VALUES (?,?)
+                ON CONFLICT(parent_task_id,child_task_id) DO UPDATE SET consumed_at=NULL""",
+                [(task_id, row["task_id"]) for row in rows],
+            )
             conn.execute(
-                """UPDATE task_runs SET wait_for=NULL,status='queued',task_json=?,updated_at=?
+                """UPDATE task_runs SET wait_for=NULL,status='queued',updated_at=?
                 WHERE task_id=?""",
-                (request.model_dump_json(), time.time(), task_id),
+                (time.time(), task_id),
             )
         return [_task_summary_from_row(row) for row in rows]
+
+    def pending_subtask_deliveries(self, task_id: str) -> list[str]:
+        with self._connect() as conn:
+            return [
+                row[0]
+                for row in conn.execute(
+                    """SELECT child_task_id FROM subtask_deliveries
+                WHERE parent_task_id=? AND consumed_at IS NULL ORDER BY child_task_id""",
+                    (task_id,),
+                )
+            ]
+
+    def unconsumed_subtasks(self, task_id: str) -> list[str]:
+        """Direct children still running or whose terminal result has not been consumed."""
+        with self._connect() as conn:
+            return [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.task_id FROM task_runs r LEFT JOIN subtask_deliveries d
+                ON d.parent_task_id=? AND d.child_task_id=r.task_id
+                WHERE r.spawned_by_task_id=? AND d.consumed_at IS NULL ORDER BY r.created_at,r.task_id""",
+                    (task_id, task_id),
+                )
+            ]
 
     def record_subtask_result(self, task_id: str, result: dict[str, Any]) -> None:
         with self._connect() as conn:
@@ -593,7 +633,9 @@ class StateStore:
             ).fetchall()
         return [AgentTask.model_validate_json(row["task_json"]) for row in rows]
 
-    def mark_task_done(self, result: TaskRunResult, *, followup: AgentTask | None = None) -> bool:
+    def mark_task_done(
+        self, result: TaskRunResult, *, followup: AgentTask | None = None, consumed_subtasks: tuple[str, ...] = ()
+    ) -> bool:
         return self._update_task(
             result.task_id,
             result.status,
@@ -604,6 +646,7 @@ class StateStore:
             error=result.error,
             final_message=result.final_message,
             followup=followup,
+            consumed_subtasks=consumed_subtasks,
         )
 
     def mark_task_failed(self, task_id: str, error: str) -> None:
@@ -1004,6 +1047,7 @@ class StateStore:
         error: str | None = None,
         final_message: str | None = None,
         followup: AgentTask | None = None,
+        consumed_subtasks: tuple[str, ...] = (),
     ) -> bool:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
@@ -1039,6 +1083,12 @@ class StateStore:
             if status is TaskStatus.FAILED and updated.rowcount:
                 # A restart must never see a failed owner with active descendants.
                 self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
+            if updated.rowcount:
+                conn.executemany(
+                    """UPDATE subtask_deliveries SET consumed_at=?
+                    WHERE parent_task_id=? AND child_task_id=?""",
+                    [(time.time(), task_id, child) for child in consumed_subtasks],
+                )
             if updated.rowcount and status is TaskStatus.COMPLETED and followup is not None:
                 if followup.execution is None:
                     raise ValueError("followup execution must be resolved before admission")

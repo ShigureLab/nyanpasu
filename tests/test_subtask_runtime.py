@@ -121,6 +121,131 @@ async def wait_status(agent: AgentService, task_id: str, status: str):
 
 
 @pytest.mark.anyio
+async def test_fast_child_is_delivered_even_without_explicit_wait(tmp_path):
+    config = _config(tmp_path, concurrency=1)
+    parent_started, parent_release = asyncio.Event(), asyncio.Event()
+    continuation = []
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            if kwargs["prompt"] == "parent":
+                parent_started.set()
+                await parent_release.wait()
+            elif "Subtask results" in kwargs["prompt"]:
+                assert "The service interrupted" not in kwargs["prompt"]
+                continuation.append(kwargs["prompt"])
+                (kwargs["cwd"] / "reconciled").write_text("parent continued")
+            return result
+
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
+    )
+    try:
+        await agent.submit(_task("parent").model_copy(update={"prompt": "parent"}))
+        await asyncio.wait_for(parent_started.wait(), 2)
+        child = await agent.create_subtask("parent", SubtaskRequest(request_key="fast", prompt="fast"))
+        await wait_status(agent, child.task_id, "completed")
+        parent_release.set()
+        await wait_status(agent, "parent", "completed")
+        assert len(continuation) == 1
+        assert child.task_id in continuation[0]
+        assert agent.store.unconsumed_subtasks("parent") == []
+        assert (agent.store.get_context("demo:1").session_worktree / "reconciled").read_text() == "parent continued"
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_any_resumes_with_one_child_while_other_keeps_running(tmp_path):
+    config = _config(tmp_path, concurrency=1)
+    started, release = asyncio.Event(), asyncio.Event()
+    slow_release = asyncio.Event()
+    deliveries = []
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            prompt = kwargs["prompt"]
+            if prompt == "parent":
+                started.set()
+                await release.wait()
+            elif prompt == "slow":
+                await slow_release.wait()
+            elif "Subtask results" in prompt:
+                evidence = json.loads(prompt.split("Subtask results (verify evidence before using):\n")[1])
+                deliveries.append([item["task"]["task_id"] for item in evidence])
+                if len(deliveries) == 1:
+                    assert agent.store.task_status(slow.task_id) == "running"
+                    slow_release.set()
+            return result
+
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
+    )
+    try:
+        await agent.submit(_task("parent").model_copy(update={"prompt": "parent"}))
+        await asyncio.wait_for(started.wait(), 2)
+        slow = await agent.create_subtask("parent", SubtaskRequest(request_key="slow", prompt="slow"))
+        fast = await agent.create_subtask("parent", SubtaskRequest(request_key="fast", prompt="fast"))
+        await wait_status(agent, slow.task_id, "running")
+        await wait_status(agent, fast.task_id, "completed")
+        receipt = await agent.control.dispatch(
+            "parent", "await", {"task_ids": [slow.task_id, fast.task_id], "mode": "any"}
+        )
+        assert receipt["waiting"] is False and receipt["mode"] == "any"
+        release.set()
+        await wait_status(agent, "parent", "completed")
+        assert deliveries == [[fast.task_id], [slow.task_id]]
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_restart_during_delivery_replays_until_parent_success(tmp_path):
+    config = _config(tmp_path, concurrency=1)
+    started, release, consuming = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Interrupted(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            if kwargs["prompt"] == "parent":
+                started.set()
+                await release.wait()
+            elif "Subtask results" in kwargs["prompt"]:
+                consuming.set()
+                await asyncio.Event().wait()
+            return result
+
+    first = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Interrupted())
+    )
+    try:
+        await first.submit(_task("parent").model_copy(update={"prompt": "parent"}))
+        await asyncio.wait_for(started.wait(), 2)
+        child = await first.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        await wait_status(first, child.task_id, "completed")
+        release.set()
+        await asyncio.wait_for(consuming.wait(), 2)
+    finally:
+        await first.shutdown()
+    assert first.store.pending_subtask_deliveries("parent") == [child.task_id]
+    backend = FakeCodex()
+    second = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
+    try:
+        await second.startup()
+        await wait_status(second, "parent", "completed")
+        assert len(backend.prompts) == 1
+        assert child.task_id in backend.prompts[0] and "The service interrupted" in backend.prompts[0]
+        assert second.store.pending_subtask_deliveries("parent") == []
+        assert second.store.unconsumed_subtasks("parent") == []
+    finally:
+        await second.shutdown()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("turn_finished", [False, True])
 @pytest.mark.parametrize("interrupt_fails", [False, True])
 async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_path, turn_finished, interrupt_fails):
