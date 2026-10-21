@@ -173,14 +173,18 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
     assert [method for method, _ in backend.requests] == [
         "thread/start",
         "thread/memoryMode/set",
+        "thread/inject_items",
         "turn/start",
         "thread/resume",
         "thread/memoryMode/set",
+        "thread/inject_items",
         "turn/start",
     ]
     for method, params in backend.requests:
         if method == "thread/memoryMode/set":
             assert params == {"threadId": "thread-1", "mode": "disabled"}
+            continue
+        if method == "thread/inject_items":
             continue
         assert params["model"] == "configured-model"
         assert params["approvalPolicy"] == "on-request"
@@ -189,16 +193,20 @@ def test_app_server_requests_include_approvals_reviewer(tmp_path: Path) -> None:
         assert "persistExtendedHistory" not in params
         assert "experimentalRawEvents" not in params
         assert "baseInstructions" not in params
-    for _, params in backend.requests[::3]:
+    for _, params in backend.requests[::4]:
         assert params["config"] == {"model_reasoning_effort": "medium"}
         assert "developerInstructions" not in params
-    for (_, params), text, instructions in zip(
-        backend.requests[2::3], ("review", "new commit"), ("review role", "updated review role"), strict=True
-    ):
+    for (_, params), text in zip(backend.requests[3::4], ("review", "new commit"), strict=True):
         assert params["effort"] == "medium"
         assert params["input"] == [{"type": "text", "text": text, "text_elements": []}]
-        assert params["additionalContext"] == {"nyanpasu": {"kind": "application", "value": instructions}}
         assert "developerInstructions" not in params
+    for (_, params), instructions in zip(backend.requests[2::4], ("review role", "updated review role"), strict=True):
+        assert params == {
+            "threadId": "thread-1",
+            "items": [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": instructions}]}
+            ],
+        }
 
 
 def test_app_server_server_requests_are_answered_for_daemon_mode(tmp_path: Path) -> None:
@@ -264,7 +272,7 @@ class RecordingAppServerBackend(CodexAppServerBackend):
         self.requests.append((method, params))
         if method in {"thread/start", "thread/resume"}:
             return {"thread": {"id": "thread-1"}}
-        if method == "thread/memoryMode/set":
+        if method in {"thread/memoryMode/set", "thread/inject_items"}:
             return {}
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}

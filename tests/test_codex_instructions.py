@@ -97,15 +97,22 @@ async def test_resumed_turn_delivers_current_instructions_to_model(tmp_path, leg
                 # Reproduce persisted sessions created before per-turn context delivery.
                 if method == "thread/start":
                     params["developerInstructions"] = instructions
-                elif method == "turn/start":
-                    params.pop("additionalContext", None)
+                elif method == "thread/inject_items":
+                    return {}
                 return await super()._request(method, params)
 
         thread_id = None
         for index in range(2):
             control = tmp_path / f"control-{index}.json"
             control.write_text("{}")
-            instructions = f"Current task control file: {control}"
+            # Real role/tool/memory instructions are much longer than the
+            # app-server's truncated additionalContext entries. Keep the changing
+            # capability in the middle, where that truncation would remove it.
+            instructions = (
+                "Follow the current review workflow.\n" * 400
+                + f"Current task control file: {control}\n"
+                + "Use the current tools and preserve prior evidence.\n" * 400
+            )
             backend_type = LegacyBackend if legacy_session and index == 0 else CodexAppServerBackend
             backend = backend_type(config)
             try:

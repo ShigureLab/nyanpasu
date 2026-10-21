@@ -84,24 +84,28 @@ class CodexAppServerBackend:
             await self._request("thread/memoryMode/set", {"threadId": active_thread_id, "mode": "disabled"})
             if on_started:
                 await on_started(active_thread_id, None)
+            if developer_instructions:
+                # Resume restores historical developer messages. Append the current
+                # instructions explicitly; additionalContext truncates long blocks.
+                await self._request(
+                    "thread/inject_items",
+                    {
+                        "threadId": active_thread_id,
+                        "items": [
+                            {
+                                "type": "message",
+                                "role": "developer",
+                                "content": [{"type": "input_text", "text": developer_instructions}],
+                            }
+                        ],
+                    },
+                )
             start = asyncio.create_task(
                 self._request(
                     "turn/start",
                     {
                         "threadId": active_thread_id,
                         "input": [{"type": "text", "text": prompt, "text_elements": []}],
-                        # Resume restores historical developer messages; put changing
-                        # instructions (including the turn's control capability) in
-                        # application context so they reach the model on every turn.
-                        **(
-                            {
-                                "additionalContext": {
-                                    "nyanpasu": {"kind": "application", "value": developer_instructions}
-                                }
-                            }
-                            if developer_instructions
-                            else {}
-                        ),
                         "cwd": str(cwd),
                         "approvalPolicy": self.config.options.approval_policy,
                         "approvalsReviewer": self.config.options.approvals_reviewer,
