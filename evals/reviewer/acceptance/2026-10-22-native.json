@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-22",
+  "cli_versions": {
+    "codex": "0.163.0",
+    "claude-code": "2.1.270"
+  },
+  "restart_runtime_commit": "7a7154977e42e5b84ef0de3f7e23b760ac53a1ca",
+  "runs": [
+    {
+      "evidence_id": "codex",
+      "report_sha256": "7af7e6e85ba21d22c0cee55f596f441936250738d71bed4c02c5a1eebaa0b9e5",
+      "status": "passed",
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning": "xhigh",
+      "elapsed_seconds": 69.16,
+      "parent_turns": 3,
+      "children": 2,
+      "cleanup": "completed",
+      "restart_identity_preserved": null,
+      "consumed_deliveries": null,
+      "removed_workspaces": null,
+      "clean_shutdown": null
+    },
+    {
+      "evidence_id": "claude",
+      "report_sha256": "7e22cc7a54dacab4312fa793d711aa1405e93579ebc96317fd23d4057edf002c",
+      "status": "passed",
+      "backend": "claude",
+      "model": "glm-5.3-flash",
+      "reasoning": "max",
+      "elapsed_seconds": 114.46,
+      "parent_turns": 3,
+      "children": 2,
+      "cleanup": "completed",
+      "restart_identity_preserved": null,
+      "consumed_deliveries": null,
+      "removed_workspaces": null,
+      "clean_shutdown": null
+    },
+    {
+      "evidence_id": "codex-restart-fixed-1",
+      "report_sha256": "013df2d4a4045f224649017020c46e0a1a7b13ae0022455dac7744e583042b92",
+      "status": "passed",
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning": "xhigh",
+      "elapsed_seconds": 85.07,
+      "parent_turns": 3,
+      "children": 2,
+      "cleanup": "completed",
+      "restart_identity_preserved": true,
+      "consumed_deliveries": 2,
+      "removed_workspaces": 3,
+      "clean_shutdown": true
+    },
+    {
+      "evidence_id": "claude-restart-fixed-1",
+      "report_sha256": "339fc606d73afcf7aa3058fbfd6d0b1c5f598c3fd626d375cdaeb7a8c3574258",
+      "status": "passed",
+      "backend": "claude",
+      "model": "glm-5.3-flash",
+      "reasoning": "max",
+      "elapsed_seconds": 85.2,
+      "parent_turns": 3,
+      "children": 2,
+      "cleanup": "completed",
+      "restart_identity_preserved": true,
+      "consumed_deliveries": 2,
+      "removed_workspaces": 3,
+      "clean_shutdown": true
+    }
+  ],
+  "limitations": [
+    "Normal runs preceded detached-tool shutdown instrumentation; missing fields remain null.",
+    "Elapsed time is the retained smoke total, not time to first useful reviewer feedback.",
+    "Native runtime lifecycle checks do not establish reviewer-quality gains or full GitHub publication correctness."
+  ]
+}
