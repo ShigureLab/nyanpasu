@@ -151,7 +151,9 @@ async def test_fast_child_is_delivered_even_without_explicit_wait(tmp_path):
         assert len(continuation) == 1
         assert child.task_id in continuation[0]
         assert agent.store.unconsumed_subtasks("parent") == []
-        assert (agent.store.get_context("demo:1").session_worktree / "reconciled").read_text() == "parent continued"
+        context = agent.store.get_context("demo:1")
+        assert context is not None and context.session_worktree is not None
+        assert (context.session_worktree / "reconciled").read_text() == "parent continued"
     finally:
         await agent.shutdown()
 

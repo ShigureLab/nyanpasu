@@ -185,7 +185,7 @@ def test_wait_mode_and_unconsumed_results_survive_restart(tmp_path, mode, termin
     store = StateStore(path)
     assert set(store.pending_subtask_deliveries(parent.task_id)) == set(delivered)
     # Merely starting (or interrupting) the consuming turn cannot acknowledge evidence.
-    store.mark_task_running(parent.task_id, "parent-session")
+    store.mark_task_running(parent.task_id, None)
     store.mark_task_interrupted(parent.task_id, "restart")
     assert set(StateStore(path).pending_subtask_deliveries(parent.task_id)) == set(delivered)
     store.mark_task_done(
