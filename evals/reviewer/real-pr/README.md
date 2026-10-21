@@ -40,11 +40,11 @@ Measurements are optional and evidence-backed. Supply `--measurements /evaluatio
 
 ```json
 {
-  "first_useful_feedback_at": "2026-10-01T12:00:30Z",
-  "first_useful_feedback_evidence": "observations.json",
-  "cost_usd": 0.12,
-  "cost_evidence": "usage.json",
-  "cost_scope": "tree"
+   "first_useful_feedback_at": "2026-10-01T12:00:30Z",
+   "first_useful_feedback_evidence": "observations.json",
+   "cost_usd": 0.12,
+   "cost_evidence": "usage.json",
+   "cost_scope": "tree"
 }
 ```
 
