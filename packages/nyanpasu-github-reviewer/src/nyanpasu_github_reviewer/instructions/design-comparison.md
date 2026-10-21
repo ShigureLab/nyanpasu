@@ -1,11 +1,15 @@
-# Selected design comparisons
+# Selected simplification and design comparisons
 
-Use this method for a concrete simplification candidate or a requested independent comparison. It does not add an exhaustive necessity audit to ordinary review.
+Use only for a concrete maintenance concern or requested comparison. Select relevant cues below; they are not a checklist, score or required audit of every code/test family.
 
-For an independent reference, verify the frozen source tree, requirement digest, independence disclosure and evidence. Compare both designs at the same base and requirements; latest-target integration is a separate check applied equally to both.
+- **Contracts and errors:** repeated validation or fallback is a cue; a real trust boundary or required error semantics may justify it. Support removal with reachable callers and preserved error behavior.
+- **State and lifecycle:** duplicate maintained state is a cue; durability, ordering or ownership may justify it. Establish a single owner or derivation preserving reachable retry, cancellation and recovery.
+- **Boundaries and abstractions:** a pass-through layer or branching wrapper is a cue; extension points or external APIs may justify it. Establish a smaller boundary against real consumers and dependencies.
+- **Migration and compatibility:** an apparently obsolete adapter or dual path is a cue; supported versions, stored formats or mixed-version rollout may justify it. Establish that no required consumer or stored data still needs the path.
+- **Test detection:** copied logic, self-comparison or overlapping cases are cues; distinct risks, oracles or execution boundaries can justify similar tests. Establish remaining detection with contract evidence or a directed experiment under test-review.md.
 
-Compare responsibilities, ownership, state, boundaries and failure behavior rather than raw line counts. Author-only machinery may preserve compatibility or a requirement the reference missed. Reference-only machinery may expose missing behavior or be speculative. Trace actual callers and contracts to decide; agreement can also share a wrong assumption.
+For a selected alternative, trace actual contracts and callers; use a bounded deletion/replacement experiment only if it can settle a remaining question. Follow the local testing policy. Fewer lines or a standalone model cannot establish production machinery removable. Record the preserved behavior, maintenance benefit, evidence and limitations in the existing plan; withdraw contradicted candidates.
 
-For a promising smaller alternative, use concrete caller/contract evidence or a bounded deletion/replacement experiment against actual production paths in a disposable workspace. Follow the local testing policy. A sketch or standalone model cannot prove production machinery removable; state unavailable validation honestly. A full alternative PR is unnecessary.
+For an independent reference, verify its frozen source tree, requirement digest, independence and evidence. Compare ownership, responsibilities and failure behavior at the same base and requirements; check latest-target integration equally. Machinery present in only one design may represent a missed requirement or speculation; trace its contract before deciding.
 
-Reconcile child evidence and earlier claims, withdrawing candidates contradicted by behavior or callers. Record examined alternatives, decisions and evidence in the existing plan. The optional dashboard `simplification` record may summarize these candidates under review-output.md; do not create records for unexamined production/test families. Test-specific questions use test-review.md. Finish when the selected material questions are resolved, with no finding quota.
+Summarize examined, evidenced decisions in the optional dashboard `simplification` record under review-output.md. No finding quota or retention table is required.

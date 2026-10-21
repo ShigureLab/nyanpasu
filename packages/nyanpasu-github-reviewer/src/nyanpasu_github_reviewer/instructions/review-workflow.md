@@ -6,7 +6,7 @@ The parent owns review coverage, cross-scope reconciliation and publication. Gen
 
 Apply review-output.md's live-label check. Read the PR requirements, current requests and existing dashboard/review evidence. For continuations, use `pr view --after <previous fetched_at>` when available and expand triggering discussions and relevant human feedback. Address outstanding requests before applying silence; an unchanged head does not dispose of a request in a thread.
 
-Compare the pinned inventory and current requirements with prior coverage. Resume unfinished work and reassess affected conclusions; reuse supported evidence for unchanged responsibilities. A previous task head is only a navigation hint. Completed review/publication with no new evidence, changed decision or outstanding request needs no automatic GitHub update. A policy upgrade alone does not reopen completed reviews.
+Compare the current delta and requirements with the last verified coverage. Continue unresolved questions and affected contracts; reuse evidence for unchanged behavior. Separate new regressions, misses in earlier coverage, and already known issues; a pre-existing base defect is not a new regression. A previous task head is only a navigation hint. Completed publication with no new evidence, changed decision or outstanding request needs no automatic update. A policy upgrade alone does not reopen it.
 
 Verify the worktree's pinned head and merge-base. Follow scope-review.md to submit placement decisions before bulk investigation or child dispatch; admission is not a completed review. Copy the returned source/scope to the dashboard. For stacks, review the direct-base diff and attribute inherited issues to their introducing layer.
 
@@ -14,18 +14,16 @@ Call `ci-refresh` and handle failures under ci-followup.md alongside review. Do 
 
 ## Divide concrete questions early
 
-Keep a compact `review-plan.json` with material questions, owners, evidence and gaps. Small cohesive reviews can stay with the parent. For multiple independent subsystem questions, create selected children as soon as admission is accepted, before doing their investigation yourself. The parent works on other questions and cross-scope interactions while they run.
+Keep material questions, owners, evidence and gaps in the existing `review-plan.json`. Track candidates by root cause and affected contract, reusing canonical finding IDs once published. Small cohesive reviews can stay with the parent. Delegate independent questions after admission, before investigating them yourself; work on other questions and cross-scope interactions meanwhile.
 
-Assign one primary investigator per question or experiment. Shared files can serve different questions; repeating the same investigation needs a verification reason. Supply available head-based parent/CI evidence with revision, command/job, result and limitations. Reconcile it before deciding to rerun anything.
+Assign one primary investigator per question. On follow-up, dispatch only investigations affected by the delta, unresolved evidence or changed contracts. Shared files can serve different questions. Supply matching parent/CI evidence with revision, command/job, result and limitations; repeating a check needs a remaining uncertainty.
 
 Use managed task control:
 
-| Role                 | Use                                                                                                                                                                                    |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scoped investigator  | A cohesive module or interaction question. Use a descriptive `purpose`, `kind: github_reviewer.review`, and a self-contained question, contract sources and evidence needed.           |
-| Test auditor         | `purpose: test-audit` for a material detection or brittleness question needing separate investigation; test-review.md supplies criteria. A large test diff alone does not require one. |
-| Independent designer | `purpose: independent-design` when an isolated requirements-based comparison can resolve a material design question, or when explicitly requested.                                     |
-| CI analyst           | `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.                                                                       |
+- Scoped investigator: a cohesive question with a descriptive `purpose` and `kind: github_reviewer.review`.
+- Test auditor: `purpose: test-audit` for a material detection or brittleness question under test-review.md; diff size alone does not require one.
+- Independent designer: `purpose: independent-design` for a material requirements-based comparison or an explicit request.
+- CI analyst: `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.
 
 The plugin supplies child role instructions; omit `developer_instructions`. Put the concrete question, contract sources, available evidence and task-specific constraints in `prompt`; independent design uses the structured inputs below instead. Investigator and test-audit inputs accept only `review_files`.
 
@@ -43,13 +41,15 @@ Supply `inputs.reason` and `inputs.requirements`, each requirement having `text`
 
 Publish a verified actionable finding when ready; do not wait for remaining general questions, child results or a simplification pass. Update the dashboard at meaningful milestones with checked scope, supported conclusions and remaining questions. Keep general running while its initial coverage is unfinished. Use `preliminary` once a supported general result is delivered and identified deeper work remains. Do not submit an empty GitHub review to announce progress.
 
-Before awaiting children or starting a long experiment, save the available conclusions and evidence in the existing plan and update the dashboard. No separate general-review report is required. If useful parent work remains, continue it. Otherwise call `await` for actual managed children and end the turn; the service resumes with frozen results. Do not poll or sleep. Pending CI alone is not a reason to await.
+Before a long experiment or wait, save evidence in the existing plan and update the dashboard; no separate checkpoint report is required. Continue useful parent work first. Then call `await` with the needed managed `task_ids`: `mode: any` for independently useful results, or `mode: all` when the decision needs them together. End the turn after either call, including when results are already ready. Pending CI alone is no reason to await; do not poll or sleep.
 
 ## Reconcile and finish
 
-On resume, repeat eligibility checks and compare current range/requirements with frozen inputs. Cancel obsolete children and retain their evidence at its original identity. Reinvestigate affected conclusions without repeating unchanged work.
+On resume, repeat eligibility checks and compare current range/requirements with frozen inputs. Cancel obsolete children and retain evidence at its original identity. Read delivered results, reconcile their claims and continue the remaining work. After `any`, other children remain active: await remaining needed results, excluding reconciled children from the next wait, then end that turn. A failed or cancelled child leaves a gap; recover essential work or record the blocker.
 
-Read returned evidence and check that it answers the assigned question; independently verify a material claim where its evidence is insufficient or conflicts with another path. Use design-comparison.md only for a selected comparison or simplification candidate. Recover failed essential work or record its concrete gap. Do not add a necessity audit to close the review.
+For high-risk candidates or conflicting evidence, obtain a fresh scoped investigator's falsification before accepting the claim; reuse it while its inputs remain valid. Use the ordinary investigator role, with the claim, sources, evidence and a question that could disprove its trigger, contract or consequence in the prompt. Do not prescribe a verdict. Otherwise, a straightforward finding with sufficient evidence needs no repeated counter-review. Reconcile contradictions before publication; agreement alone adds no proof.
+
+If successive rounds merely restate symptoms or trade one symptom for another, revisit the root cause, sourced requirements and responsibility boundary. Seek a discriminating example or the missing decision instead of repeating equivalent assignments. Keep unresolved material gaps visible; reaching a round count never justifies closure or approval.
 
 Finish when admitted coverage and material questions have supported conclusions. Deep is completed if selected deeper questions are reconciled, or skipped if no deeper investigation is needed. Neither status requires simplification records or invented retention decisions. Deferred admission concerns and essential evidence gaps remain visible and cannot become whole-PR approval.
 
