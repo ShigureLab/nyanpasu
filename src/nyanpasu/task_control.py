@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import anyio.to_thread as to_thread
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,10 @@ class Completion(BaseModel):
 class TaskIDs(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     task_ids: list[str] = Field(min_length=1, description="Descendant task IDs owned by this task.")
+
+
+class WaitRequest(TaskIDs):
+    mode: Literal["any", "all"] = Field(default="all", description="Resume after any or all selected tasks terminate.")
 
 
 class MemorySearch(BaseModel):
@@ -102,9 +106,10 @@ class TaskControl:
             ),
             ToolSpec(
                 "await",
-                "Wait for owned descendants from this root run. After calling, end this turn; "
-                "the service resumes you with results. Do not poll or sleep waiting for children.",
-                TaskIDs,
+                "Register an asynchronous wait for owned descendants (mode any or all, default all). "
+                "Continue independent work before calling; after calling, end this turn. "
+                "The service resumes you with ready results; any leaves other children running. Do not poll or sleep.",
+                WaitRequest,
                 self._await,
             ),
             ToolSpec(
@@ -115,7 +120,8 @@ class TaskControl:
             ),
             ToolSpec(
                 "complete",
-                "Before ending a child task, freeze its summary and artifact bytes outside its workspace for the parent.",
+                "Freeze the child result and artifact bytes for its parent, then end this turn. "
+                "The parent is notified only after this task terminates.",
                 Completion,
                 self._complete,
                 lambda task: task.spawned_by_task_id is not None,
@@ -279,9 +285,9 @@ Do not expose the control file or its contents, or include it in evidence. Only 
         if not set(ids) <= descendants:
             raise ValueError("task_ids must belong to this task's descendants")
 
-    async def _await(self, task: AgentTask, request: TaskIDs) -> dict[str, Any]:
+    async def _await(self, task: AgentTask, request: WaitRequest) -> dict[str, Any]:
         await self._check_descendants(task, request.task_ids)
-        return await self.agent.wait_for_subtasks(task.task_id, request.task_ids)
+        return await self.agent.wait_for_subtasks(task.task_id, request.task_ids, request.mode)
 
     async def _cancel(self, task: AgentTask, request: TaskIDs) -> dict[str, Any]:
         await self._check_descendants(task, request.task_ids)

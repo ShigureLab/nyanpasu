@@ -392,9 +392,14 @@ class AgentService:
             self._schedule(child)
         return child
 
-    async def wait_for_subtasks(self, parent_id: str, child_ids: list[str]) -> dict[str, Any]:
-        await to_thread.run_sync(self.store.wait_for_subtasks, parent_id, child_ids)
-        return {"waiting": not await to_thread.run_sync(self.store.wait_is_ready, parent_id), "task_ids": child_ids}
+    async def wait_for_subtasks(self, parent_id: str, child_ids: list[str], mode: str = "all") -> dict[str, Any]:
+        await to_thread.run_sync(self.store.wait_for_subtasks, parent_id, child_ids, mode)
+        return {
+            "waiting": not await to_thread.run_sync(self.store.wait_is_ready, parent_id),
+            "task_ids": child_ids,
+            "mode": mode,
+            "next_action": "End this turn; the service will resume it with ready results.",
+        }
 
     async def _stop_descendants(self, task_id: str) -> None:
         ids = [child.task_id for child in await to_thread.run_sync(self.store.subtasks, task_id)]
@@ -503,17 +508,23 @@ class AgentService:
         )
         if handoff_from is not None:
             prompt += await self._backend_handoff(handoff_from)
-        if resumed := task.metadata.get("resumed_subtasks"):
+        delivered = tuple(await to_thread.run_sync(self.store.pending_subtask_deliveries, task.task_id))
+        if delivered:
             evidence = [
                 {
                     "task": (await to_thread.run_sync(self.store.task_run, identity)).model_dump(mode="json"),
                     "result": await to_thread.run_sync(self.store.subtask_result, identity),
                     "inputs": (await to_thread.run_sync(self.store.task_request, identity)).metadata.get("inputs"),
                 }
-                for identity in resumed
+                for identity in delivered
             ]
-            prompt += "\nSubtask results (verify evidence before using):\n" + json.dumps(evidence, ensure_ascii=False)
-        if recovering:
+            prompt += (
+                "\nContinue the parent task with these completed investigations. Reconcile their evidence and "
+                "finish the remaining work; failed or cancelled children are unresolved, not successful checks. "
+                "Other children may still be running; await only those you still need."
+                "\nSubtask results (verify evidence before using):\n" + json.dumps(evidence, ensure_ascii=False)
+            )
+        if recovering and (record.error or record.status is TaskStatus.RUNNING):
             continuation = (
                 "Continue from the saved conversation and existing workspace. "
                 if resuming
@@ -586,12 +597,12 @@ class AgentService:
             )
         )
         pending = [
-            child.task_id
-            for child in await to_thread.run_sync(self.store.subtasks, task.task_id)
-            if child.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING}
+            identity
+            for identity in await to_thread.run_sync(self.store.unconsumed_subtasks, task.task_id)
+            if identity not in delivered
         ]
         if pending and not await to_thread.run_sync(self.store.waiting_for, task.task_id):
-            await to_thread.run_sync(self.store.wait_for_subtasks, task.task_id, pending)
+            await to_thread.run_sync(self.store.wait_for_subtasks, task.task_id, pending, "any")
         waiting = bool(await to_thread.run_sync(self.store.waiting_for, task.task_id))
         run_result = TaskRunResult(
             task_id=task.task_id,
@@ -603,7 +614,7 @@ class AgentService:
             event_worktree=event_worktree,
             session_worktree=context.session_worktree,
         )
-        if not await self._finish_run(task, run_result):
+        if not await self._finish_run(task, run_result, consumed_subtasks=delivered):
             return None
         if waiting:
             return run_result
@@ -621,11 +632,15 @@ class AgentService:
             logger.info("task event snapshot removed task_id={} path={}", task.task_id, event_worktree)
         return run_result
 
-    async def _finish_run(self, task: AgentTask, result: TaskRunResult) -> bool:
+    async def _finish_run(
+        self, task: AgentTask, result: TaskRunResult, *, consumed_subtasks: tuple[str, ...] = ()
+    ) -> bool:
         followup = (
             await to_thread.run_sync(self._memory_followup, task) if result.status is TaskStatus.COMPLETED else None
         )
-        if not await to_thread.run_sync(functools.partial(self.store.mark_task_done, result, followup=followup)):
+        if not await to_thread.run_sync(
+            functools.partial(self.store.mark_task_done, result, followup=followup, consumed_subtasks=consumed_subtasks)
+        ):
             return False
         if followup is not None:
             self._schedule(await to_thread.run_sync(self.store.task_request, followup.task_id))

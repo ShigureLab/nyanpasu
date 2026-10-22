@@ -5,9 +5,19 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-SCHEMA = """
+SUBTASK_DELIVERIES = """
+CREATE TABLE subtask_deliveries (
+    parent_task_id TEXT NOT NULL,
+    child_task_id TEXT NOT NULL,
+    consumed_at REAL,
+    PRIMARY KEY (parent_task_id, child_task_id)
+)
+"""
+
+SCHEMA = (
+    """
 CREATE TABLE agent_contexts (
     context_key TEXT PRIMARY KEY,
     backend TEXT NOT NULL,
@@ -37,6 +47,7 @@ CREATE TABLE task_runs (
     spawned_by_task_id TEXT,
     context_generation INTEGER NOT NULL DEFAULT 1,
     wait_for TEXT,
+    wait_mode TEXT NOT NULL DEFAULT 'all',
     subtask_result TEXT
 );
 CREATE UNIQUE INDEX idx_task_runs_dedupe_key ON task_runs(dedupe_key) WHERE dedupe_key IS NOT NULL;
@@ -74,6 +85,9 @@ CREATE TABLE subtask_requests (
     PRIMARY KEY (parent_task_id, request_key)
 );
 """
+    + SUBTASK_DELIVERIES
+    + ";"
+)
 
 
 def initialize(conn: sqlite3.Connection) -> None:
@@ -91,7 +105,19 @@ def initialize(conn: sqlite3.Connection) -> None:
                 version = 3
             if version == 3:
                 conn.execute("DROP TABLE IF EXISTS native_sessions")
-            elif version != SCHEMA_VERSION:
+                version = 4
+            if version == 4:
+                conn.execute("ALTER TABLE task_runs ADD COLUMN wait_mode TEXT NOT NULL DEFAULT 'all'")
+                conn.execute(SUBTASK_DELIVERIES)
+                # A previously queued continuation may not yet have received its results.
+                conn.execute("""INSERT INTO subtask_deliveries (parent_task_id, child_task_id)
+                    SELECT r.task_id, child.value FROM task_runs r,
+                    json_each(r.task_json, '$.metadata.resumed_subtasks') child
+                    WHERE r.status IN ('queued', 'running', 'waiting')""")
+                conn.execute("""UPDATE task_runs SET task_json=json_remove(task_json, '$.metadata.resumed_subtasks')
+                    WHERE status IN ('queued', 'running', 'waiting')""")
+                version = 5
+            if version != SCHEMA_VERSION:
                 raise ValueError(f"Unsupported state schema version {version}; expected {SCHEMA_VERSION}")
         else:
             for statement in SCHEMA.split(";"):

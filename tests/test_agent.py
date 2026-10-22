@@ -471,7 +471,7 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
     )
     commit = agent.store.mark_task_done
 
-    def finish(result, *, followup=None):
+    def finish(result, *, followup=None, consumed_subtasks=()):
         (snapshot,) = worktrees.event_paths
         (snapshot / "owned.txt").write_text("unfinished work")
         if conflict == "closing":
@@ -479,7 +479,7 @@ async def test_rejected_completion_does_not_publish_or_remove_owned_files(tmp_pa
             other.begin_context_cleanup(task.context_key, record.context_generation)
         else:
             other.cancel_task_tree(task.task_id)
-        committed = commit(result, followup=followup)
+        committed = commit(result, followup=followup, consumed_subtasks=consumed_subtasks)
         assert not committed
         return committed
 

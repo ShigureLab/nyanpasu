@@ -9,6 +9,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
+import psutil
+
 from nyanpasu.diagnostics import Diagnostic, diagnostic
 from nyanpasu.redaction import redact
 
@@ -100,17 +102,41 @@ class JsonProcessRunner:
         runs = tuple(self._runs)
         for task in runs:
             task.cancel()
-        await asyncio.gather(*runs, return_exceptions=True)
+        results = await asyncio.gather(*runs, return_exceptions=True)
+        if errors := [result for result in results if isinstance(result, Exception)]:
+            raise ExceptionGroup("Failed to stop backend processes", errors)
+
+
+async def _wait_for_descendants(processes: list[psutil.Process]) -> None:
+    pending = processes
+    while pending:
+        running = []
+        for process in pending:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                if process.is_running() and process.status() not in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                    running.append(process)
+        pending = running
+        if pending:
+            # Do not use psutil.wait_procs: asyncio owns the subprocess reaper.
+            await asyncio.sleep(0.05)
 
 
 async def stop_process(proc: asyncio.subprocess.Process) -> None:
     """Allow the CLI to close its tools and journal before forcing a shutdown."""
+    descendants = []
+    with contextlib.suppress(psutil.NoSuchProcess):
+        # Tools may start their own sessions. Capture ownership before the CLI
+        # exits and reparents them; psutil also guards signals against PID reuse.
+        descendants = psutil.Process(proc.pid).children(recursive=True)
     if os.name == "posix":
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGTERM)
     elif proc.returncode is None:
         proc.terminate()
     try:
+        for process in descendants:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                process.terminate()
         await asyncio.wait_for(proc.wait(), 5)
     except TimeoutError:
         if os.name != "posix":
@@ -120,7 +146,11 @@ async def stop_process(proc: asyncio.subprocess.Process) -> None:
         if os.name == "posix":
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
-        await proc.wait()
+        for process in descendants:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                process.kill()
+        await asyncio.wait_for(proc.wait(), 5)
+        await asyncio.wait_for(_wait_for_descendants(descendants), 5)
 
 
 async def run_json_process(

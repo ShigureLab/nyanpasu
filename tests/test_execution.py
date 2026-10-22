@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
+import psutil
 import pytest
 
 from nyanpasu.execution import JsonProcessRunner
@@ -127,3 +129,62 @@ while True:
             await running
     assert runner.runtime_info()["pids"] == []
     assert runner.runtime_info()["connection"] == "idle"
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(os.name != "posix", reason="Detached POSIX sessions are specific to POSIX backends")
+@pytest.mark.parametrize("ignore_termination", [False, True])
+async def test_runner_close_stops_detached_tools_before_returning(tmp_path, ignore_termination):
+    child = f"""
+import pathlib, signal, time
+if {ignore_termination!r}:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path('ready').touch()
+while not pathlib.Path('after-close').exists():
+    time.sleep(0.01)
+pathlib.Path('late-write').write_text('old tool still running')
+time.sleep(30)
+"""
+    parent = f"""
+import json, pathlib, subprocess, sys, time
+child = subprocess.Popen(
+    [sys.executable, '-c', {child!r}], start_new_session=True,
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+while not pathlib.Path('ready').exists():
+    time.sleep(0.01)
+print(json.dumps({{'type': 'ready', 'pid': child.pid}}), flush=True)
+child.wait()
+"""
+    events = asyncio.Queue()
+    runner = JsonProcessRunner()
+    running = asyncio.create_task(
+        runner.run(
+            [sys.executable, "-c", parent],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            input_text="",
+            timeout=10,
+            received=events.put,
+        )
+    )
+    tool = None
+    try:
+        ready = await asyncio.wait_for(events.get(), 5)
+        tool = psutil.Process(ready["pid"])
+        assert os.getpgid(tool.pid) == tool.pid
+        assert tool.pid != runner.runtime_info()["pids"][0]
+        await runner.close()
+        (tmp_path / "after-close").touch()
+        await asyncio.sleep(0.1)
+        assert not (tmp_path / "late-write").exists()
+        assert not tool.is_running() or tool.status() == psutil.STATUS_ZOMBIE
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    finally:
+        if tool is not None:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                tool.kill()
+        await runner.close()
+        with contextlib.suppress(asyncio.CancelledError):
+            await running
