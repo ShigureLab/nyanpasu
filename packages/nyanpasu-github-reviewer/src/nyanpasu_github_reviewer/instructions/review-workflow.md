@@ -27,7 +27,9 @@ Use managed task control:
 | Independent designer | `purpose: independent-design` when an isolated requirements-based comparison can resolve a material design question, or when explicitly requested.                                     |
 | CI analyst           | `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.                                                                       |
 
-For code-review children, copy accepted changed paths into `inputs.review_files`. Unchanged context files are readable but do not belong in that list. Head-based requests include the PR context, target head and owned question; children return concise conclusions, checked paths, evidence and gaps. The parent retains all undelegated coverage.
+The plugin supplies child role instructions; omit `developer_instructions`. Put the concrete question, contract sources, available evidence and task-specific constraints in `prompt`; independent design uses the structured inputs below instead. Investigator and test-audit inputs accept only `review_files`.
+
+For code-review children, copy accepted changed paths into `inputs.review_files`. Unchanged context files are readable but do not belong in that list. The service adds the pinned comparison range and owned paths to head-based requests; children return concise conclusions, checked paths, evidence and gaps. The parent retains all undelegated coverage.
 
 Serialize dispatch requests to a file and use the supplied control client. Success returns a managed task ID; a shell background ID is not a child. Inspect a failed or uncertain dispatch before retrying; reuse `request_key` only for the same input. Do not repeatedly wait on a shell command as if it were a running review child.
 

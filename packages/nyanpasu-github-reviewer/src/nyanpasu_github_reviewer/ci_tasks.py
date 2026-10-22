@@ -45,7 +45,7 @@ def prepare_ci_analysis(
             "memory_enabled": False,
             "inputs": {"ci_snapshot": data},
             "developer_instructions": build_ci_analysis_instructions(config, pr),
-            "prompt": build_ci_analysis_prompt(pr, snapshot=data),
+            "prompt": request.prompt + "\n\n" + build_ci_analysis_prompt(pr, snapshot=data),
         }
     )
 

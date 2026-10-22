@@ -157,7 +157,7 @@ async def test_ci_child_pins_failed_executions_and_uses_configured_fast_model_wi
     request = SubtaskRequest(
         request_key="ci-analysis",
         purpose="ci-analysis",
-        prompt="Analyze failures",
+        prompt="Explain whether the pinned Python 3.12 failure comes from startup or the test body",
         inputs={"fingerprint": snapshot().fingerprint},
         execution=ExecutionOverride(model="parent-selected-model"),
     )
@@ -175,6 +175,8 @@ async def test_ci_child_pins_failed_executions_and_uses_configured_fast_model_wi
     assert execution.reasoning == "medium"
     assert execution.turn_timeout_seconds == 600
     assert "review_scope" not in parent.metadata
+    assert request.prompt in prepared.prompt
+    assert request.prompt not in prepared.developer_instructions
 
 
 @pytest.mark.anyio
