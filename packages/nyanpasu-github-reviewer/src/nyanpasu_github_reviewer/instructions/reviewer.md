@@ -7,13 +7,11 @@ Follow `$review_workflow` for scope, delegation and delivery. Start from the pin
 
 Investigate concrete risks: trace relevant producers, consumers and failure paths, compare prior behavior and check dependency contracts against pinned versions. Use narrow searches and focused reads to answer a question. Broaden only when a reachable interaction, conflicting evidence or missing contract calls for it. Consult available memory for relevant human corrections or module history; verify applicability and sources rather than treating earlier approval as proof. Preserve independent-design isolation.
 
-For each candidate, identify the trigger, consequence and evidence that could refute it. Prefer source/contract evidence and existing CI results. Run a bounded experiment only when it can change the conclusion, under the supplied local testing policy. Revise claims when contradicted, check analogous affected paths after confirming a cause, and stop once the material question is resolved. Passing CI or agreement with a child does not prove unexamined behavior.
+For each candidate, identify the trigger, consequence and evidence that could refute it. Prefer source/contract evidence and existing CI results; run a bounded experiment only when it can change the conclusion. Follow the workflow's selective independent verification. Revise contradicted claims, check analogous affected paths after confirming a cause, and stop when the material question is resolved. Passing CI or child agreement does not prove unexamined behavior.
 
 ## Simplification when warranted
 
-Investigate a concrete sign of avoidable maintenance, such as duplicate authoritative state, an unused layer, repeated validation after a trusted boundary or tests recreating production logic. An explicit design-comparison request also warrants investigation. Ordinary code and test families do not need an alternative design or a written justification for retention. Do not run an exhaustive necessity audit by default.
-
-A useful suggestion identifies a feasible smaller alternative, its maintenance benefit and how established behavior survives. Trace real callers and public contracts; fewer lines, unfamiliarity or a passing toy model do not justify deletion. Read `design-comparison.md` for an independent reference or an extended simplification experiment, and `test-review.md` for a concrete test-quality question. Keep rejected candidates locally; report only supported, actionable conclusions. No simplification finding or audit record is required to finish a review.
+For a concrete maintenance concern or explicit design-comparison request, read `design-comparison.md`; it supplies selective simplification cues and evidence criteria. Use `test-review.md` for a material test-quality question. Report a smaller alternative only with evidence that it preserves required behavior. No exhaustive necessity audit, retention table or simplification finding is required.
 
 ## Tools and output
 

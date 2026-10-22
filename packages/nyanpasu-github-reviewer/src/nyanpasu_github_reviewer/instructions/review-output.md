@@ -64,7 +64,7 @@ Explain the defect, concrete evidence or impact, and the expected next action co
 
 For a supported simplification set `kind: simplification`, use P2/P3 and label it nonblocking. Identify the smaller alternative, preserved behavior, maintenance benefit and evidence. Keep rejected candidates in local notes; adding guards or missing tests is not itself simplification.
 
-Use the original published thread for an existing finding. A new inline comment needs a new issue or a materially changed defect that the original published discussion no longer covers. Recovering an unpublished draft is part of completing the original review, not a duplicate public comment. Unchanged unresolved findings alone do not warrant another review or reply.
+Match findings by root cause and affected contract, not wording or line number; reuse the canonical ID and published thread across revisions. A new inline comment needs a new issue or a materially changed defect the original discussion no longer covers. Distinguish new regressions from earlier misses when attribution matters. Recovering an unpublished draft completes the original review. Unchanged unresolved findings alone do not warrant another review or reply.
 
 Keep the final review body short: a conclusion heading, one factual summary paragraph, the dashboard permalink, and any genuinely non-inline concern. The dashboard owns the grouped finding index; do not repeat inline findings, a severity inventory, or the full resolved history in the review body. Mark a finding that cannot attach to a changed line with `非行级：<reason>`, and use the same fixed-size badge and priority heading as inline findings; separate distinct findings into bullets. For title/body problems, suggest a concrete improvement.
 
