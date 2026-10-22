@@ -1,0 +1,1100 @@
+{
+  "schema_version": 1,
+  "collected_at": "2026-10-21T19:10:19.332Z",
+  "audience": "evaluator-only",
+  "source_methods": [
+    "GitHub connector PR/review/comment reads",
+    "GitHub REST review commit bindings",
+    "Read-only local Git object/diff inspection"
+  ],
+  "requirements_provenance": "Evaluator summaries of current PR descriptions and discussion; original descriptions at historical cutoffs were not reconstructed.",
+  "truth_policy": "Published claims, acceptance, approval, resolved threads, merge status and CI success are not gold labels. Only nyanpasu-48 has one statically refuted metadata claim; no whole PR is certified.",
+  "cases": [
+    {
+      "case_id": "nyanpasu-14",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/14",
+      "title": "feat: support claude code backend and make runtime bin configurable",
+      "root_cause_group": "backend-execution-and-transcript-lifecycle",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Add a configurable Claude execution backend while preserving task ownership, session recovery, native history, and bounded redacted diagnostics.",
+      "latest_observed": {
+        "head_sha": "13f9d3d2ff97835cfa76683657b7de123565f4db",
+        "base_sha": "7b489ce2576222bc3ba34be7ddacac7b049c54ac",
+        "merge_base_sha": "7b489ce2576222bc3ba34be7ddacac7b049c54ac",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "ShigureLab/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-09-13T20:43:37Z",
+          "updated_at": "2026-09-17T03:10:06Z",
+          "closed_at": "2026-09-17T03:07:30Z",
+          "merged_at": "2026-09-17T03:07:30Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 42,
+        "historical_objects": [
+          {
+            "sha": "def7e08a9cc7f7816b147c50443ec0909e3da189",
+            "collector_had_local_object": true,
+            "parents": [
+              "766af1687c699c624637688eb92376e186eecb26"
+            ],
+            "committed_at": "2026-09-14T04:42:26+08:00"
+          },
+          {
+            "sha": "6680f98ee91e699489ea7d9d00c1b67b179d84d4",
+            "collector_had_local_object": true,
+            "parents": [
+              "73eac2fbc4606c2b19cc996c8efa77f6557eb994"
+            ],
+            "committed_at": "2026-09-14T10:46:24+08:00"
+          },
+          {
+            "sha": "3a3b2b70ae20e81a0b8f77845a18a2615af58b9c",
+            "collector_had_local_object": true,
+            "parents": [
+              "f6d1009fe4c97ed7b24398ec38d4faab349c1a25",
+              "7b489ce2576222bc3ba34be7ddacac7b049c54ac"
+            ],
+            "committed_at": "2026-09-17T02:17:23+08:00"
+          },
+          {
+            "sha": "55b18d535cb1658f0104c0a572bb699606fdeae8",
+            "collector_had_local_object": true,
+            "parents": [
+              "3a3b2b70ae20e81a0b8f77845a18a2615af58b9c"
+            ],
+            "committed_at": "2026-09-17T07:41:44+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Inspect enqueue-time backend ownership, stderr chunk boundaries, transcript branch invalidation, and diagnostic bounds. The sources report fixes; this collection did not execute them.",
+        "limitations": "Several independent failure modes live in one large PR; select one per evaluation rather than score every reported claim as true."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/14#discussion_r4000848292",
+          "created_at": "2026-09-13T20:48:33Z",
+          "updated_at": "2026-09-13T20:48:33Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated report: queued/coalesced/ignored tasks incorrectly retain the Codex backend default.",
+          "location": {
+            "path": "src/nyanpasu/store.py",
+            "line": 95
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/14#discussion_r4029377944",
+          "created_at": "2026-09-16T18:24:18Z",
+          "updated_at": "2026-09-16T18:24:18Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated report: redacting arbitrary stderr chunks permits split credential fragments.",
+          "location": {
+            "path": "src/nyanpasu/execution.py",
+            "line": 147
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/14#discussion_r4031775836",
+          "created_at": "2026-09-16T23:42:45Z",
+          "updated_at": "2026-09-16T23:42:45Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked account response reports 55b18d5 fix and failing-before/passing-after tests; author identity alone is not proof of human authorship.",
+          "location": {
+            "path": "src/nyanpasu/execution.py",
+            "line": 147
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "nyanpasu-36",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/36",
+      "title": ":bug: fix(tests): check merged reviewer prompt contents",
+      "root_cause_group": "reviewer-prompt-contract-tests",
+      "recommended_split": "calibration",
+      "evaluator_summary": "Merged open/synchronize events must produce one coherent review request for the current head without duplicate triggers, stale heads, or unresolved placeholders.",
+      "latest_observed": {
+        "head_sha": "640806055839fd15d8cd10fdd31c5ae38ae696e7",
+        "base_sha": "c4eac5a0b09b5ff4056ada39142efc1d3f2b38a9",
+        "merge_base_sha": "c4eac5a0b09b5ff4056ada39142efc1d3f2b38a9",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "ShigureLab/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-09-26T18:12:40Z",
+          "updated_at": "2026-09-26T18:16:55Z",
+          "closed_at": "2026-09-26T18:16:52Z",
+          "merged_at": "2026-09-26T18:16:52Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 1,
+        "historical_objects": []
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "A fixed 1200-character limit is not the behavioral contract. Preserve semantic assertions and remove path/footer-length dependence.",
+        "limitations": "Static diff verified; CI failure/reproduction numbers remain source claims until an isolated replay."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/actions/runs/36258203649",
+          "kind": "author-cited-ci-run",
+          "claim": "PR description cites a failing Python matrix caused by prompt length; log contents not independently fetched."
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/commit/640806055839fd15d8cd10fdd31c5ae38ae696e7",
+          "kind": "locally-inspected-git-diff",
+          "claim": "Verified one-file change replaces length assertion with one-request and one-trigger-count assertions, preserving existing content checks."
+        }
+      ]
+    },
+    {
+      "case_id": "nyanpasu-38",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/38",
+      "title": "✨ feat: prepare Python 3.15 and free-threaded support",
+      "root_cause_group": "python-toolchain-and-generated-lock-scope",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Support Python 3.15 and 3.15t while preserving the existing minimum version and normal installation paths.",
+      "latest_observed": {
+        "head_sha": "6b61f68e1b185bfaa66b045dd1f2c39f1844d365",
+        "base_sha": "7ba141fde1e5d619e810086b47a9d87952dcf6a4",
+        "merge_base_sha": "7ba141fde1e5d619e810086b47a9d87952dcf6a4",
+        "merge_base_source": "github-compare-api",
+        "head_repository": "ShigureNyako/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-09-28T15:47:59Z",
+          "updated_at": "2026-09-28T17:57:50Z",
+          "closed_at": "2026-09-28T17:57:50Z",
+          "merged_at": "2026-09-28T17:57:50Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": false,
+        "collector_verified_remote_head": true,
+        "changed_file_count": 4,
+        "historical_objects": []
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Separate necessary conditional dependency/lock changes from unrelated runtime assertions, README, dashboard, or formatting churn. A large generated lock diff is not itself a defect.",
+        "limitations": "The original broad revision and original body have not been reconstructed. Do not turn the maintainer's diff-size complaint into a blanket 'delete lockfiles' oracle."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/38#pullrequestreview-5341286148",
+          "created_at": "2026-09-28T15:56:06Z",
+          "updated_at": null,
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo review challenges the +279/-27 scope. Current body says the minimal-diff audit reduced changes to four necessary files.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "nyanpasu-39",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/39",
+      "title": "✨ feat: support stacked pull request reviews",
+      "root_cause_group": "poller-closure-discovery",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Discover stacked PRs by trunk eligibility but review against direct base; previously tracked open PRs must still trigger cleanup if they close outside recent pagination.",
+      "latest_observed": {
+        "head_sha": "55c85c8c7a8b33043466ff26954bd215ac6e5966",
+        "base_sha": "1634f3b9a07c2fb494b6c9e3fb9c8a02c47aa384",
+        "merge_base_sha": "1634f3b9a07c2fb494b6c9e3fb9c8a02c47aa384",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "ShigureLab/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-09-30T15:45:14Z",
+          "updated_at": "2026-09-30T16:48:26Z",
+          "closed_at": "2026-09-30T16:48:23Z",
+          "merged_at": "2026-09-30T16:48:23Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 20,
+        "historical_objects": [
+          {
+            "sha": "3d098cce67d1d8965a752fb4e4669a690b294702",
+            "collector_had_local_object": true,
+            "parents": [
+              "1634f3b9a07c2fb494b6c9e3fb9c8a02c47aa384"
+            ],
+            "committed_at": "2026-09-30T23:44:52+08:00"
+          },
+          {
+            "sha": "797aa33e0430b16751f98a190e8c8ab119d93da4",
+            "collector_had_local_object": true,
+            "parents": [
+              "3d098cce67d1d8965a752fb4e4669a690b294702"
+            ],
+            "committed_at": "2026-10-01T00:03:06+08:00"
+          },
+          {
+            "sha": "55c85c8c7a8b33043466ff26954bd215ac6e5966",
+            "collector_had_local_object": true,
+            "parents": [
+              "c66d3c6341c6898eced400c402f349d043ab9526"
+            ],
+            "committed_at": "2026-10-01T00:31:43+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "A configured-base scan fixes ordinary closures but still misses upper-stack closures. Verify tracked-open point fetches, retry, still-open state, and exactly-once cleanup.",
+        "limitations": "Historical code objects and test names are available; behavioral tests were not executed by this collection."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/39#discussion_r4146597865",
+          "created_at": "2026-09-30T15:54:05Z",
+          "updated_at": "2026-09-30T15:54:05Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated first report: unfiltered recent pages can miss configured-base closures.",
+          "location": {
+            "path": "packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/poller.py",
+            "line": 835
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/39#discussion_r4146687852",
+          "created_at": "2026-09-30T16:04:08Z",
+          "updated_at": "2026-09-30T16:13:40Z",
+          "actor": "SigureMo",
+          "actor_classification": "agent-disclosed-on-user-account",
+          "kind": "published-source-statement",
+          "claim": "Codex-disclosed response reports initial configured-base-scan fix 797aa33.",
+          "location": {
+            "path": "packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/poller.py",
+            "line": 835
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/39#discussion_r4146844623",
+          "created_at": "2026-09-30T16:21:45Z",
+          "updated_at": "2026-09-30T16:21:46Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated follow-up identifies fresh upper-layer counterexample against 797aa33.",
+          "location": {
+            "path": "packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/poller.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/39#discussion_r4146941148",
+          "created_at": "2026-09-30T16:32:27Z",
+          "updated_at": "2026-09-30T16:32:27Z",
+          "actor": "SigureMo",
+          "actor_classification": "agent-disclosed-on-user-account",
+          "kind": "published-source-statement",
+          "claim": "Codex-disclosed response reports final tracked-open point-fetch fix 55c85c8 with regression cases.",
+          "location": {
+            "path": "packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/poller.py",
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "nyanpasu-48",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/48",
+      "title": ":sparkles: feat: guide proactive reviewer investigation",
+      "root_cause_group": "review-claim-provenance-and-commit-trailers",
+      "recommended_split": "calibration",
+      "evaluator_summary": "Investigate reviewer evidence quality while obeying the repository requirement that Codex-assisted commits contain the Codex co-author trailer.",
+      "latest_observed": {
+        "head_sha": "6529f66ea115d0100558242de33ff5b3d5d2f131",
+        "base_sha": "8fd68c1df912b7a86ce4644ec9187cb8d0de4acb",
+        "merge_base_sha": "8fd68c1df912b7a86ce4644ec9187cb8d0de4acb",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "ShigureLab/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-10-04T13:05:15Z",
+          "updated_at": "2026-10-04T13:21:12Z",
+          "closed_at": "2026-10-04T13:21:10Z",
+          "merged_at": "2026-10-04T13:21:10Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 20,
+        "historical_objects": [
+          {
+            "sha": "b38d8b8e41c65c3908efc0e81b4af64c97fc4328",
+            "collector_had_local_object": true,
+            "parents": [
+              "6169dff71f8962c01b726f4b2f2926abd7bf2936"
+            ],
+            "committed_at": "2026-10-04T19:47:30+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "specific-claim-statically-refuted",
+        "candidate_expected_behavior": "Reject the specific P1 claim that reviewed commit b38d8b8 has no Codex trailer: the exact immutable commit message contains it.",
+        "limitations": "Only this exact trailer-absence claim is adjudicated. This does not certify the full PR or calibrate other commit policy severities."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/48#discussion_r4177754092",
+          "created_at": "2026-10-04T13:08:04Z",
+          "updated_at": "2026-10-04T13:08:04Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated P1 claims the reviewed commit contains no Co-authored-by trailer.",
+          "location": {
+            "path": "evals/reviewer/batch-export/README.md",
+            "line": 1
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/48#discussion_r4177763308",
+          "created_at": "2026-10-04T13:10:13Z",
+          "updated_at": "2026-10-04T13:10:14Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo response asks which commit lacks it.",
+          "location": {
+            "path": "evals/reviewer/batch-export/README.md",
+            "line": 1
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/commit/b38d8b8e41c65c3908efc0e81b4af64c97fc4328",
+          "kind": "locally-inspected-immutable-git-object",
+          "claim": "git show -s --format=%B contains Co-authored-by: Codex <noreply@openai.com>. Specific absence claim is contradicted independently of thread resolution."
+        }
+      ]
+    },
+    {
+      "case_id": "nyanpasu-55",
+      "repository": "ShigureLab/nyanpasu",
+      "url": "https://github.com/ShigureLab/nyanpasu/pull/55",
+      "title": "⬆️ deps: bump Python dev dependencies",
+      "root_cause_group": "python-toolchain-and-generated-lock-scope",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Update ruff/ty development dependencies and keep warning-as-error lint working across supported Python versions.",
+      "latest_observed": {
+        "head_sha": "f31d2d43af702b824af571a988e928b88b241736",
+        "base_sha": "e47664de03ba5ee5ffd80cd94fa2757a0ed4dca2",
+        "merge_base_sha": "e47664de03ba5ee5ffd80cd94fa2757a0ed4dca2",
+        "merge_base_source": "github-compare-api",
+        "head_repository": "ShigureLab/nyanpasu",
+        "timestamps": {
+          "created_at": "2026-10-19T02:04:53Z",
+          "updated_at": "2026-10-19T14:01:13Z",
+          "closed_at": "2026-10-19T14:01:10Z",
+          "merged_at": "2026-10-19T14:01:10Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": false,
+        "collector_verified_remote_head": true,
+        "changed_file_count": 6,
+        "historical_objects": []
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Assess whether the Iterator-to-Generator annotation updates are required by the new ty version; do not infer runtime regressions from annotation-only churn.",
+        "limitations": "Treat Copilot's reproduction as agent evidence. No independent toolchain execution performed."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/55#issuecomment-6268860487",
+          "created_at": "2026-10-19T13:52:13Z",
+          "updated_at": "2026-10-19T13:52:13Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo requests fixing CI failure.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/ShigureLab/nyanpasu/pull/55#issuecomment-6268980814",
+          "created_at": "2026-10-19T13:58:00Z",
+          "updated_at": "2026-10-19T13:58:00Z",
+          "actor": "Copilot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Copilot reports updating four contextmanager annotations for ty 0.0.89 and records validation limitations.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "relax-258",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/258",
+      "title": "【Task.31】feat(rm): add reward modeling and preference evaluation",
+      "root_cause_group": "product-documentation-vs-task-acceptance-artifacts",
+      "recommended_split": "calibration",
+      "evaluator_summary": "Add reusable reward-model training and preference evaluation to Relax with user-oriented documentation and coherent existing CLI contracts.",
+      "latest_observed": {
+        "head_sha": "4b2be7f88b27d93d63d861fa9512424e274fef1e",
+        "base_sha": "b918be26cac5ecdf6f755343ecd2186d4da9ed9f",
+        "merge_base_sha": "b918be26cac5ecdf6f755343ecd2186d4da9ed9f",
+        "merge_base_source": "github-compare-api",
+        "head_repository": "A-Words/Relax",
+        "timestamps": {
+          "created_at": "2026-08-11T05:49:23Z",
+          "updated_at": "2026-10-04T09:28:52Z",
+          "closed_at": "2026-10-04T09:28:52Z",
+          "merged_at": "2026-10-04T09:28:52Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": false,
+        "collector_verified_remote_head": true,
+        "changed_file_count": 40,
+        "historical_objects": [
+          {
+            "sha": "1f315eab12c3b12903929500f182b6183aca0ec7",
+            "collector_had_local_object": false,
+            "identity_source": "REST review binding; object was not available locally"
+          },
+          {
+            "sha": "4b2be7f88b27d93d63d861fa9512424e274fef1e",
+            "collector_had_local_object": false,
+            "identity_source": "REST review binding; object was not available locally"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Detect task-acceptance-only metrics/docs, redundant code, source-inspection tests, and unnecessary separate CLI interfaces; do not use earlier bot approvals as quality labels.",
+        "limitations": "Human feedback establishes a correction category, not an exact failing-code oracle: the 'original implementation' revision must be located before labeling a historical code snapshot."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/258#pullrequestreview-5405079201",
+          "created_at": "2026-10-04T08:39:24Z",
+          "updated_at": null,
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated review claims rebased 4b2be7f is tree-identical to approved 1f315eab and only PR-description navigation remains.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/258#pullrequestreview-5405115834",
+          "created_at": "2026-10-04T08:47:21Z",
+          "updated_at": null,
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated follow-up approves after description change.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/258#pullrequestreview-5405250901",
+          "created_at": "2026-10-04T09:27:09Z",
+          "updated_at": null,
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo review explicitly says original implementation was below merge quality, explains product-vs-acceptance boundary, and says the maintainer iterated it.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "relax-285",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/285",
+      "title": "feat(megatron): handle zero-token no-signal steps in the shared trainer",
+      "root_cause_group": "megatron-effective-token-count-contract",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Skip optimizer and scheduler updates on globally zero effective-token steps for all reduction modes and PP/TP/DP configurations.",
+      "latest_observed": {
+        "head_sha": "72bc6b76e8cbbef5328d989d0b199ba1c4668099",
+        "base_sha": "823941b30f433ebf1032c97d80327ccd311146d3",
+        "merge_base_sha": "823941b30f433ebf1032c97d80327ccd311146d3",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "xcosmosbox/Relax",
+        "timestamps": {
+          "created_at": "2026-08-19T08:49:53Z",
+          "updated_at": "2026-10-04T18:02:12Z",
+          "closed_at": "2026-10-04T18:02:05Z",
+          "merged_at": "2026-10-04T18:02:05Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 9,
+        "historical_objects": [
+          {
+            "sha": "8cad9cb47f8130058a528d28c62274ccf2b21c0f",
+            "collector_had_local_object": true,
+            "parents": [
+              "663d6240baa89ca603912be77cf1d54f5c199a3d"
+            ],
+            "committed_at": "2026-08-20T10:58:55+08:00"
+          },
+          {
+            "sha": "53ad8a47de54d895123e117b328a8696387508fc",
+            "collector_had_local_object": true,
+            "parents": [
+              "8cad9cb47f8130058a528d28c62274ccf2b21c0f",
+              "c7d2847378cdf24c99b22aadb4b2fd078ff225a0"
+            ],
+            "committed_at": "2026-09-22T23:43:58+08:00"
+          },
+          {
+            "sha": "8a0bc3dfa59b033c19cef4ac8bc1d815fec47cd0",
+            "collector_had_local_object": true,
+            "parents": [
+              "53ad8a47de54d895123e117b328a8696387508fc",
+              "6d78410f577aa98a0671221651de108af371bb4e"
+            ],
+            "committed_at": "2026-09-27T01:25:22+08:00"
+          },
+          {
+            "sha": "f2fdcfb22e381f8250b3478cd10b9ea27d3d4994",
+            "collector_had_local_object": true,
+            "parents": [
+              "6af3f685799caac00adc680eb8b9631e5478c675"
+            ],
+            "committed_at": "2026-10-01T00:20:39+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Use explicit effective token counts rather than sample-mean metric denominators, global last-rank source rather than pipeline stage index, and real process-group tests.",
+        "limitations": "Source evidence is unusually concrete but no distributed reproduction was rerun here. Keep with #290 in one split because token-contract changes overlap."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/285#discussion_r3971591042",
+          "created_at": "2026-09-09T18:10:53Z",
+          "updated_at": "2026-09-09T18:10:53Z",
+          "actor": "chatgpt-codex-connector[bot]",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Automated report identifies sample-mean denominator as invalid zero-token detector.",
+          "location": {
+            "path": "relax/backends/megatron/model.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/285#discussion_r4073623517",
+          "created_at": "2026-09-22T15:53:09Z",
+          "updated_at": "2026-09-22T15:53:09Z",
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent reports a four-process Gloo reproduction of global source-rank failure and explains why the mock test cannot detect it.",
+          "location": {
+            "path": "relax/backends/megatron/model.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/285#issuecomment-5943935283",
+          "created_at": "2026-10-02T01:34:09Z",
+          "updated_at": "2026-10-02T01:34:09Z",
+          "actor": "xcosmosbox",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Contributor reports fixes and real Gloo/NCCL validation, with multi-node limitation.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "relax-290",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/290",
+      "title": "fix(megatron): cast `get_cp_local_num_tokens` to `torch.int` for Megatron int32 token accumulator",
+      "root_cause_group": "megatron-effective-token-count-contract",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Return token counts compatible with Megatron's int32 accumulator while preserving counting and normalization semantics.",
+      "latest_observed": {
+        "head_sha": "9fdd83ee585802e3fee9833cdbd495efeb12267b",
+        "base_sha": "6d78410f577aa98a0671221651de108af371bb4e",
+        "merge_base_sha": "6d78410f577aa98a0671221651de108af371bb4e",
+        "merge_base_source": "github-compare-api",
+        "head_repository": "ZiyiTsang/Relax",
+        "timestamps": {
+          "created_at": "2026-08-27T16:31:35Z",
+          "updated_at": "2026-09-26T18:05:42Z",
+          "closed_at": "2026-09-26T18:05:42Z",
+          "merged_at": "2026-09-26T18:05:42Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": false,
+        "collector_verified_remote_head": true,
+        "changed_file_count": 2,
+        "historical_objects": []
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Recognize the required torch.int cast by following consumers and pinned scheduler contract; avoid inventing a dtype simplification that restores the mismatch.",
+        "limitations": "Neither approval nor green CI is a correctness label. A dtype-contract replay or static pinned-consumer proof is still required."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/290#pullrequestreview-5280432266",
+          "created_at": "2026-09-22T15:51:06Z",
+          "updated_at": null,
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent states it traced all CP token-count consumers and standard/streaming integer accumulators, with CPU eager checks and hardware limitations.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/290#pullrequestreview-5326790203",
+          "created_at": "2026-09-26T17:49:34Z",
+          "updated_at": null,
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Follow-up reports main merge preserved the two-file semantic delta and pinned dependency contract.",
+          "location": {
+            "path": null,
+            "line": null
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "relax-343",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/343",
+      "title": "feat(sync): publish Kimi K3, OpenR1-MM, and runtime updates",
+      "root_cause_group": "cross-repository-runtime-compatibility-and-sync",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Synchronize runtime/model changes without dropping existing supported startup behavior, image-loader independence, pinned-Megatron compatibility, or cross-rank buffer-release ordering.",
+      "latest_observed": {
+        "head_sha": "6639fb336fd13920b8841321fcc8ddf32b64c26d",
+        "base_sha": "7c4e537117f11a6e114c3097ec4234893103de94",
+        "merge_base_sha": "815de3aa9588bf59c8c75940a1908d876fb4fe9f",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "redai-studio/Relax",
+        "timestamps": {
+          "created_at": "2026-09-20T06:43:26Z",
+          "updated_at": "2026-10-12T06:04:10Z",
+          "closed_at": "2026-10-12T06:04:07Z",
+          "merged_at": "2026-10-12T06:04:07Z"
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 372,
+        "historical_objects": [
+          {
+            "sha": "61f8f43b5b3fe7fae2422f9e6413b59cf9074039",
+            "collector_had_local_object": true,
+            "parents": [
+              "52b381aed258a6971ee877ebe07e55c5c8953505"
+            ],
+            "committed_at": "2026-10-08T15:35:50+08:00"
+          },
+          {
+            "sha": "36882cac8d1327296979587e7911da78b6b7bd27",
+            "collector_had_local_object": true,
+            "parents": [
+              "de2b2b75a478274b53c82c3d177b1d8dd55e5098"
+            ],
+            "committed_at": "2026-10-08T16:23:42+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Explain each compatibility branch and synchronization's actual caller/owner. Preserve necessary mechanisms until the supported pinned dependency changes; document a removal condition.",
+        "limitations": "The barrier counterargument is agent evidence, not a human-approved oracle; no fault injection was performed. Huge synchronized PR should be sliced by semantic scope for CPU evaluation."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/343#discussion_r4216002856",
+          "created_at": "2026-10-08T07:09:34Z",
+          "updated_at": "2026-10-08T07:11:01Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo asks why old-layout compatibility exists.",
+          "location": {
+            "path": "tests/backends/megatron/test_gdn_cp_gpu.py",
+            "line": 52
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/343#discussion_r4216352267",
+          "created_at": "2026-10-08T07:46:40Z",
+          "updated_at": "2026-10-08T07:46:42Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "After explanation, SigureMo requests a TODO so old-image compatibility can be removed when CI upgrades.",
+          "location": {
+            "path": "tests/backends/megatron/test_gdn_cp_gpu.py",
+            "line": 52
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/343#discussion_r4216336078",
+          "created_at": "2026-10-08T07:44:56Z",
+          "updated_at": "2026-10-08T07:44:57Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "SigureMo asks whether lazy loading is required by an actual CPU CI failure.",
+          "location": {
+            "path": "relax/utils/data/processor_pool.py",
+            "line": 162
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/343#discussion_r4216389361",
+          "created_at": "2026-10-08T07:50:43Z",
+          "updated_at": "2026-10-08T07:50:44Z",
+          "actor": "SigureMo",
+          "actor_classification": "agent-disclosed-on-user-account",
+          "kind": "published-source-statement",
+          "claim": "Codex-disclosed response supplies the exact CI job and torchvision import chain.",
+          "location": {
+            "path": "relax/utils/data/processor_pool.py",
+            "line": 162
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/343#discussion_r4216678220",
+          "created_at": "2026-10-08T08:26:24Z",
+          "updated_at": "2026-10-08T08:26:24Z",
+          "actor": "SigureMo",
+          "actor_classification": "agent-disclosed-on-user-account",
+          "kind": "published-source-statement",
+          "claim": "Codex-disclosed response rejects unconditional barrier removal after tracing buffer-release ordering, Ray owner cleanup, and Gloo lifetime.",
+          "location": {
+            "path": "relax/backends/megatron/actor.py",
+            "line": 2929
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "relax-391",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/391",
+      "title": "【No.5】fix(agentic): aggregate speculative decoding metrics",
+      "root_cause_group": "product-documentation-vs-task-acceptance-artifacts",
+      "recommended_split": "calibration",
+      "evaluator_summary": "Aggregate speculative-decoding metrics with user-facing semantics and keep PR-specific acceptance records out of product documentation.",
+      "latest_observed": {
+        "head_sha": "3b6373f5b98f1d95155b45dcd3b8b9fee6174d11",
+        "base_sha": "dce533b48ee2ec264288282e560d5c6246b225c3",
+        "merge_base_sha": "dce533b48ee2ec264288282e560d5c6246b225c3",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "Pinoeer-kingxi/Relax",
+        "timestamps": {
+          "created_at": "2026-09-29T14:52:41Z",
+          "updated_at": "2026-10-12T08:45:01Z",
+          "closed_at": null,
+          "merged_at": null
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 14,
+        "historical_objects": [
+          {
+            "sha": "5d923950457c479302ccf035be8bc7485b955722",
+            "collector_had_local_object": true,
+            "parents": [
+              "eeddb2f601bc8b6b38cb36a4c8bdb40b994e8e7d"
+            ],
+            "committed_at": "2026-09-30T19:42:21-07:00"
+          },
+          {
+            "sha": "059e5e315bf5ae0f0c165c8f2f48f3f6813a8188",
+            "collector_had_local_object": true,
+            "parents": [
+              "5d923950457c479302ccf035be8bc7485b955722"
+            ],
+            "committed_at": "2026-10-04T05:49:11-07:00"
+          },
+          {
+            "sha": "70356c889f02a14f651033753da25bfe9351f07d",
+            "collector_had_local_object": true,
+            "parents": [
+              "059e5e315bf5ae0f0c165c8f2f48f3f6813a8188"
+            ],
+            "committed_at": "2026-10-04T06:02:40-07:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "Detect acceptance-report content in guides and docs/public/validation/task5-speculative-metrics.json. Do not treat removal of guide links while retaining the orphan artifact as complete resolution.",
+        "limitations": "A project-specific placement boundary, not a universal ban on machine-readable validation artifacts; group with #258 to avoid leakage."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/391#discussion_r4147536294",
+          "created_at": "2026-09-30T17:40:19Z",
+          "updated_at": "2026-09-30T17:40:58Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo asks what the acceptance content contributes to documentation and challenges the reviewer for missing it.",
+          "location": {
+            "path": "docs/zh/guide/agentic-rollout.md",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/391#discussion_r4151347320",
+          "created_at": "2026-10-01T02:49:49Z",
+          "updated_at": "2026-10-01T02:49:49Z",
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent admits missed documentation/scope issue but still treats the retained JSON as optional removal.",
+          "location": {
+            "path": "docs/zh/guide/agentic-rollout.md",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/391#discussion_r4176827846",
+          "created_at": "2026-10-04T08:48:54Z",
+          "updated_at": "2026-10-04T08:48:57Z",
+          "actor": "SigureMo",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Unmarked SigureMo explicitly says not to include the JSON either.",
+          "location": {
+            "path": "docs/public/validation/task5-speculative-metrics.json",
+            "line": 1
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/commit/059e5e315bf5ae0f0c165c8f2f48f3f6813a8188",
+          "kind": "locally-inspected-git-diff",
+          "claim": "Verified the commit deletes only the 342-line task-specific validation JSON."
+        }
+      ]
+    },
+    {
+      "case_id": "relax-463",
+      "repository": "redai-studio/Relax",
+      "url": "https://github.com/redai-studio/Relax/pull/463",
+      "title": "fix(metrics): reuse one HTTP connection and keep /report_step off the event loop",
+      "root_cause_group": "metrics-batch-ownership-through-await-and-cancellation",
+      "recommended_split": "holdout-candidate",
+      "evaluator_summary": "Reuse metrics HTTP connections and move blocking backend writes off the event loop without losing or duplicating accepted metric batches.",
+      "latest_observed": {
+        "head_sha": "e4bd440761f2a0ed88906bc63c87cd9a8f636427",
+        "base_sha": "8e667d5c5815fcf223bb17fc2ce90099b6602f7c",
+        "merge_base_sha": "e47525fadf851d50edff345438776bd594e0e556",
+        "merge_base_source": "local-git-merge-base",
+        "head_repository": "Mukayi/Relax",
+        "timestamps": {
+          "created_at": "2026-10-21T15:02:25Z",
+          "updated_at": "2026-10-21T17:19:01Z",
+          "closed_at": null,
+          "merged_at": null
+        }
+      },
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "reconstruction": {
+        "collector_had_base_object": true,
+        "collector_had_head_object": true,
+        "collector_verified_remote_head": false,
+        "changed_file_count": 3,
+        "historical_objects": [
+          {
+            "sha": "75ea68431766fbd1583174dd0091dcb413e08caa",
+            "collector_had_local_object": true,
+            "parents": [
+              "b7639f24f0cd305316f0daaccee9dd28bae5f1b5"
+            ],
+            "committed_at": "2026-10-21T20:19:19+08:00"
+          },
+          {
+            "sha": "57b2dfd72ca79a26c8f040c5d26db3c92b095179",
+            "collector_had_local_object": true,
+            "parents": [
+              "fbb32be3aa38802b85cbb425dcfa76489deaa965"
+            ],
+            "committed_at": "2026-10-22T00:20:31+08:00"
+          },
+          {
+            "sha": "e4bd440761f2a0ed88906bc63c87cd9a8f636427",
+            "collector_had_local_object": true,
+            "parents": [
+              "57b2dfd72ca79a26c8f040c5d26db3c92b095179"
+            ],
+            "committed_at": "2026-10-22T00:57:47+08:00"
+          }
+        ]
+      },
+      "adjudication": {
+        "status": "candidate-needs-adjudication",
+        "candidate_expected_behavior": "First preserve same-step writes arriving during await; then preserve batch ownership when executor work is queued or running during request cancellation.",
+        "limitations": "No real Serve disconnect/GPU integration run; source claims explicitly distinguish controlled CPU handler tests from deployment evidence."
+      },
+      "evidence": [
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/463#discussion_r4338502380",
+          "created_at": "2026-10-21T15:11:10Z",
+          "updated_at": "2026-10-21T15:12:35Z",
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent reports real-handler controlled interleaving drops newly accepted same-step metrics.",
+          "location": {
+            "path": "relax/utils/metrics/service.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/463#discussion_r4339298799",
+          "created_at": "2026-10-21T16:31:07Z",
+          "updated_at": "2026-10-21T16:31:07Z",
+          "actor": "Mukayi",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Contributor acknowledges the regression and explains atomic take/restore fix.",
+          "location": {
+            "path": "relax/utils/metrics/service.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/463#discussion_r4339338871",
+          "created_at": "2026-10-21T16:35:15Z",
+          "updated_at": "2026-10-21T16:36:51Z",
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent reports fresh cancellation counterexample at 57b2dfd and warns against immediate restore when thread is already running.",
+          "location": {
+            "path": "relax/utils/metrics/service.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/463#discussion_r4339613921",
+          "created_at": "2026-10-21T17:01:57Z",
+          "updated_at": "2026-10-21T17:01:58Z",
+          "actor": "Mukayi",
+          "actor_classification": "unmarked-user-account-human-status-not-provable-from-api",
+          "kind": "published-source-statement",
+          "claim": "Contributor reports e4bd440 moves take/send/restore into synchronous worker and two queued/running regressions.",
+          "location": {
+            "path": "relax/utils/metrics/service.py",
+            "line": null
+          }
+        },
+        {
+          "url": "https://github.com/redai-studio/Relax/pull/463#discussion_r4339645443",
+          "created_at": "2026-10-21T17:05:14Z",
+          "updated_at": "2026-10-21T17:05:15Z",
+          "actor": "rai-studio-bot",
+          "actor_classification": "automation-account",
+          "kind": "published-source-statement",
+          "claim": "Agent states exact cancellation scenarios and prior isolation were verified.",
+          "location": {
+            "path": "relax/utils/metrics/service.py",
+            "line": null
+          }
+        }
+      ]
+    }
+  ]
+}
