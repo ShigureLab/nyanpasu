@@ -12,4 +12,4 @@ For a selected alternative, trace actual contracts and callers; use a bounded de
 
 For an independent reference, verify its frozen source tree, requirement digest, independence and evidence. Compare ownership, responsibilities and failure behavior at the same base and requirements; check latest-target integration equally. Machinery present in only one design may represent a missed requirement or speculation; trace its contract before deciding.
 
-Summarize examined, evidenced decisions in the optional dashboard `simplification` record under review-output.md. No finding quota or retention table is required.
+Summarize confirmed, still-applicable proposals in the optional dashboard `simplification` record under review-output.md with `status: recommended`. A completed retain-only analysis is not a suggestion. The shared 改进建议 section displays actionable results separately from pending analysis; rejected and historical alternatives stay in the review plan. No finding quota or retention table is required.

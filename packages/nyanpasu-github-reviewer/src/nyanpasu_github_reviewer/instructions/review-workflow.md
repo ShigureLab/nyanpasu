@@ -8,7 +8,9 @@ Apply review-output.md's live-label check. Read the PR requirements, current req
 
 Compare the current delta and requirements with the last verified coverage. Continue unresolved questions and affected contracts; reuse evidence for unchanged behavior. Separate new regressions, misses in earlier coverage, and already known issues; a pre-existing base defect is not a new regression. A previous task head is only a navigation hint. Completed publication with no new evidence, changed decision or outstanding request needs no automatic update. A policy upgrade alone does not reopen it.
 
-Verify the worktree's pinned head and merge-base. Follow scope-review.md to submit placement decisions before bulk investigation or child dispatch; admission is not a completed review. Copy the returned source/scope to the dashboard. For stacks, review the direct-base diff and attribute inherited issues to their introducing layer.
+Verify the worktree's pinned head and merge-base. Follow scope-review.md to submit placement decisions before bulk investigation or code-review child dispatch; admission is not a completed review. Copy the returned source/scope to the dashboard. For stacks, review the direct-base diff and attribute inherited issues to their introducing layer.
+
+During an eligible substantive review, dispatch one managed `purpose: pr-split` child when the turn input reports the size trigger (strictly more than 2000 added + deleted lines), or when the behavior changes clearly separate into multiple independently reviewable PRs, regardless of size. Put the trigger, candidate behavior boundaries and relevant requirements in `prompt`; omit `inputs` and `developer_instructions`. The service supplies the entire pinned direct-base delta, independent of admission, as `github_reviewer.pr-split`. Reuse an active child or completed result only for the same inventory and unchanged requirements; cite it in the review plan. Do not reopen an already completed, otherwise unchanged review merely to populate this advice. CI-only turns never trigger split analysis.
 
 Call `ci-refresh` and handle failures under ci-followup.md alongside review. Do not wait for pending CI or duplicate its broad tests. A CI-only turn follows ci-followup.md alone.
 
@@ -24,6 +26,7 @@ Use managed task control:
 - Test auditor: `purpose: test-audit` for a material detection or brittleness question under test-review.md; diff size alone does not require one.
 - Independent designer: `purpose: independent-design` for a material requirements-based comparison or an explicit request.
 - CI analyst: `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.
+- PR split analyst: `purpose: pr-split` for the trigger above; no admission scope or `review_files`. It advises on behavior boundaries, dependencies and member/fork submission steps without owning correctness coverage.
 
 The plugin supplies child role instructions; omit `developer_instructions`. Put the concrete question, contract sources, available evidence and task-specific constraints in `prompt`; independent design uses the structured inputs below instead. Investigator and test-audit inputs accept only `review_files`.
 
@@ -46,6 +49,8 @@ Before a long experiment or wait, save evidence in the existing plan and update 
 ## Reconcile and finish
 
 On resume, repeat eligibility checks and compare current range/requirements with frozen inputs. Cancel obsolete children and retain evidence at its original identity. Read delivered results, reconcile their claims and continue the remaining work. After `any`, other children remain active: await remaining needed results, excluding reconciled children from the next wait, then end that turn. A failed or cancelled child leaves a gap; recover essential work or record the blocker.
+
+Reconcile split advice against behavior and dependency evidence, then publish it in the optional dashboard `pr_split` section under review-output.md. Await a dispatched split child before ending its analysis, while continuing to deliver useful review findings. A failed split child leaves that section `incomplete`; it does not change correctness stages or create a blocker. Recheck `review-verify` before publishing split advice, remove stale advice when replacing the dashboard source, and avoid repeating unchanged suggestions.
 
 For high-risk candidates or conflicting evidence, obtain a fresh scoped investigator's falsification before accepting the claim; reuse it while its inputs remain valid. Use the ordinary investigator role, with the claim, sources, evidence and a question that could disprove its trigger, contract or consequence in the prompt. Do not prescribe a verdict. Otherwise, a straightforward finding with sufficient evidence needs no repeated counter-review. Reconcile contradictions before publication; agreement alone adds no proof.
 

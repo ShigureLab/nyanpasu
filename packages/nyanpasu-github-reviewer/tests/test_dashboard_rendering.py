@@ -76,7 +76,7 @@ def test_completed_review_needs_no_simplification_audit(report: dict) -> None:
     validator.validate(report)
     output, _ = render(report)
     assert "✅ 已通过" in output
-    assert "精简审查与验证依据" not in output
+    assert "改进建议" not in output
 
     # Removing that audit gate must not allow approval of unfinished coverage.
     for stage in ("general", "deep"):
@@ -84,6 +84,39 @@ def test_completed_review_needs_no_simplification_audit(report: dict) -> None:
         with pytest.raises(ValidationError):
             validator.validate(report)
         report["stages"][stage]["status"] = "completed"
+
+
+@pytest.mark.parametrize("status", ["analyzing", "recommended", "keep_together", "incomplete"])
+def test_split_advice_is_visible_without_blocking_approval(report: dict, status: str) -> None:
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    report.update(status="approved", findings={})
+    report.pop("simplification")
+    report["pr_split"] = {"status": status, "summary": "配置解析和接入可按依赖分层。"}
+    if status == "recommended":
+        report["pr_split"].update(
+            plan="1. 配置解析与测试 → main\n2. 环境变量接入与测试 → 配置解析层",
+            submission="有写权限时使用 gh-stack（https://github.com/github/gh-stack），否则按层向上游提交。",
+        )
+    validator.validate(report)
+    output, links = render(report)
+    assert "✅ 已通过" in output
+    assert ("改进建议（非阻塞）" in output) is (status != "keep_together")
+    assert (report["pr_split"]["summary"] in output) is (status != "keep_together")
+    if status == "recommended":
+        assert "💡 1 个拆分方案" in output
+        assert ("https://github.com/github/gh-stack", "https://github.com/github/gh-stack") in links
+        assert "环境变量接入与测试" in output
+        for field in ("plan", "submission"):
+            value = report["pr_split"].pop(field)
+            with pytest.raises(ValidationError):
+                validator.validate(report)
+            report["pr_split"][field] = value
+    else:
+        assert "💡" not in output
+
+    del report["pr_split"]
+    output, _ = render(report)
+    assert "改进建议" not in output
 
 
 def test_findings_can_be_delivered_before_general_completion(report: dict) -> None:
@@ -109,8 +142,75 @@ def test_simplification_can_cover_only_the_investigated_scope(report: dict, scop
 
     validator.validate(report)
     output, _ = render(report)
-    assert report["simplification"][scope]["summary"] in output
+    assert (report["simplification"][scope]["summary"] in output) is (scope == "production")
     assert omitted["summary"] not in output
+
+
+def test_confirmed_simplification_and_split_share_one_section(report: dict) -> None:
+    report["pr_split"] = {
+        "status": "recommended",
+        "summary": "解析与接入适合分两层提交。",
+        "plan": "解析与测试 → 接入与测试",
+        "submission": "Member 使用 gh-stack；fork 作者按层提交。",
+    }
+    output, _ = render(report)
+    assert output.count("### 改进建议（非阻塞）") == 1
+    assert output.index("#### 精简") < output.index("#### 拆分")
+    assert "💡 生产代码 · 1 条建议" in output
+    assert "💡 1 个拆分方案" in output
+    assert report["simplification"]["production"]["entries"][0]["evidence"] in output
+    assert report["simplification"]["tests"]["summary"] not in output
+    assert "精简审查与验证依据" not in output
+    assert "### PR 拆分建议" not in output
+
+
+def test_no_actionable_improvement_hides_section_but_preserves_discussion_history(report: dict) -> None:
+    record = report["simplification"]["production"]
+    record.update(status="completed", summary="实现已经精简，保留当前结构。")
+    record["entries"][0].update(decision="retain", alternative="保留当前实现")
+    report["findings"]["F1"]["status"] = "resolved"
+    report["pr_split"] = {"status": "keep_together", "summary": "迁移与实现必须原子合入。"}
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    validator.validate(report)
+
+    output, links = render(report)
+    assert "改进建议" not in output
+    assert "💡" not in output
+    assert record["summary"] not in output
+    assert report["pr_split"]["summary"] not in output
+    finding = report["findings"]["F1"]
+    assert (finding["url"], finding["title"]) in links
+
+
+@pytest.mark.parametrize("status", ["pending", "running", "incomplete"])
+def test_unfinished_simplification_is_not_advertised_as_a_suggestion(report: dict, status: str) -> None:
+    report.update(status="approved", findings={})
+    report["simplification"] = {"production": {"status": status, "summary": "调用方的兼容性仍待核实。", "entries": []}}
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    validator.validate(report)
+
+    output, _ = render(report)
+    assert "✅ 已通过" in output
+    assert "#### 精简" in output
+    assert "调用方的兼容性仍待核实。" in output
+    assert "💡" not in output
+    assert "条建议" not in output
+    assert "#### 拆分" not in output
+
+
+@pytest.mark.parametrize("invalid", ["empty", "retain", "unconfirmed"])
+def test_simplification_marker_requires_explicit_actionable_outcome(report: dict, invalid: str) -> None:
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    record = report["simplification"]["production"]
+    if invalid == "empty":
+        record["entries"] = []
+    elif invalid == "retain":
+        record["entries"][0]["decision"] = "retain"
+    else:
+        # Old completed records must be reclassified before adopting the new definition.
+        record["status"] = "completed"
+    with pytest.raises(ValidationError):
+        validator.validate(report)
 
 
 @pytest.mark.parametrize(
@@ -129,6 +229,9 @@ def test_simplification_can_cover_only_the_investigated_scope(report: dict, scop
     ],
 )
 def test_free_prose_links_preserve_review_anchor(report: dict, path: tuple) -> None:
+    # Exercise visible suggestions in both scopes; retain-only outcomes are deliberately hidden.
+    report["simplification"]["tests"]["status"] = "recommended"
+    report["simplification"]["tests"]["entries"][0]["decision"] = "merge"
     parent = report
     for key in path[:-1]:
         parent = parent[key]

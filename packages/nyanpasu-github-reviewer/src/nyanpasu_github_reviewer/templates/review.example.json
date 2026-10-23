@@ -19,7 +19,7 @@
   },
   "simplification": {
     "production": {
-      "status": "completed",
+      "status": "recommended",
       "summary": "配置读取只需一个权威来源；建议移除重复状态。",
       "entries": [
         {

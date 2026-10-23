@@ -91,6 +91,67 @@
 本次没有需要列入看板的问题。
 {% endif %}
 
+{% set production = data.simplification.production if data.simplification is defined and data.simplification.production is defined else none -%}
+{% set tests = data.simplification.tests if data.simplification is defined and data.simplification.tests is defined else none -%}
+{% set has_simplification = (production is not none and production.status in ["recommended", "pending", "running", "incomplete"]) or (tests is not none and tests.status in ["recommended", "pending", "running", "incomplete"]) -%}
+{% set has_split = data.pr_split is defined and data.pr_split.status != "keep_together" -%}
+{% if has_simplification or has_split -%}
+### 改进建议（非阻塞）
+
+{% if has_simplification -%}
+#### 精简
+
+{% for audit, label in [(production, "生产代码"), (tests, "测试")] if audit is not none -%}
+{% if audit.status == "recommended" -%}
+<details open>
+<summary><strong>💡 {{ label }} · {{ audit.entries | length }} 条建议</strong></summary>
+
+{{ audit.summary | md_body }}
+
+<table>
+<thead>
+<tr><th>范围</th><th>建议</th><th>保留的行为与验证依据</th></tr>
+</thead>
+<tbody>
+{% for entry in audit.entries -%}
+<tr>
+<td valign="top">{{ entry.scope | md_body }}</td>
+<td valign="top"><strong>{{ decisions[entry.decision] }}</strong><br>{{ entry.alternative | md_body }}</td>
+<td valign="top">{{ entry.contract | md_body }}<br>{{ entry.evidence | md_body }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+</details>
+
+{% elif audit.status in ["pending", "running", "incomplete"] -%}
+**{{ label }} · {{ stage_states[audit.status] }}** — {{ audit.summary | md_body }}
+
+{% endif -%}
+{% endfor -%}
+{% endif -%}
+{% if has_split -%}
+#### 拆分
+
+{% if data.pr_split.status == "recommended" -%}
+<details open>
+<summary><strong>💡 1 个拆分方案</strong></summary>
+
+{{ data.pr_split.summary | md_body }}
+
+{{ data.pr_split.plan | md_body }}
+
+{{ data.pr_split.submission | md_body }}
+
+</details>
+
+{% else -%}
+**{% if data.pr_split.status == "analyzing" %}🔎 分析中{% else %}⏸️ 分析未完成{% endif %}** — {{ data.pr_split.summary | md_body }}
+
+{% endif -%}
+{% endif -%}
+{% endif -%}
 {% if data.scope is defined -%}
 {% set scope = data.scope[data.source.inventory_id] -%}
 <details>
@@ -123,55 +184,6 @@
 </details>
 
 {% endif -%}
-{% if data.simplification is defined -%}
-<details>
-<summary><strong>精简审查与验证依据</strong></summary>
-
-<table>
-<thead>
-<tr><th>审查范围</th><th>进度</th><th>结论</th></tr>
-</thead>
-<tbody>
-{% for key, label in [("production", "生产代码"), ("tests", "测试")] -%}
-{% if data.simplification[key] is defined -%}
-<tr>
-<td nowrap valign="top">{{ label }}</td>
-<td nowrap valign="top">{{ stage_states[data.simplification[key].status] }}</td>
-<td valign="top">{{ data.simplification[key].summary | md_body }}</td>
-</tr>
-{% endif -%}
-{% endfor -%}
-</tbody>
-</table>
-
-{% for key, label in [("production", "生产代码"), ("tests", "测试")] if data.simplification[key] is defined -%}
-{% set audit = data.simplification[key] -%}
-{% if audit.entries -%}
-#### {{ label }}的必要性与替代方案
-
-<table>
-<thead>
-<tr><th>范围</th><th>必须保留的契约</th><th>更简单的方案</th><th>结论</th><th>依据与限制</th></tr>
-</thead>
-<tbody>
-{% for entry in audit.entries -%}
-<tr>
-<td valign="top">{{ entry.scope | md_body }}</td>
-<td valign="top">{{ entry.contract | md_body }}</td>
-<td valign="top">{{ entry.alternative | md_body }}</td>
-<td nowrap valign="top">{{ decisions[entry.decision] }}</td>
-<td valign="top">{{ entry.evidence | md_body }}</td>
-</tr>
-{% endfor -%}
-</tbody>
-</table>
-
-{% endif -%}
-{% endfor -%}
-</details>
-
-{% endif %}
-
 <div align="right">
 {% set disclosure_brand = "Powered by Nyanpasu" -%}
    <sup>Powered by {{ "Nyanpasu" | md_link("https://github.com/ShigureLab/nyanpasu") }}{{ data.disclosure[(disclosure_brand | length):] }}</sup>

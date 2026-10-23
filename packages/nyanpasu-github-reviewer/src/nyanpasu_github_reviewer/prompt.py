@@ -7,6 +7,7 @@ from string import Template
 from typing import TYPE_CHECKING
 
 from nyanpasu_github_reviewer.models import ReviewTrigger
+from nyanpasu_github_reviewer.pr_split import SPLIT_LINE_THRESHOLD, changed_line_count
 from nyanpasu_github_reviewer.scope import review_source
 
 if TYPE_CHECKING:
@@ -82,6 +83,20 @@ def build_review_prompt(
         lines.append(f"Previous task head (not proof of completed review): {previous_task_head}")
     if inventory is not None:
         lines.append("Pinned dashboard source (JSON): " + json.dumps(review_source(inventory), ensure_ascii=False))
+        changed_lines = changed_line_count(inventory)
+        lines.append(
+            f"Direct-base delta: {changed_lines} changed lines (additions + deletions; binary files count as 0)."
+        )
+        if changed_lines > SPLIT_LINE_THRESHOLD:
+            lines.append(
+                f"PR split analysis required: delta exceeds {SPLIT_LINE_THRESHOLD} lines. "
+                "Dispatch a managed pr-split child under review-workflow.md, or reuse a matching completed analysis."
+            )
+        else:
+            lines.append(
+                "Dispatch a managed pr-split child if the behavior changes clearly separate into independent PRs "
+                "under review-workflow.md."
+            )
     if pr.stack is not None:
         lines.append(f"Stack #{pr.stack.number}; trunk: {pr.stack.base_ref}. Review this PR's direct-base diff.")
     lines.append(f"Explicit request: {'yes' if any(item.explicit_request for item in triggers) else 'no'}")

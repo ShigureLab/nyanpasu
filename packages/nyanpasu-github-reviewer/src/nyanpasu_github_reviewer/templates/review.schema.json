@@ -36,6 +36,24 @@
         "deep": { "$ref": "#/$defs/stage" }
       }
     },
+    "pr_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "enum": ["analyzing", "recommended", "keep_together", "incomplete"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "plan": { "type": "string", "minLength": 1 },
+        "submission": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "recommended" } } },
+          "then": { "required": ["plan", "submission"] },
+          "else": { "properties": { "plan": false, "submission": false } }
+        }
+      ]
+    },
     "simplification": {
       "type": "object",
       "additionalProperties": false,
@@ -121,6 +139,7 @@
           "findings": { "maxProperties": 0 },
           "scope": false,
           "simplification": false,
+          "pr_split": false,
           "stages": {
             "properties": {
               "general": { "properties": { "status": { "const": "pending" } } },
@@ -162,12 +181,6 @@
       },
       "then": {
         "properties": {
-          "simplification": {
-            "properties": {
-              "production": { "properties": { "status": { "enum": ["completed", "skipped"] } } },
-              "tests": { "properties": { "status": { "enum": ["completed", "skipped"] } } }
-            }
-          },
           "stages": {
             "properties": {
               "general": { "properties": { "status": { "const": "completed" } } },
@@ -277,7 +290,9 @@
       "additionalProperties": false,
       "required": ["status", "summary", "entries"],
       "properties": {
-        "status": { "enum": ["pending", "running", "completed", "skipped", "incomplete"] },
+        "status": {
+          "enum": ["pending", "running", "recommended", "completed", "skipped", "incomplete"]
+        },
         "summary": {
           "type": "string",
           "minLength": 1,
@@ -287,8 +302,25 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "status": { "const": "completed" } } },
+          "if": { "properties": { "status": { "enum": ["recommended", "completed"] } } },
           "then": { "properties": { "entries": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "recommended" } } },
+          "then": {
+            "properties": {
+              "entries": {
+                "items": {
+                  "properties": { "decision": { "enum": ["remove", "merge", "replace"] } }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "entries": { "items": { "properties": { "decision": { "const": "retain" } } } }
+            }
+          }
         },
         {
           "if": { "properties": { "status": { "const": "skipped" } } },

@@ -18,6 +18,7 @@ from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
+from nyanpasu_github_reviewer.pr_split import changed_line_count
 from nyanpasu_github_reviewer.scope import build_inventory, review_source, scope_report, validate_plan
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, fake_backends
 from tests.test_review_reference import reference_request, repository
@@ -106,7 +107,7 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     task, git, trunk, _ = scoped_task(tmp_path)
     repo = task.workspace.local_path
     git("checkout", "-b", "lower", trunk)
-    (repo / "lower.txt").write_text("lower v1\n")
+    (repo / "lower.txt").write_text("lower v1\n" * 2001)
     git("add", ".")
     git("commit", "-m", "lower v1")
     lower = git("rev-parse", "HEAD")
@@ -136,6 +137,7 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     runtime = _config(tmp_path)
     inventory = build_inventory(runtime, task)
     assert [item["path"] for item in inventory["files"]] == ["upper.txt"]
+    assert changed_line_count(inventory) == 1  # The large lower layer must not trigger splitting this PR.
     plan = validate_plan(inventory, {"inventory_id": inventory["inventory_id"], "groups": [group(["upper.txt"])]})
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
     plugin = GitHubReviewerPlugin(

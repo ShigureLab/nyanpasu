@@ -90,7 +90,7 @@ def _stub_github(monkeypatch, *, files=(), **updates):
             "head_sha": task.workspace.revision,
             "base_ref": task.metadata["pull_request"]["base_ref"],
             "merge_base_sha": "base-a",
-            "files": [{"path": path} for path in files],
+            "files": [{"path": path, "additions": 1, "deletions": 0, "binary": False} for path in files],
         },
     )
 
