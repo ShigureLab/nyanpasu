@@ -33,6 +33,7 @@ from nyanpasu_github_reviewer.models import (
     ReviewTrigger,
 )
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
+from nyanpasu_github_reviewer.pr_compare import prepare_pr_compare, validate_pr_compare_child
 from nyanpasu_github_reviewer.pr_split import prepare_pr_split, validate_pr_split_child
 from nyanpasu_github_reviewer.prompt import (
     INSTRUCTIONS_DIR,
@@ -227,6 +228,17 @@ class GitHubReviewerPlugin:
         if request.purpose == "pr-split":
             assert self.config is not None
             return prepare_pr_split(self.config, parent, request)
+        if request.purpose == "pr-compare":
+            assert self.config is not None
+            assert self.runtime is not None
+            return await asyncio.to_thread(
+                prepare_pr_compare,
+                self.runtime.config,
+                self.config,
+                parent,
+                request,
+                functools.partial(_fetch_pr, self.config),
+            )
         if request.purpose != "independent-design":
             field = "fingerprint" if request.purpose == "ci-analysis" else "review_files"
             if extra := request.inputs.keys() - {field}:
@@ -279,6 +291,9 @@ class GitHubReviewerPlugin:
                 if child.metadata.get("purpose") == "pr-split":
                     validate_pr_split_child(parent, child)
                     continue
+                if child.metadata.get("purpose") == "pr-compare":
+                    validate_pr_compare_child(parent, child)
+                    continue
                 inventory, plan, allowed = self._scope_for_parent(store, parent)
                 assignment = child.metadata.get("inputs", {}).get("review_scope")
                 if (
@@ -296,6 +311,10 @@ class GitHubReviewerPlugin:
                     error = f"CI analysis cannot resume: {exc}. Refresh CI and dispatch with a new request_key."
                 elif child.metadata.get("purpose") == "pr-split":
                     error = f"PR split analysis cannot resume: {exc}. Read review-scope and dispatch with a new request_key."
+                elif child.metadata.get("purpose") == "pr-compare":
+                    error = (
+                        f"PR comparison cannot resume: {exc}. Read review-scope and dispatch with a new request_key."
+                    )
                 else:
                     error = (
                         f"Deep review cannot resume: {exc}. Submit review-scope and dispatch with a new request_key."
@@ -446,7 +465,7 @@ class GitHubReviewerPlugin:
             plan = validate_plan(inventory, payload)
             previous = task.metadata.get("review_scope")
             scoped_children = any(
-                child.metadata.get("purpose") not in {"ci-analysis", "pr-split"}
+                child.metadata.get("purpose") not in {"ci-analysis", "pr-split", "pr-compare"}
                 for child in (store.task_request(record.task_id) for record in store.subtasks(task.task_id))
             )
             if previous is not None and scoped_children and plan.model_dump() != previous:

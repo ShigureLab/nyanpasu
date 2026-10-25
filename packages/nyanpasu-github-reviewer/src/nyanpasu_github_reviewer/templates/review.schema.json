@@ -54,6 +54,43 @@
         }
       ]
     },
+    "pr_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "enum": ["analyzing", "recommended", "no_action", "incomplete"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "related_prs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["url", "head_sha", "base_ref", "merge_base_sha"],
+            "properties": {
+              "url": { "type": "string", "pattern": "^https?://" },
+              "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+              "base_ref": { "type": "string", "minLength": 1 },
+              "merge_base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+            }
+          }
+        },
+        "implementation": { "type": "string", "minLength": 1 },
+        "changes": { "type": "string", "minLength": 1 },
+        "merge_order": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "recommended" } } },
+          "then": { "required": ["related_prs", "implementation", "changes", "merge_order", "evidence"] },
+          "else": {
+            "properties": { "implementation": false, "changes": false, "merge_order": false, "evidence": false }
+          }
+        }
+      ]
+    },
     "simplification": {
       "type": "object",
       "additionalProperties": false,
@@ -140,6 +177,7 @@
           "scope": false,
           "simplification": false,
           "pr_split": false,
+          "pr_comparison": false,
           "stages": {
             "properties": {
               "general": { "properties": { "status": { "const": "pending" } } },

@@ -134,6 +134,53 @@ def test_findings_can_be_delivered_before_general_completion(report: dict) -> No
     assert "✅ 已通过" not in output
 
 
+@pytest.mark.parametrize("status", ["analyzing", "recommended", "no_action", "incomplete"])
+def test_related_pr_advice_requires_concrete_choices_and_remains_nonblocking(report: dict, status: str) -> None:
+    report.update(status="approved", findings={})
+    report.pop("simplification")
+    comparison = {"status": status, "summary": "两个 PR 均优化离线 SFT 快照。"}
+    if status == "recommended":
+        comparison.update(
+            related_prs=[
+                {
+                    "url": "https://github.com/redai-studio/Relax/pull/447",
+                    "head_sha": "a" * 40,
+                    "base_ref": "main",
+                    "merge_base_sha": "b" * 40,
+                }
+            ],
+            implementation="可先合较小的快照优化；也可优先合入覆盖初始化的完整实现，由维护者选择。",
+            changes="移除已被初始化策略覆盖的重复分支，保留预测消费者测试。",
+            merge_order="无硬依赖；后合入的 PR 应移除已经覆盖的部分。",
+            evidence="已比较双方快照消费者；未独立复现 GPU 性能。",
+        )
+    report["pr_comparison"] = comparison
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    validator.validate(report)
+    output, links = render(report)
+    assert "✅ 已通过" in output
+    assert ("#### 相关 PR" in output) is (status != "no_action")
+    assert ("💡" in output) is (status == "recommended")
+    if status == "recommended":
+        url = comparison["related_prs"][0]["url"]
+        assert (url, url) in links
+        for field in ("related_prs", "implementation", "changes", "merge_order", "evidence"):
+            value = comparison.pop(field)
+            with pytest.raises(ValidationError):
+                validator.validate(report)
+            comparison[field] = value
+        assert comparison["implementation"] in output
+        assert comparison["changes"] in output
+        assert comparison["merge_order"] in output
+    else:
+        comparison["implementation"] = "Unverified recommendation"
+        with pytest.raises(ValidationError):
+            validator.validate(report)
+
+    report.pop("pr_comparison")
+    assert "改进建议" not in render(report)[0]
+
+
 @pytest.mark.parametrize("scope", ["production", "tests"])
 def test_simplification_can_cover_only_the_investigated_scope(report: dict, scope: str) -> None:
     validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))

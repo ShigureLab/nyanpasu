@@ -95,7 +95,8 @@
 {% set tests = data.simplification.tests if data.simplification is defined and data.simplification.tests is defined else none -%}
 {% set has_simplification = (production is not none and production.status in ["recommended", "pending", "running", "incomplete"]) or (tests is not none and tests.status in ["recommended", "pending", "running", "incomplete"]) -%}
 {% set has_split = data.pr_split is defined and data.pr_split.status != "keep_together" -%}
-{% if has_simplification or has_split -%}
+{% set has_comparison = data.pr_comparison is defined and data.pr_comparison.status != "no_action" -%}
+{% if has_simplification or has_split or has_comparison -%}
 ### 改进建议（非阻塞）
 
 {% if has_simplification -%}
@@ -148,6 +149,34 @@
 
 {% else -%}
 **{% if data.pr_split.status == "analyzing" %}🔎 分析中{% else %}⏸️ 分析未完成{% endif %}** — {{ data.pr_split.summary | md_body }}
+
+{% endif -%}
+{% endif -%}
+{% if has_comparison -%}
+#### 相关 PR
+
+{% if data.pr_comparison.status == "recommended" -%}
+<details open>
+<summary><strong>💡 实现与合入建议</strong></summary>
+
+{{ data.pr_comparison.summary | md_body }}
+
+{% for pr in data.pr_comparison.related_prs -%}
+{{ pr.url | md_link(pr.url) }} · {{ pr.head_sha | md_code }} · 目标分支 {{ pr.base_ref | md_code }}
+
+{% endfor -%}
+**实现取舍：** {{ data.pr_comparison.implementation | md_body }}
+
+**当前 PR 调整：** {{ data.pr_comparison.changes | md_body }}
+
+**合入顺序：** {{ data.pr_comparison.merge_order | md_body }}
+
+**依据与验证范围：** {{ data.pr_comparison.evidence | md_body }}
+
+</details>
+
+{% else -%}
+**{% if data.pr_comparison.status == "analyzing" %}🔎 分析中{% else %}⏸️ 分析未完成{% endif %}** — {{ data.pr_comparison.summary | md_body }}
 
 {% endif -%}
 {% endif -%}

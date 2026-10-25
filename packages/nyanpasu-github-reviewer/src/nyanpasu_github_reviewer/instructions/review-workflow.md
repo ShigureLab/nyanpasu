@@ -27,12 +27,15 @@ Use managed task control:
 - Independent designer: `purpose: independent-design` for a material requirements-based comparison or an explicit request.
 - CI analyst: `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.
 - PR split analyst: `purpose: pr-split` for the trigger above; no admission scope or `review_files`. It advises on behavior boundaries, dependencies and member/fork submission steps without owning correctness coverage.
+- Related PR analyst: `purpose: pr-compare` when another PR appears to address the same behavior; `inputs.related_prs` lists its same-repository PR numbers. Put the suspected overlap and requirements in `prompt`; no `review_files`. The service pins both sides; the child compares implementation preference, current-PR changes, dependencies and replacement options without owning correctness coverage.
 
 The plugin supplies child role instructions; omit `developer_instructions`. Put the concrete question, contract sources, available evidence and task-specific constraints in `prompt`; independent design uses the structured inputs below instead. Investigator and test-audit inputs accept only `review_files`.
 
 For code-review children, copy accepted changed paths into `inputs.review_files`. Unchanged context files are readable but do not belong in that list. The service adds the pinned comparison range and owned paths to head-based requests; children return concise conclusions, checked paths, evidence and gaps. The parent retains all undelegated coverage.
 
 Serialize dispatch requests to a file and use the supplied control client. Success returns a managed task ID; a shell background ID is not a child. Inspect a failed or uncertain dispatch before retrying; reuse `request_key` only for the same input. Do not repeatedly wait on a shell command as if it were a running review child.
+
+For related PRs, use `{"action":"create","input":{"request_key":"compare:<current-inventory>:<related-heads>","purpose":"pr-compare","prompt":"Compare the overlapping behavior and propose coordination","inputs":{"related_prs":[447]}}}` with actual identities and PR numbers. Group connected candidates in one child; reuse an active or frozen result only while all compared ranges and material requirements are unchanged. Similar names or shared files alone need no child. Do not reopen an unchanged completed review solely for this policy; a new overlapping PR, changed related implementation or explicit comparison request is new evidence. CI-only turns do not launch comparisons.
 
 ### Independent comparison, when selected
 
@@ -51,6 +54,8 @@ Before a long experiment or wait, save evidence in the existing plan and update 
 On resume, repeat eligibility checks and compare current range/requirements with frozen inputs. Cancel obsolete children and retain evidence at its original identity. Read delivered results, reconcile their claims and continue the remaining work. After `any`, other children remain active: await remaining needed results, excluding reconciled children from the next wait, then end that turn. A failed or cancelled child leaves a gap; recover essential work or record the blocker.
 
 Reconcile split advice against behavior and dependency evidence, then publish it in the optional dashboard `pr_split` section under review-output.md. Await a dispatched split child before ending its analysis, while continuing to deliver useful review findings. A failed split child leaves that section `incomplete`; it does not change correctness stages or create a blocker. Recheck `review-verify` before publishing split advice, remove stale advice when replacing the dashboard source, and avoid repeating unchanged suggestions.
+
+Await dispatched PR comparisons and reconcile their implementation, overlap and dependency claims. Verify each related PR's live state, head, base, merge-base and material requirements before reusing or publishing advice; changed evidence requires a fresh comparison, not relabeling the old result. Publish useful coordination in `pr_comparison` under review-output.md, including maintainer choices for full replacement. A failed comparison leaves that section `incomplete` without changing correctness stages. Clear stale comparison advice when replacing the current source; CI-only updates preserve it. Only the parent publishes, and unchanged advice needs no extra comment.
 
 For high-risk candidates or conflicting evidence, obtain a fresh scoped investigator's falsification before accepting the claim; reuse it while its inputs remain valid. Use the ordinary investigator role, with the claim, sources, evidence and a question that could disprove its trigger, contract or consequence in the prompt. Do not prescribe a verdict. Otherwise, a straightforward finding with sufficient evidence needs no repeated counter-review. Reconcile contradictions before publication; agreement alone adds no proof.
 

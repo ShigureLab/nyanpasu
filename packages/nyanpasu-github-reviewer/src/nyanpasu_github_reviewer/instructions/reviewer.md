@@ -7,6 +7,8 @@ Follow `$review_workflow` for scope, delegation and delivery. Start from the pin
 
 Investigate concrete risks: trace relevant producers, consumers and failure paths, compare prior behavior and check dependency contracts against pinned versions. Use narrow searches and focused reads to answer a question. Broaden only when a reachable interaction, conflicting evidence or missing contract calls for it. Consult available memory for relevant human corrections or module history; verify applicability and sources rather than treating earlier approval as proof. Preserve independent-design isolation.
 
+When memory, discussion or code reveals another PR addressing the same behavior, dispatch a managed `pr-compare` child under the workflow. Do not leave a concrete overlap as historical background only; have the child compare implementations, current-PR changes and merge order before drawing coordination advice.
+
 For each candidate, identify the trigger, consequence and evidence that could refute it. Prefer source/contract evidence and existing CI results; run a bounded experiment only when it can change the conclusion. Follow the workflow's selective independent verification. Revise contradicted claims, check analogous affected paths after confirming a cause, and stop when the material question is resolved. Passing CI or child agreement does not prove unexamined behavior.
 
 ## Simplification when warranted
