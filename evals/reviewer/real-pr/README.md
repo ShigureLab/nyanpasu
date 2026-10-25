@@ -1,55 +1,105 @@
-# Historical PR replay
+# 真实 PR 评测
 
-`python scripts/reviewer_eval.py` prepares historical inputs, records native task output, and summarizes independently adjudicated findings. It uses the existing `nyanpasu run-task` entry point. This is an offline review experiment: it does not exercise GitHub admission, event polling, review publication, or the complete reviewer plugin lifecycle.
+所有真实 PR 使用同一份 [cases.json](cases.json)，按 `case_id` 定位。来源仓库、参考证据、历史讨论、运行输入和评分标准都属于这条记录。语料包含参考案例和可运行案例，先查询状态，再选择要运行的案例。
 
-Keep the source repository, evaluator material, and experiment output outside one another. Prepare one timeline step at a time. The staged repository contains only the selected base/head trees and two neutral commits: source commit messages, future objects, tags, remotes, and alternates are absent. Tree bytes, executable modes, and symlinks are preserved; `export-ignore` does not hide historical files. This isolates the supplied input, not the process: use a disposable filesystem/network sandbox when access to other local directories or the current GitHub PR must be technically prevented. Repositories that require submodules need a separately frozen environment; the tool does not fetch them.
+| 文件                                                          | 用途                                                                                                                                     |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [cases.json](cases.json)                                      | 唯一的案例数据。`evidence` 保存评论证据，`timeline` 保存历史讨论，`evaluation` 保存运行配置和评分标准；`evaluation: null` 表示仅作参考。 |
+| [scripts/reviewer_eval.py](../../../scripts/reviewer_eval.py) | 公共执行工具：准备案例、录制真实 reviewer 输出、汇总独立判分。                                                                           |
 
-The manifest is evaluator-owned. Each requirement declares `provenance`. A `historical` requirement must quote or faithfully transcribe an original source whose historical availability is established. If original requirements cannot be reconstructed, use only an `evaluator_neutral` review brief, identify its evaluator authorship, and preserve its actual creation time even when later than the historical cutoff. That run is a snapshot smoke with unavailable original requirements, not a reconstructed full historical review. For historical sources, `observed_at` means available at the review cutoff, not when the evaluator downloaded it. A current PR body, a later human comment, an accepted fix, and a merged PR are not substitutes for original requirements or proof of a defect. Omit later context from early steps. Do not put labels, suspected paths, grader answers, or future commit descriptions in the manifest. Every step needs its own full base/head hashes and increasing cutoff.
+每个可运行案例的 `evaluation` 包含评测类型 `kind`、目标环境 `environment`、截止时间、任务需求、固定源码列表 `inputs` 和评分标准 `expected`。每份源码使用 `commit`、仓库相对 `path`、SHA-256 和 Git blob 哈希；跨仓库的依赖输入另带 `repository`。后续案例也写入这一结构，不另建仓库或批次专用的案例表。
 
-Start from [manifest.example.json](manifest.example.json), replacing all placeholders. In `environment`, pin the runtime source commit, backend CLI version, Python/toolchain/dependencies, OS or image, checks, per-case budget, memory policy, and other settings that affect the comparison. The script records the instruction and tool digests, actual imported runtime source-package digest, package/Python versions, requested model/effort, resolved task execution, source and synthetic identities, native session/turn IDs, and artifact digests. Generated commands pin the current interpreter and source-package `PYTHONPATH`; preparation and recording reject a changed runtime identity. This checks the supplied execution path, not arbitrary commands run outside it. It does not install dependencies or independently attest that every declared environment setting was applied. Resolve any mismatch before treating a run as comparable. Memory access is empty for the generated task.
-
-Run from the repository with its dependencies installed. Output belongs in a fresh evaluator directory; do not reuse a live service home:
-
-```sh
-uv run python scripts/reviewer_eval.py prepare \
-  --manifest /evaluation/case.json --repo /evaluation/source \
-  --output /evaluation/experiment --arm A --step initial \
-  --instructions /evaluation/baseline.md --target codex/YOUR_PINNED_MODEL:high
-```
-
-Run the returned `command` in the pinned environment. It selects a separate `NYANPASU_HOME` for each arm and one stable context per arm. If a backend needs nondefault configuration, provision that arm's `config.toml` before execution, keep equivalent backend settings across arms, and preserve the configuration provenance with the experiment. Keep authentication outside recorded artifacts. A/B should differ only in the intended condition. Native backend homes and network access require the same isolation discipline as the execution environment.
-
-Record the step with the returned `record_command` using the same interpreter environment and backend configuration. Recording reads that arm's SQLite database read-only, checks the executed input, then uses the existing native history provider to extract the final answer of the actual final turn. A missing native final answer is an error, not a blank successful review. Optional `--artifact PATH` arguments preserve probes, usage, or other evidence. Provider-native history for the recorded turns is retained privately as `native-history.json`; condition instructions and model identifiers never get copied automatically into the blind packet.
-
-Repeat `prepare` with `--arm B` and the candidate instructions. Record each completed step before preparing the next step of the same arm. Later steps reuse that arm's context/session and receive only context available by their cutoff. Session replacement is recorded as broken continuity and prevents a confirmed timeline score. Keep the frozen first-step output even when a later review revises it. Do not replay a case in the same session across arms or repetitions.
-
-Judges receive only randomized `blind/<sample-id>/` packets and the appropriate historical source trees. The arm mapping, native trace, later fixes/comments, and proposed labels stay with the evaluator. Reports can still reveal their condition through their own wording; inspect for blinding failures. Use a separate trace assessor, or an independently redacted trace, when judging investigation behavior. Do not automatically expose native instructions to the blind judge.
-
-Copy [assessment.example.json](assessment.example.json) to a separate judgments directory for each sample. Leave `status` provisional until a maintainer has reconciled evidence. Every finding needs an exact quote from the native `report.txt` and evidence for its verdict. Extra evaluator artifacts may support the judgment but cannot be counted as model-produced findings. Verdicts are: `confirmed_defect`, `useful_simplification`, `false_positive`, `harmful_suggestion`, or `inconclusive`. Confirmed defects need a stable root-cause identity; `first_present_step` records when the defect already existed. Distinguish a new finding, justified revalidation, and a duplicate. Reconcile related findings and shared-root-cause PRs together; repeated observations are not independent cases.
-
-`expected_defects: null` means coverage is unknown. A non-null map is an independently adjudicated set of defect IDs to evidence sources, including misses; the script refuses different sets for the same step across A/B. An empty map is a positive adjudication, not the default for an unlabeled or merged PR. Accept valid discoveries outside that set and extend labels only through reconciliation. Keep calibration cases and holdout cases separated by root-cause family.
+## 1. 查看全部案例和就绪状态
 
 ```sh
-uv run python scripts/reviewer_eval.py report /evaluation/experiment \
-  --judgments /evaluation/judgments
+eval_data=evals/reviewer/real-pr
+uv run python scripts/reviewer_eval.py list-cases --cases "$eval_data/cases.json"
 ```
 
-The report counts verdicts and occurrences separately, deduplicates confirmed root causes across the timeline, identifies first findings of already-present defects only when the current occurrence is new and all relevant earlier steps have confirmed judgments, preserves unknown late-finding status when those conditions are missing, and reports the coverage denominator only for adjudicated steps. It reports failures, missing judgments, and broken continuity. Historical replay cannot establish counterfactual fix/review rounds saved; report those only from a separate prospective experiment.
+输出包含全量案例的 `case_id`、仓库和 `status`，以及总数和可运行数量。`runnable` 表示已有输入与评分配置；`reference` 表示当前证据不足以确定可评分目标，包括问题已在绑定版本中解决、开放设计问题、偏好建议或缺少关键契约。它不表示尚未筛选。只看可运行案例时加 `--runnable`：
 
-Measurements are optional and evidence-backed. Supply `--measurements /evaluation/measurements.json` plus the artifact named by each evidence field:
+```sh
+uv run python scripts/reviewer_eval.py list-cases --cases "$eval_data/cases.json" --runnable
+```
+
+参考证据不等于已就绪评测。现有可运行配置使用一份或多份历史文件快照和新写的中性任务说明，完整 PR diff 与原始需求尚未还原；它们属于校准集。同根因案例及各次修订应放在同一划分，不能再计作未见测试集。
+
+## 2. 运行 reviewer
+
+在仓库根目录运行，需要项目依赖和 Git。缓存和运行输出放在仓库外。公共工具按 `case_id` 下载并校验该案例的全部 reviewer 输入，不需要额外安装案例验证依赖：
+
+```sh
+eval_data=evals/reviewer/real-pr
+eval_out="$(mktemp -d)"
+case_id="<从列表选择一个 runnable 案例的 ID>"
+uv run python scripts/reviewer_eval.py prepare-case \
+  --cases "$eval_data/cases.json" --case-id "$case_id" \
+  --output "$eval_out/run" --source-cache "$eval_out/sources" --arm A \
+  --target codex/YOUR_MODEL:high
+```
+
+通过现有 `nyanpasu run-task` 运行，默认调用 reviewer 的 `build_review_instructions`，使用正式的 [reviewer.md](../../../packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/instructions/reviewer.md) 和测试策略。只补充离线环境约束：线上 PR、标签、CI、发布和插件专用控制工具在此实验中不可用，评审固定本地输入并私下返回结果。评审标准不另维护一份；这不是完整 GitHub reviewer 插件生命周期的端到端评测。
+
+指定未知或未就绪案例会报错。首次按固定 commit 下载源码，复用缓存时仍校验 SHA-256 和 Git blob 哈希。`environment` 描述被审查代码的版本、依赖和可验证范围；它不表示工具已经安装了完整上游运行环境。工具本身使用项目环境。
+
+工具只提取该案例的输入文件和中性需求，生成中性提交，并在仓库外冻结本次使用的评测配置。历史评论、讨论和 `expected` 不进入 reviewer 输入。完整案例 ID 保留在评测方的 manifest 中；实验目录宜使用中性名称。新案例或新实验使用新的输出目录。
+
+运行前配置返回的 `home/config.toml`，然后依次执行返回的 `command` 和 `record_command`。例如使用 Codex 时：
+
+```toml
+[backends.codex]
+driver = "codex"
+[backends.codex.options]
+sandbox = "read-only"
+approval_policy = "never"
+[backends.codex.process.env]
+CODEX_HOME = "<独立且已认证的后端 home>"
+[tasks.defaults.execution]
+backend = "codex"
+model = "YOUR_MODEL"
+reasoning = "high"
+[tasks.defaults.limits]
+turn_timeout_seconds = 600
+[memory]
+enabled = false
+consolidate = false
+```
+
+`tasks.defaults.execution` 应与 `--target` 一致，使自动创建的子任务也使用同一模型和推理强度。每个实验使用独立 runtime 和原生后端 home，不复用在线服务状态。只读设置不禁止读取其他目录或访问网络；严格隔离需要独立容器、挂载和网络限制。工具固定并校验输入、指令、runtime 和原生输出摘要，但不替你安装 reviewer 依赖或验证完整 GitHub 发布流程。
+
+A/B 对比使用相同案例、模型、预算和环境，在同一实验输出目录准备 `--arm B`。默认使用当前正式指令；只有对照另一份已渲染的指令时才显式提供 `--instructions PATH`。两组会话相互隔离。工具冻结实际使用的指令，并记录正式指令及引用文档的摘要；这些文档变更后需要新实验，不能沿用旧记录。
+
+## 3. 判分
+
+独立裁判读取匿名 `blind/<sample-id>/report.txt`，对照冻结的 `evaluation.expected`、固定源码和引用证据判分。`expected.kind` 区分 `defect`（发现具体缺陷）、`simplification`（提出能保持契约的精简）和 `retention`（保留有必要的机制、避免错误删除）。`expected.behavior` 给出具体触发条件、正确结果及应拒绝的结论；来源评论本身不等于答案。
+
+`criteria` 将该案例的目标判为 `pass`、`fail` 或 `inconclusive`；每项必须绑定 `expected.root_cause`、引用原始报告并提供核验证据。`findings` 另行记录缺陷、有效精简、误报等发现。保留机制和精简案例不应被强行计入缺陷分母。公共工具核验引用、冻结目标和摘要并汇总，语义判断由独立裁判完成。
+
+在仓库外的 judgments 目录为每个样本保存 assessment：
 
 ```json
 {
-   "first_useful_feedback_at": "2026-10-01T12:00:30Z",
-   "first_useful_feedback_evidence": "observations.json",
-   "cost_usd": 0.12,
-   "cost_evidence": "usage.json",
-   "cost_scope": "tree"
+   "sample_id": "运行生成的匿名样本 ID",
+   "adjudicator": "裁判身份",
+   "status": "provisional",
+   "expected_defects": null,
+   "criteria": [
+      {
+         "root_cause": "evaluation.expected.root_cause 的值",
+         "outcome": "pass",
+         "quote": "从 report.txt 逐字复制的证据",
+         "evidence": ["固定源码中支持或反驳该结论的契约与行为"]
+      }
+   ],
+   "findings": []
 }
 ```
 
-The evaluator must identify the first useful checkpoint and verify the timestamp and usage evidence; the tool cannot decide usefulness or infer a price from arbitrary tokens. Latency starts at runtime task creation, including preparation before the first native turn. Tree cost includes descendants; root-only cost is kept separate and never presented as total cost. Missing values remain unknown. Preserve source usage and pricing assumptions in the named artifact. Repeat material A/B differences and report skipped checks, unavailable hardware, and incomplete labels before making quality claims.
+其他判定包括 `useful_simplification`、`false_positive`、`harmful_suggestion`、`inconclusive`。同一根因只计一次，额外有效发现单独裁定，漏报仍保留在分母中。`expected_defects: null` 表示覆盖率未知，空对象表示经裁定没有已知缺陷。尚未完成独立证据核对的裁定保持 `provisional`；完成核对后使用 `confirmed`。同一案例的目标不会因某次模型漏报而改变。
 
-The focused tests use a fake model with the real task runtime, database, workspace handling, and native-history adapter. They establish input isolation, continuity, identity checks, and reporting semantics; they do not establish model review quality. Historical cases and real model results require separate collection and adjudication.
+```sh
+uv run python scripts/reviewer_eval.py report "$eval_out/run" \
+  --judgments "$eval_out/judgments"
+```
 
-The [evaluator-only candidate catalog](catalog/README.md) contains a compact seed of 12 real PRs, four source timelines, and proposed probes. It deliberately includes no ready historical-review manifest: original PR bodies remain unreconstructed, source claims require adjudication, and the catalog must stay outside reviewer inputs.
+工具核对原文引用和摘要，只把已确认裁定计入质量指标，未裁定和失败样本明确显示。参考评论、批准、合并、CI 通过都不能代替独立裁定。历史讨论的正文若经编辑且没有旧存档，不能仅按创建时间推断当时可见内容；review commit 的绑定也不一定指向正文讨论的修订。

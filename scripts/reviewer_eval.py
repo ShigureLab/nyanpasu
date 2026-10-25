@@ -6,16 +6,20 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import uuid
 from collections import Counter
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
+from urllib.parse import quote
 
 import anyio
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -26,6 +30,8 @@ from nyanpasu.config import NyanpasuConfig, load_config
 from nyanpasu.git_ops import WorktreeManager
 from nyanpasu.models import AgentTask, TaskAction, WorkspaceRef
 from nyanpasu.targets import ExecutionOverride
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef
+from nyanpasu_github_reviewer.prompt import INSTRUCTIONS_DIR, TEMPLATES_DIR, build_review_instructions
 
 if TYPE_CHECKING:
     from nyanpasu.transcript.history import SessionSource
@@ -120,17 +126,28 @@ class FindingJudgment(FrozenModel):
         return self
 
 
+class CriterionJudgment(FrozenModel):
+    root_cause: Nonempty
+    outcome: Literal["pass", "fail", "inconclusive"]
+    artifact: Literal["report.txt"] = "report.txt"
+    quote: Nonempty
+    evidence: list[Nonempty] = Field(min_length=1)
+
+
 class Assessment(FrozenModel):
     sample_id: Nonempty
     adjudicator: Nonempty
     status: Literal["provisional", "confirmed"] = "provisional"
     expected_defects: dict[str, list[Nonempty]] | None = None
     findings: list[FindingJudgment] = Field(default_factory=list)
+    criteria: list[CriterionJudgment] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def distinct_findings(self) -> Assessment:
         if len({item.finding_id for item in self.findings}) != len(self.findings):
             raise ValueError("finding IDs must be unique within one assessment")
+        if len({item.root_cause for item in self.criteria}) != len(self.criteria):
+            raise ValueError("criterion root causes must be unique within one assessment")
         if self.expected_defects is not None and any(not sources for sources in self.expected_defects.values()):
             raise ValueError("each expected defect needs an evidence source")
         return self
@@ -179,7 +196,42 @@ def runtime_identity() -> dict[str, Any]:
         "package_version": version("nyanpasu"),
         "python": sys.version,
         "interpreter": sys.executable,
+        "reviewer_instruction_sources_sha256": sha256(
+            json_bytes(
+                {
+                    f"{directory.name}/{path.name}": sha256(path.read_bytes())
+                    for directory in (INSTRUCTIONS_DIR, TEMPLATES_DIR)
+                    for path in sorted(directory.iterdir())
+                    if path.is_file()
+                }
+            )
+        ),
     }
+
+
+def review_guidance(step: Step, instructions: Path | None) -> bytes:
+    if instructions is None:
+        pr = PullRequestRef(
+            repo="evaluation/local",
+            number=1,
+            url="https://example.invalid/offline-review",
+            base_ref="base",
+            head_ref="head",
+            base_sha=step.base,
+            head_sha=step.head,
+            state="open",
+            draft=False,
+        )
+        guidance = build_review_instructions(GitHubReviewerConfig(dry_run=True, github_login="reviewer-eval"), pr)
+    else:
+        guidance = instructions.read_text()
+    return (
+        guidance + "\n\nOffline evaluation environment: the PR identity is synthetic. "
+        "Apply the review and bounded-testing criteria to the pinned local input and supplied historical context. "
+        "Live GitHub context, labels, CI, publication, dashboards, repository admission and reviewer-plugin "
+        "task-control operations are unavailable and outside this experiment. Do not attempt these operations "
+        "or stop the local review because they are unavailable. Return findings and evidence gaps privately.\n"
+    ).encode()
 
 
 def stage_repository(source: Path, destination: Path, step: Step) -> dict[str, str]:
@@ -222,7 +274,7 @@ def stage_repository(source: Path, destination: Path, step: Step) -> dict[str, s
 
 
 def prepare(
-    manifest_path: Path, source: Path, output: Path, arm: str, step_id: str, instructions: Path, target: str
+    manifest_path: Path, source: Path, output: Path, arm: str, step_id: str, instructions: Path | None, target: str
 ) -> dict[str, Any]:
     manifest = Manifest.model_validate(read_json(manifest_path))
     source, output = source.resolve(), output.resolve()
@@ -240,7 +292,7 @@ def prepare(
         raise ValueError("pin backend, model and reasoning in the execution target")
     manifest_data = manifest.model_dump(mode="json")
     freeze(output / "manifest.json", json_bytes(manifest_data))
-    guidance = instructions.read_bytes()
+    guidance = review_guidance(step, instructions)
     branch = output / arm
     identity_path = branch / "identity.json"
     identity: dict[str, Any]
@@ -339,6 +391,126 @@ def prepare(
         (staging / "prepared.json").write_bytes(json_bytes(prepared))
         staging.rename(step_dir)
     return prepared
+
+
+def require_external_directory(cases_path: Path, directory: Path) -> None:
+    cases_path, directory = cases_path.resolve(), directory.resolve()
+    if directory.is_relative_to(cases_path.parent):
+        raise ValueError("evaluation cache/output must be outside the source checkout")
+    for parent in cases_path.parents:
+        if (parent / ".git").exists():
+            if directory.is_relative_to(parent):
+                raise ValueError("evaluation cache/output must be outside the source checkout")
+            break
+
+
+def fetch_source(repository: str, spec: dict[str, str], cache: Path) -> Path:
+    """Fetch one immutable reviewer input and verify both content identities."""
+    commit = spec["commit"]
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{64}", spec["sha256"]):
+        raise ValueError("source downloads require a full commit SHA and SHA256 digest")
+    path = cache / spec["sha256"] / Path(spec["path"]).name
+    if path.exists():
+        content = path.read_bytes()
+    else:
+        url = (
+            f"https://raw.githubusercontent.com/{quote(repository, safe='/')}/{commit}/{quote(spec['path'], safe='/')}"
+        )
+        with urllib.request.urlopen(url, timeout=30) as response:
+            content = response.read()
+    blob = b"blob " + str(len(content)).encode() + b"\0" + content
+    if sha256(content) != spec["sha256"] or hashlib.sha1(blob).hexdigest() != spec["git_blob_sha"]:
+        raise ValueError(f"source hash mismatch: {spec['path']}")
+    freeze(path, content)
+    return path
+
+
+def list_cases(cases_path: Path, runnable_only: bool = False) -> dict[str, Any]:
+    cases = read_json(cases_path)["cases"]
+    return {
+        "total_cases": len(cases),
+        "runnable_cases": sum(case["evaluation"] is not None for case in cases),
+        "cases": [
+            {
+                "case_id": case["case_id"],
+                "repository": case["repository"],
+                "status": "runnable" if case["evaluation"] is not None else "reference",
+            }
+            for case in cases
+            if not runnable_only or case["evaluation"] is not None
+        ],
+    }
+
+
+def prepare_case(
+    cases_path: Path, case_id: str, output: Path, arm: str, instructions: Path | None, target: str, source_cache: Path
+) -> dict[str, Any]:
+    """Stage one runnable case from the unified real-PR dataset."""
+    case = next((case for case in read_json(cases_path)["cases"] if case["case_id"] == case_id), None)
+    if case is None:
+        raise ValueError(f"unknown case: {case_id}")
+    evaluation = case["evaluation"]
+    if evaluation is None:
+        raise ValueError(f"case is not runnable: {case_id}")
+    if evaluation["kind"] != "source-snapshot":
+        raise ValueError(f"unsupported evaluation kind: {evaluation['kind']}")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id):
+        raise ValueError("invalid case ID")
+    specs = evaluation["inputs"]
+    paths = [Path(spec["path"]) for spec in specs]
+    if not paths or any(path.is_absolute() or ".." in path.parts or path == Path() for path in paths):
+        raise ValueError("case needs nonempty repository-relative source paths")
+    if len(set(paths)) != len(paths):
+        raise ValueError("source paths must be unique")
+    require_external_directory(cases_path, output)
+    require_external_directory(cases_path, source_cache)
+    input_files = [fetch_source(spec.get("repository", case["repository"]), spec, source_cache) for spec in specs]
+    freeze(output / "evaluation.json", json_bytes({"case_id": case_id, **evaluation}))
+    with tempfile.TemporaryDirectory(prefix="reviewer-case-") as temporary:
+        source = Path(temporary) / "source"
+        source.mkdir()
+        git(source, "init", "--template=", "--initial-branch=snapshot")
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Reviewer evaluation",
+            "GIT_AUTHOR_EMAIL": "reviewer-eval@localhost",
+            "GIT_COMMITTER_NAME": "Reviewer evaluation",
+            "GIT_COMMITTER_EMAIL": "reviewer-eval@localhost",
+            "GIT_AUTHOR_DATE": evaluation["cutoff"],
+            "GIT_COMMITTER_DATE": evaluation["cutoff"],
+        }
+        empty = git(source, "mktree", input_text="")
+        base = git(source, "commit-tree", empty, input_text="Empty scoped snapshot\n", env=env)
+        for source_path, input_file in zip(paths, input_files, strict=True):
+            destination = source / source_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(input_file, destination)
+        git(source, "add", ".")
+        tree = git(source, "write-tree")
+        head = git(source, "commit-tree", tree, "-p", base, input_text="Historical source snapshot\n", env=env)
+        manifest = {
+            "schema_version": 1,
+            "case_id": case_id,
+            "repository": "scoped-source-snapshot",
+            "environment": {
+                **evaluation["environment"],
+                "scope": "Scoped source snapshot added to an empty synthetic base, not the original PR diff. "
+                "Only review the supplied implementation; unavailable surrounding files are outside scope. "
+                + evaluation["environment"].get("scope", ""),
+            },
+            "timeline": [
+                {
+                    "id": "snapshot",
+                    "base": base,
+                    "head": head,
+                    "cutoff": evaluation["cutoff"],
+                    "requirements": evaluation["requirements"],
+                }
+            ],
+        }
+        manifest_path = Path(temporary) / "manifest.json"
+        manifest_path.write_bytes(json_bytes(manifest))
+        return prepare(manifest_path, source, output, arm, "snapshot", instructions, target)
 
 
 def runtime_record(prepared: dict[str, Any], expected: AgentTask) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -485,6 +657,8 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
     arms = {}
     seen_samples = set()
     expected_by_step = {}
+    evaluation_path = output / "evaluation.json"
+    target = read_json(evaluation_path)["expected"] if evaluation_path.exists() else None
     for arm in ("A", "B"):
         counts: Counter[str] = Counter()
         roots = set()
@@ -494,6 +668,7 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
         timings = []
         costs = {"root": [], "tree": []}
         results = []
+        criterion_results = []
         for path in sorted((output / arm / "steps").glob("*/record.json")):
             result = read_json(path)
             prepared = read_json(path.parent / "prepared.json")
@@ -508,13 +683,17 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                 costs[measure["cost_scope"]].append(measure["cost_usd"])
             assessment = assessments.get(result["sample_id"])
             if assessment is not None:
-                for finding in assessment.findings:
+                for finding in [*assessment.findings, *assessment.criteria]:
                     artifact = result["artifacts"].get(finding.artifact)
                     evidence_path = path.parent / "artifacts" / finding.artifact
                     if artifact is None or sha256(evidence_path.read_bytes()) != artifact["sha256"]:
                         raise ValueError("judgment must cite an unchanged recorded artifact")
                     if finding.quote not in evidence_path.read_text():
                         raise ValueError("judgment quote is absent from the recorded artifact")
+                for criterion in assessment.criteria:
+                    if target is None or criterion.root_cause != target["root_cause"]:
+                        raise ValueError("criterion must match the frozen case target")
+                for finding in assessment.findings:
                     if finding.first_present_step is not None and (
                         finding.first_present_step not in steps
                         or steps[finding.first_present_step] > prepared["step_index"]
@@ -526,6 +705,18 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                 if result["status"] != "completed" or result["continuity"] == "broken":
                     raise ValueError("failed or discontinuous runs cannot receive a confirmed quality assessment")
                 counts["confirmed_assessments"] += 1
+                for criterion in assessment.criteria:
+                    assert target is not None  # Each criterion was bound to this frozen target above.
+                    counts["criteria_assessed"] += 1
+                    counts[f"criterion_{criterion.outcome}"] += 1
+                    criterion_results.append(
+                        {
+                            "step_id": prepared["step_id"],
+                            "root_cause": criterion.root_cause,
+                            "kind": target["kind"],
+                            "outcome": criterion.outcome,
+                        }
+                    )
                 known = assessment.expected_defects
                 if known is not None:
                     if prepared["step_id"] in expected_by_step and expected_by_step[prepared["step_id"]] != set(known):
@@ -565,6 +756,7 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
                     for scope, values in costs.items()
                 },
                 "runs": results,
+                "criteria": criterion_results,
             }
     if set(assessments) - seen_samples:
         raise ValueError("assessment names an unknown recorded sample")
@@ -584,12 +776,23 @@ def report(output: Path, judgments: Path | None) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    list_parser = commands.add_parser("list-cases", help="List the unified cases and their readiness")
+    list_parser.add_argument("--cases", type=Path, required=True)
+    list_parser.add_argument("--runnable", action="store_true", help="show runnable cases only")
     prepare_parser = commands.add_parser("prepare", help="Materialize one timeline step for one condition")
-    for name in ("manifest", "repo", "output", "instructions"):
+    for name in ("manifest", "repo", "output"):
         prepare_parser.add_argument(f"--{name}", type=Path, required=True)
+    prepare_parser.add_argument("--instructions", type=Path, help="override production reviewer instructions for A/B")
     prepare_parser.add_argument("--arm", choices=("A", "B"), required=True)
     prepare_parser.add_argument("--step", required=True)
     prepare_parser.add_argument("--target", required=True, help="backend/model[:reasoning]")
+    case_parser = commands.add_parser("prepare-case", help="Stage one runnable case from the unified dataset")
+    for name in ("cases", "output", "source-cache"):
+        case_parser.add_argument(f"--{name}", type=Path, required=True)
+    case_parser.add_argument("--instructions", type=Path, help="override production reviewer instructions for A/B")
+    case_parser.add_argument("--case-id", required=True)
+    case_parser.add_argument("--arm", choices=("A", "B"), required=True)
+    case_parser.add_argument("--target", required=True, help="backend/model:reasoning")
     record_parser = commands.add_parser("record", help="Freeze a real runtime result and anonymized artifacts")
     record_parser.add_argument("step_dir", type=Path)
     record_parser.add_argument("--artifact", type=Path, action="append", default=[])
@@ -599,8 +802,14 @@ def main() -> None:
     report_parser.add_argument("--judgments", type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "prepare":
+        if args.command == "list-cases":
+            result = list_cases(args.cases, args.runnable)
+        elif args.command == "prepare":
             result = prepare(args.manifest, args.repo, args.output, args.arm, args.step, args.instructions, args.target)
+        elif args.command == "prepare-case":
+            result = prepare_case(
+                args.cases, args.case_id, args.output, args.arm, args.instructions, args.target, args.source_cache
+            )
         elif args.command == "record":
             result = anyio.run(record, args.step_dir, args.artifact, args.measurements)
         else:

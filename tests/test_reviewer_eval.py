@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import sqlite3
 import subprocess
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +16,7 @@ import nyanpasu
 from nyanpasu.agent import AgentService
 from nyanpasu.models import AgentTask
 from nyanpasu.transcript.codex import CodexHistorySource
-from scripts.reviewer_eval import Assessment, Manifest, git, prepare, read_json, record, report
+from scripts.reviewer_eval import Assessment, Manifest, git, prepare, prepare_case, read_json, record, report
 from tests.test_agent import FakeCodex, _config, fake_backends
 
 
@@ -103,6 +106,48 @@ def case(tmp_path):
 
 def stage(case, arm="A", step="initial"):
     return prepare(case["manifest"], case["repo"], case["output"], arm, step, case["guidance"], "codex/test-model:high")
+
+
+def test_default_instructions_use_production_builder_and_freeze_actual_guidance(case, monkeypatch):
+    import scripts.reviewer_eval as evaluation
+
+    production_builder = evaluation.build_review_instructions
+    rendered = []
+
+    def changed_builder(config, pr):
+        assert config.dry_run
+        assert pr.repo == "evaluation/local"
+        assert pr.head_sha == case["data"]["timeline"][0]["head"]
+        guidance = production_builder(config, pr) + "\nUPDATED_PRODUCTION_INSTRUCTIONS\n"
+        rendered.append(guidance)
+        return guidance
+
+    monkeypatch.setattr(evaluation, "build_review_instructions", changed_builder)
+    prepared = prepare(case["manifest"], case["repo"], case["output"], "A", "initial", None, "codex/test-model:high")
+    task = read_json(Path(prepared["task_path"]))
+    guidance = task["developer_instructions"]
+    assert len(rendered) == 1 and guidance.startswith(rendered[0])
+    assert "read-only; do not write to GitHub" in guidance
+    assert "# Local testing during review" in guidance
+    assert "Offline evaluation environment" in guidance
+    assert (case["output"] / "A/instructions.md").read_text() == guidance
+
+
+@pytest.mark.anyio
+async def test_changed_reviewer_references_reject_resume_and_record(case, tmp_path, monkeypatch):
+    import scripts.reviewer_eval as evaluation
+
+    instructions = tmp_path / "reviewer-instructions"
+    instructions.mkdir()
+    workflow = instructions / "review-workflow.md"
+    workflow.write_text("original workflow")
+    monkeypatch.setattr(evaluation, "INSTRUCTIONS_DIR", instructions)
+    prepared = stage(case)
+    workflow.write_text("changed workflow")
+    with pytest.raises(ValueError, match="condition changes"):
+        stage(case)
+    with pytest.raises(ValueError, match="runtime source or interpreter changed"):
+        await record(Path(prepared["task_path"]).parent, [], None)
 
 
 async def execute(prepared, message="Retry can duplicate work.", backend=None):
@@ -405,3 +450,266 @@ async def test_missing_earlier_judgment_is_not_counted_as_a_missed_finding(case,
     assert observed["late_first_findings"] == []
     assert observed["late_status_unknown"] == ["retry"]
     assert observed["counts"]["unconfirmed_runs"] == 1
+
+
+REAL_PR = Path(__file__).resolve().parents[1] / "evals/reviewer/real-pr"
+
+
+@pytest.fixture
+def real_pr_cases(tmp_path, monkeypatch):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    cases = []
+    responses = {}
+    inputs = {}
+    for index, names in enumerate((("src/app.py", "src/consumer.py"), ("config/check.py",))):
+        case_id = f"fixture-{index}"
+        specs = []
+        for file_index, name in enumerate(names):
+            content = f"# scoped input\nvalue = {index + file_index}\n".encode()
+            spec = {
+                "path": name,
+                "commit": "a" * 39 + str(index),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "git_blob_sha": hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest(),
+            }
+            if file_index:
+                spec["repository"] = "example/dependency"
+            specs.append(spec)
+            inputs[case_id, name] = content
+            repo = spec.get("repository", "example/project")
+            responses[f"https://raw.githubusercontent.com/{repo}/{spec['commit']}/{name}"] = content
+        cases.append(
+            {
+                "case_id": case_id,
+                "repository": "example/project",
+                "url": f"https://github.com/example/project/pull/{index + 1}",
+                "evaluation": {
+                    "kind": "source-snapshot",
+                    "environment": {"python": "3.10", "scope": "supplied implementation"},
+                    "cutoff": "2026-10-01T12:00:00Z",
+                    "requirements": [
+                        {
+                            "source": "evaluator brief",
+                            "provenance": "evaluator_neutral",
+                            "observed_at": "2026-10-25T00:00:00Z",
+                            "text": "Preserve the documented consumer contract.",
+                        }
+                    ],
+                    "inputs": specs,
+                    "expected": {
+                        "kind": "retention",
+                        "root_cause": f"{case_id}-root",
+                        "behavior": "Preserve the consumer-required conversion.",
+                        "source": "source evidence",
+                        "limits": "one bounded contract",
+                    },
+                },
+            }
+        )
+    cases.append({"case_id": "unprepared-case", "repository": "example/project", "evaluation": None})
+    cases_path = dataset / "cases.json"
+    cases_path.write_text(json.dumps({"cases": cases}))
+    requests = []
+
+    def download(url, timeout):
+        assert timeout == 30
+        requests.append(url)
+        return io.BytesIO(responses[url])
+
+    monkeypatch.setattr(urllib.request, "urlopen", download)
+    return {
+        "path": cases_path,
+        "cases": cases[:2],
+        "cache": tmp_path / "sources",
+        "inputs": inputs,
+        "requests": requests,
+    }
+
+
+def test_unified_cases_stage_only_selected_inputs_without_grading_material(tmp_path, real_pr_cases):
+    cache = real_pr_cases["cache"]
+    cache.mkdir()
+    (cache / "evaluator-answer.txt").write_text("never copy this into reviewer input\n")
+    fetched = 0
+    for index, case in enumerate(real_pr_cases["cases"]):
+        evaluation = case["evaluation"]
+        specs = evaluation["inputs"]
+        fetched += len(specs)
+        for arm in ("A", "B"):
+            result = prepare_case(
+                real_pr_cases["path"],
+                case["case_id"],
+                tmp_path / f"run-{index}",
+                arm,
+                None,
+                "codex/test-model:high",
+                cache,
+            )
+            assert result["case_id"] == case["case_id"]
+            task_path = Path(result["task_path"])
+            staged = task_path.parent / "input"
+            assert git(staged, "ls-files").splitlines() == sorted(spec["path"] for spec in specs)
+            for spec in specs:
+                assert (staged / spec["path"]).read_bytes() == real_pr_cases["inputs"][case["case_id"], spec["path"]]
+            assert read_json(tmp_path / f"run-{index}/evaluation.json")["expected"] == evaluation["expected"]
+            assert git(staged, "rev-list", "--all", "--count") == "2"
+            assert git(staged, "remote") == ""
+            prompt = read_json(task_path)["prompt"]
+            assert evaluation["requirements"][0]["text"] in prompt
+            assert "not the original PR diff" in prompt
+            assert "evaluator_neutral" in prompt
+            for private in [
+                case["case_id"],
+                case["url"],
+                *[spec["commit"] for spec in specs],
+                evaluation["expected"]["root_cause"],
+                evaluation["expected"]["behavior"],
+            ]:
+                assert private not in task_path.read_text()
+            # Only the selected input is fetched. Arm B reuses the verified cache.
+            assert len(real_pr_cases["requests"]) == fetched
+
+
+@pytest.mark.parametrize("fault", ["download", "cache", "blob-id"])
+def test_unified_case_rejects_changed_download_or_cached_source(tmp_path, real_pr_cases, monkeypatch, fault):
+    case = real_pr_cases["cases"][0]
+    spec = case["evaluation"]["inputs"][0]
+    cached = real_pr_cases["cache"] / spec["sha256"] / Path(spec["path"]).name
+    if fault == "download":
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"wrong source\n"))
+    elif fault == "blob-id":
+        metadata = read_json(real_pr_cases["path"])
+        next(c for c in metadata["cases"] if c["case_id"] == case["case_id"])["evaluation"]["inputs"][0][
+            "git_blob_sha"
+        ] = "0" * 40
+        real_pr_cases["path"].write_text(json.dumps(metadata))
+    else:
+        cached.parent.mkdir(parents=True)
+        cached.write_text("corrupted cache\n")
+    with pytest.raises(ValueError, match="source hash mismatch"):
+        prepare_case(
+            real_pr_cases["path"],
+            case["case_id"],
+            tmp_path / "runs",
+            "A",
+            None,
+            "codex/test-model:high",
+            real_pr_cases["cache"],
+        )
+    assert not (tmp_path / "runs").exists()
+    if fault != "cache":
+        assert not cached.exists()
+
+
+def test_source_cache_must_be_outside_checkout(tmp_path):
+    with pytest.raises(ValueError, match="outside the source checkout"):
+        prepare_case(
+            REAL_PR / "cases.json",
+            "paddlepaddle-paddlesot-110",
+            tmp_path / "run",
+            "A",
+            None,
+            "codex/test-model:high",
+            REAL_PR.parent / "cache",
+        )
+
+
+def test_unified_case_refuses_mutable_upstream_ref(tmp_path, real_pr_cases):
+    case = real_pr_cases["cases"][0]
+    metadata = read_json(real_pr_cases["path"])
+    next(c for c in metadata["cases"] if c["case_id"] == case["case_id"])["evaluation"]["inputs"][0]["commit"] = "main"
+    real_pr_cases["path"].write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="full commit SHA"):
+        prepare_case(
+            real_pr_cases["path"],
+            case["case_id"],
+            tmp_path / "runs",
+            "A",
+            None,
+            "codex/test-model:high",
+            real_pr_cases["cache"],
+        )
+    assert real_pr_cases["requests"] == []
+
+
+@pytest.mark.parametrize("case_id, message", [("unprepared-case", "not runnable"), ("does-not-exist", "unknown case")])
+def test_unified_case_rejects_unprepared_or_unknown_case(tmp_path, real_pr_cases, case_id, message):
+    with pytest.raises(ValueError, match=message):
+        prepare_case(
+            real_pr_cases["path"],
+            case_id,
+            tmp_path / "runs",
+            "A",
+            None,
+            "codex/test-model:high",
+            real_pr_cases["cache"],
+        )
+    assert real_pr_cases["requests"] == []
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("paths", [[], ["../outside.py"], ["same.py", "same.py"]])
+def test_multifile_case_rejects_invalid_paths_before_fetch(tmp_path, real_pr_cases, paths):
+    data = read_json(real_pr_cases["path"])
+    case = data["cases"][0]
+    spec = case["evaluation"]["inputs"][0]
+    case["evaluation"]["inputs"] = [{**spec, "path": path} for path in paths]
+    real_pr_cases["path"].write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="source paths"):
+        prepare_case(
+            real_pr_cases["path"],
+            case["case_id"],
+            tmp_path / "runs",
+            "A",
+            None,
+            "codex/test-model:high",
+            real_pr_cases["cache"],
+        )
+    assert real_pr_cases["requests"] == []
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["provisional", "confirmed"])
+async def test_retention_criterion_scores_frozen_native_output_without_a_fake_defect(tmp_path, real_pr_cases, status):
+    case = real_pr_cases["cases"][0]
+    output = tmp_path / "run"
+    prepared = prepare_case(
+        real_pr_cases["path"], case["case_id"], output, "A", None, "codex/test-model:high", real_pr_cases["cache"]
+    )
+    message = "Keep the conversion because the consumer requires int32."
+    backend = await execute(prepared, message=message)
+    result = await record(Path(prepared["task_path"]).parent, [], None, source=CodexHistorySource(backend))
+    judgments = tmp_path / "judgments"
+    judgments.mkdir()
+    item = {
+        "sample_id": result["sample_id"],
+        "adjudicator": "test fixture",
+        "status": status,
+        "criteria": [
+            {
+                "root_cause": case["evaluation"]["expected"]["root_cause"],
+                "outcome": "pass",
+                "quote": message,
+                "evidence": ["pinned consumer contract"],
+            }
+        ],
+    }
+    path = judgments / "one.json"
+    path.write_text(json.dumps(item))
+    observed = report(output, judgments)["arms"]["A"]
+    assert observed["counts"].get("criterion_pass", 0) == (status == "confirmed")
+    assert observed["counts"].get("confirmed_defect", 0) == 0
+    assert observed["counts"].get("known_defects_assessed", 0) == 0
+    if status == "confirmed":
+        assert observed["criteria"][0]["kind"] == "retention"
+    item["criteria"][0]["root_cause"] = "a-different-target"
+    path.write_text(json.dumps(item))
+    with pytest.raises(ValueError, match="frozen case target"):
+        report(output, judgments)
+    item["criteria"][0]["root_cause"] = case["evaluation"]["expected"]["root_cause"]
+    item["criteria"][0]["quote"] = "invented model output"
+    path.write_text(json.dumps(item))
+    with pytest.raises(ValueError, match="quote is absent"):
+        report(output, judgments)
