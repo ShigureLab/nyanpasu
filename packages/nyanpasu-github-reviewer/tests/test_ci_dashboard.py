@@ -71,6 +71,7 @@ def test_ci_only_dashboard_does_not_invent_review_coverage(validator: Validator)
     report = _read("review.example.json")
     report.update(status="not_reviewed", summary="尚未进行代码审查。", findings={})
     report.pop("simplification")
+    report.pop("pr_split")
     report["source"].pop("merge_base_sha")
     report["source"].pop("inventory_id")
     for stage in report["stages"].values():

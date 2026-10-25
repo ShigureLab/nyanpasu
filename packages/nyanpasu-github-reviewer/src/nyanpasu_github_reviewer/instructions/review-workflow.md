@@ -26,7 +26,7 @@ Use managed task control:
 - Test auditor: `purpose: test-audit` for a material detection or brittleness question under test-review.md; diff size alone does not require one.
 - Independent designer: `purpose: independent-design` for a material requirements-based comparison or an explicit request.
 - CI analyst: `purpose: ci-analysis` with the observed fingerprint under ci-followup.md; no admission scope or `review_files`.
-- PR split analyst: `purpose: pr-split` for the trigger above; no admission scope or `review_files`. It advises on behavior boundaries, dependencies and member/fork submission steps without owning correctness coverage.
+- PR split analyst: `purpose: pr-split` for the trigger above; no admission scope or `review_files`. It advises on behavior boundaries, dependencies and the contributor's submission mode without owning correctness coverage.
 - Related PR analyst: `purpose: pr-compare` when another PR appears to address the same behavior; `inputs.related_prs` lists its same-repository PR numbers. Put the suspected overlap and requirements in `prompt`; no `review_files`. The service pins both sides; the child compares implementation preference, current-PR changes, dependencies and replacement options without owning correctness coverage.
 
 The plugin supplies child role instructions; omit `developer_instructions`. Put the concrete question, contract sources, available evidence and task-specific constraints in `prompt`; independent design uses the structured inputs below instead. Investigator and test-audit inputs accept only `review_files`.

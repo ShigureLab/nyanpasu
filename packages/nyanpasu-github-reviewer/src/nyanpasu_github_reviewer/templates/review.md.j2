@@ -136,14 +136,68 @@
 #### 拆分
 
 {% if data.pr_split.status == "recommended" -%}
-<details open>
-<summary><strong>💡 1 个拆分方案</strong></summary>
+**💡 1 个拆分方案**
 
 {{ data.pr_split.summary | md_body }}
 
-{{ data.pr_split.plan | md_body }}
+箭头表示前置部分 → 后续部分；目标分支为 {{ data.source.base_ref | md_code }}。
 
-{{ data.pr_split.submission | md_body }}
+```mermaid
+flowchart LR
+    target["目标分支"]
+{% for id, part in data.pr_split.parts | dictsort_natural -%}
+    {{ id }}["PR {{ id }}"]
+{% if part.depends_on -%}
+{% for dependency in part.depends_on -%}
+    {{ dependency }} --> {{ id }}
+{% endfor -%}
+{% else -%}
+    target --> {{ id }}
+{% endif -%}
+{% endfor -%}
+```
+
+<table>
+<thead>
+<tr><th>部分</th><th>PR 主题</th><th>内容与范围</th><th>验证</th></tr>
+</thead>
+<tbody>
+{% for id, part in data.pr_split.parts | dictsort_natural -%}
+<tr>
+<td nowrap valign="top">{{ id }}</td>
+<td valign="top">{{ part.title | md_body }}</td>
+<td valign="top">{{ part.scope | md_body }}</td>
+<td valign="top">{{ part.validation | md_body }}</td>
+</tr>
+{% endfor -%}
+</tbody>
+</table>
+
+<details>
+<summary>如何按依赖提交（stack）</summary>
+
+{{ data.pr_split.access | md_body }}
+
+先按表重组混合提交，每部分携带对应测试和文档；逐层验证，并核对顶层最终树与原 PR 一致。独立部分各自向目标分支开普通 PR；只将有依赖的线性链组成 stack，分叉或多前置依赖按图分别安排提交。
+
+{% if data.pr_split.submission in ["upstream", "unknown"] -%}
+**有上游写权限：** 将各层分支放在上游仓库，在已按依赖拆好的一条分支链上注册并提交（替换目标分支与分支名）：
+
+```bash
+gh stack init --base <target> <layer-1> <layer-2>
+gh stack view
+gh stack submit
+```
+
+下层更新后用 `gh stack rebase` 调整上层，或用 `gh stack sync` 同步整条链。上述命令管理已拆好的分支，不会自动拆开混合提交。参见 [gh-stack 使用说明](https://github.com/github/gh-stack)。
+
+{% endif -%}
+{% if data.pr_split.submission in ["fork", "unknown"] -%}
+**Fork 贡献者：** 分支保留在 fork，先将底层向上游目标分支提交；上层暂留本地，或在 fork 内以其前置分支为 base 开 draft PR。底层合入后，只将上层独有提交 rebase 到更新后的上游目标分支，再提交下一层；若底层被 squash，注意排除其旧提交。
+
+Fork 内 PR 只用于增量审阅；上游 PR 的 base 不能指向 fork 独有分支。多个累计 PR 同时指向上游目标分支会包含重复差异。[GitHub 原生 stack 要求所有分支位于同一仓库](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/creating-stacked-pull-requests)。
+
+{% endif -%}
 
 </details>
 

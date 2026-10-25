@@ -43,14 +43,34 @@
       "properties": {
         "status": { "enum": ["analyzing", "recommended", "keep_together", "incomplete"] },
         "summary": { "type": "string", "minLength": 1 },
-        "plan": { "type": "string", "minLength": 1 },
-        "submission": { "type": "string", "minLength": 1 }
+        "parts": {
+          "type": "object",
+          "minProperties": 2,
+          "propertyNames": { "pattern": "^[A-Z][A-Z0-9]*$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "scope", "validation", "depends_on"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "scope": { "type": "string", "minLength": 1 },
+              "validation": { "type": "string", "minLength": 1 },
+              "depends_on": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9]*$" }
+              }
+            }
+          }
+        },
+        "submission": { "enum": ["upstream", "fork", "unknown"] },
+        "access": { "type": "string", "minLength": 1 }
       },
       "allOf": [
         {
           "if": { "properties": { "status": { "const": "recommended" } } },
-          "then": { "required": ["plan", "submission"] },
-          "else": { "properties": { "plan": false, "submission": false } }
+          "then": { "required": ["parts", "submission", "access"] },
+          "else": { "properties": { "parts": false, "submission": false, "access": false } }
         }
       ]
     },
@@ -84,9 +104,16 @@
       "allOf": [
         {
           "if": { "properties": { "status": { "const": "recommended" } } },
-          "then": { "required": ["related_prs", "implementation", "changes", "merge_order", "evidence"] },
+          "then": {
+            "required": ["related_prs", "implementation", "changes", "merge_order", "evidence"]
+          },
           "else": {
-            "properties": { "implementation": false, "changes": false, "merge_order": false, "evidence": false }
+            "properties": {
+              "implementation": false,
+              "changes": false,
+              "merge_order": false,
+              "evidence": false
+            }
           }
         }
       ]

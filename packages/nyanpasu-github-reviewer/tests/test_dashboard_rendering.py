@@ -39,6 +39,7 @@ class Links(HTMLParser):
 @pytest.fixture
 def report() -> dict:
     data = json.loads((TEMPLATES_DIR / "review.example.json").read_text())
+    data.pop("pr_split")
     data["scope"] = {
         INVENTORY_ID: {
             "inventory_id": INVENTORY_ID,
@@ -56,6 +57,11 @@ def report() -> dict:
         }
     }
     return data
+
+
+@pytest.fixture
+def split_advice() -> dict:
+    return json.loads((TEMPLATES_DIR / "review.example.json").read_text())["pr_split"]
 
 
 def render(report: dict, meta: MetaSnapshot | None = None) -> tuple[str, list[tuple[str, str]]]:
@@ -87,16 +93,13 @@ def test_completed_review_needs_no_simplification_audit(report: dict) -> None:
 
 
 @pytest.mark.parametrize("status", ["analyzing", "recommended", "keep_together", "incomplete"])
-def test_split_advice_is_visible_without_blocking_approval(report: dict, status: str) -> None:
+def test_split_advice_is_visible_without_blocking_approval(report: dict, split_advice: dict, status: str) -> None:
     validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
     report.update(status="approved", findings={})
     report.pop("simplification")
     report["pr_split"] = {"status": status, "summary": "配置解析和接入可按依赖分层。"}
     if status == "recommended":
-        report["pr_split"].update(
-            plan="1. 配置解析与测试 → main\n2. 环境变量接入与测试 → 配置解析层",
-            submission="有写权限时使用 gh-stack（https://github.com/github/gh-stack），否则按层向上游提交。",
-        )
+        report["pr_split"] = split_advice
     validator.validate(report)
     output, links = render(report)
     assert "✅ 已通过" in output
@@ -104,9 +107,9 @@ def test_split_advice_is_visible_without_blocking_approval(report: dict, status:
     assert (report["pr_split"]["summary"] in output) is (status != "keep_together")
     if status == "recommended":
         assert "💡 1 个拆分方案" in output
-        assert ("https://github.com/github/gh-stack", "https://github.com/github/gh-stack") in links
-        assert "环境变量接入与测试" in output
-        for field in ("plan", "submission"):
+        assert "[gh-stack 使用说明](https://github.com/github/gh-stack)" in output
+        assert "环境变量入口调用解析器" in output
+        for field in ("parts", "submission", "access"):
             value = report["pr_split"].pop(field)
             with pytest.raises(ValidationError):
                 validator.validate(report)
@@ -117,6 +120,60 @@ def test_split_advice_is_visible_without_blocking_approval(report: dict, status:
     del report["pr_split"]
     output, _ = render(report)
     assert "改进建议" not in output
+
+
+def test_split_graph_preserves_siblings_and_multiple_prerequisites(report: dict, split_advice: dict) -> None:
+    parts = split_advice["parts"]
+    parts["B"]["depends_on"] = []
+    parts["C"] = {**parts["B"], "title": "联合接入", "depends_on": ["A", "B"]}
+    report["pr_split"] = split_advice
+    output, _ = render(report)
+
+    graph = output.split("```mermaid\n")[1].split("```")[0]
+    assert "target --> A\n" in graph
+    assert "target --> B\n" in graph
+    assert "A --> C\n" in graph
+    assert "B --> C\n" in graph
+    assert "A --> B" not in graph
+    assert "target --> C" not in graph
+    # Each graph ID identifies exactly one row, including independent siblings.
+    table = output.split(graph)[1].split("<table>")[1].split("</table>")[0]
+    assert table.split("<tbody>")[1].count("<tr>") == 3
+    assert "联合接入" in table
+
+
+@pytest.mark.parametrize("mode", ["upstream", "fork", "unknown"])
+def test_stack_instructions_are_collapsed_and_selected_by_contributor_access(
+    report: dict, split_advice: dict, mode: str
+) -> None:
+    split_advice["submission"] = mode
+    report["pr_split"] = split_advice
+    output, _ = render(report)
+    instructions = output.split("<summary>如何按依赖提交（stack）</summary>")[1].split("</details>")[0]
+    assert "<details>\n<summary>如何按依赖提交（stack）</summary>" in output
+    assert ("gh stack init --base <target> <layer-1> <layer-2>" in instructions) is (mode != "fork")
+    assert ("Fork 贡献者" in instructions) is (mode != "upstream")
+    assert split_advice["access"] in instructions
+
+
+@pytest.mark.parametrize("invalid", ["legacy_plan", "single_part", "empty_scope", "unsafe_id", "unsafe_dependency"])
+def test_split_schema_rejects_unstructured_or_unrenderable_plans(
+    report: dict, split_advice: dict, invalid: str
+) -> None:
+    if invalid == "legacy_plan":
+        split_advice["plan"] = "A → B"
+    elif invalid == "single_part":
+        split_advice["parts"].pop("B")
+    elif invalid == "empty_scope":
+        split_advice["parts"]["A"]["scope"] = ""
+    elif invalid == "unsafe_id":
+        split_advice["parts"]["A_1"] = split_advice["parts"].pop("A")
+    else:
+        split_advice["parts"]["B"]["depends_on"] = ['A["injected"]']
+    report["pr_split"] = split_advice
+    validator = Draft202012Validator(json.loads((TEMPLATES_DIR / "review.schema.json").read_text()))
+    with pytest.raises(ValidationError):
+        validator.validate(report)
 
 
 def test_findings_can_be_delivered_before_general_completion(report: dict) -> None:
@@ -193,13 +250,8 @@ def test_simplification_can_cover_only_the_investigated_scope(report: dict, scop
     assert omitted["summary"] not in output
 
 
-def test_confirmed_simplification_and_split_share_one_section(report: dict) -> None:
-    report["pr_split"] = {
-        "status": "recommended",
-        "summary": "解析与接入适合分两层提交。",
-        "plan": "解析与测试 → 接入与测试",
-        "submission": "Member 使用 gh-stack；fork 作者按层提交。",
-    }
+def test_confirmed_simplification_and_split_share_one_section(report: dict, split_advice: dict) -> None:
+    report["pr_split"] = split_advice
     output, _ = render(report)
     assert output.count("### 改进建议（非阻塞）") == 1
     assert output.index("#### 精简") < output.index("#### 拆分")
