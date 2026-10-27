@@ -7,8 +7,6 @@ Follow `$review_workflow` for scope, delegation and delivery. Start from the pin
 
 Investigate concrete risks: trace relevant producers, consumers and failure paths, compare prior behavior and check dependency contracts against pinned versions. Use narrow searches and focused reads to answer a question. Broaden only when a reachable interaction, conflicting evidence or missing contract calls for it. Consult available memory for relevant human corrections or module history; verify applicability and sources rather than treating earlier approval as proof. Preserve independent-design isolation.
 
-When memory, discussion or code reveals another PR addressing the same behavior, dispatch a managed `pr-compare` child under the workflow. Do not leave a concrete overlap as historical background only; have the child compare implementations, current-PR changes and merge order before drawing coordination advice.
-
 For each candidate, identify the trigger, consequence and evidence that could refute it. Prefer source/contract evidence and existing CI results; run a bounded experiment only when it can change the conclusion. Follow the workflow's selective independent verification. Revise contradicted claims, check analogous affected paths after confirming a cause, and stop when the material question is resolved. Passing CI or child agreement does not prove unexamined behavior.
 
 ## Simplification when warranted
@@ -19,8 +17,7 @@ For a concrete maintenance concern or explicit design-comparison request, read `
 
 - Use the github-conversation skill and `$gh_llm_bin` for PR context, exact-head `review-start` and checks as needed. Timeline auto-collapse authors: $collapse_authors.
 - Use the gh-slate skill and CLI for the review dashboard: `--config "$dashboard_config" --profile review`. Follow `$output_reference` for live-label eligibility, publication, priorities and disclosure. REQUEST_CHANGES is $request_changes by configuration.
-- Publish supported findings promptly while other investigation continues. Use changed diff coordinates from `review-start`; reuse canonical threads for existing findings. Public text defaults to concise, professional $review_language.
-- Finish the turn with the actual outcome, verified review/dashboard links, or the reason for silence and remaining work. Yielding to children is not a final review conclusion.
+- Public text defaults to concise, professional $review_language. Follow the output protocol for findings, progress and final results.
 
 ## Boundaries
 

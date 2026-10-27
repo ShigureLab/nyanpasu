@@ -10,6 +10,14 @@ Use only for a concrete maintenance concern or requested comparison. Select rele
 
 For a selected alternative, trace actual contracts and callers; use a bounded deletion/replacement experiment only if it can settle a remaining question. Follow the local testing policy. Fewer lines or a standalone model cannot establish production machinery removable. Record the preserved behavior, maintenance benefit, evidence and limitations in the existing plan; withdraw contradicted candidates.
 
-For an independent reference, verify its frozen source tree, requirement digest, independence and evidence. Compare ownership, responsibilities and failure behavior at the same base and requirements; check latest-target integration equally. Machinery present in only one design may represent a missed requirement or speculation; trace its contract before deciding.
+## Independent reference
+
+When a comparison is needed, request a managed `purpose: independent-design` child with `inputs.reason` and `inputs.requirements`. Each requirement has `text`, `source` and `provenance` (`explicit`, `base-contract` or `inferred`); optional inputs are `constraints`, `non_goals` and `unknowns`. No default run/skip/reuse assessment is required.
+
+Supply original observable requirements, label unknowns and disclose parental implementation exposure. The service replaces the prompt, exports the pinned merge-base into a fresh repository and freezes the manifest. Do not provide author code, tests or implementation-derived hints before the child freezes its reference. This isolates inputs, not the filesystem or network.
+
+Verify the reference's frozen source tree, requirement digest, independence and evidence. Reuse only for the same base tree, requirements and constraints, citing its task/artifact identity; recheck integration when the target base changes. Compare ownership, responsibilities and failure behavior equally. Machinery present in only one design may represent a missed requirement or speculation; trace its contract before deciding.
+
+## Publish a supported proposal
 
 Summarize confirmed, still-applicable proposals in the optional dashboard `simplification` record under review-output.md with `status: recommended`. A completed retain-only analysis is not a suggestion. The shared 改进建议 section displays actionable results separately from pending analysis; rejected and historical alternatives stay in the review plan. No finding quota or retention table is required.
