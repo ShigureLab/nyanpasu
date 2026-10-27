@@ -95,6 +95,7 @@ turn_timeout_seconds = 900
 
 [tasks.kinds.memory_consolidation.execution]
 backend = "memory"
+model = "gpt-6.1-terra"
 
 [tasks.kinds.memory_consolidation.limits]
 turn_timeout_seconds = 900

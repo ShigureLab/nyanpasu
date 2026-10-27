@@ -39,11 +39,11 @@ def test_example_configuration_loads_and_routes_both_memory_stages(tmp_path, mon
     config = load_config()
 
     assert config.memory.max_results_per_search == 10
-    for kind in ("memory_extraction", "memory_consolidation"):
+    for kind, model in (("memory_extraction", "gpt-6-luna"), ("memory_consolidation", "gpt-6.1-terra")):
         target = config.resolve_execution(kind)
         assert (target.backend, target.model, target.reasoning, target.turn_timeout_seconds) == (
             "memory",
-            "gpt-6-luna",
+            model,
             "medium",
             900,
         )

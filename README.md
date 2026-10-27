@@ -63,7 +63,7 @@ reasoning = "medium"
 
 [tasks.kinds.memory_consolidation.execution]
 backend = "codex"
-model = "gpt-6-luna"
+model = "gpt-6.1-terra"
 reasoning = "medium"
 
 [plugins]
