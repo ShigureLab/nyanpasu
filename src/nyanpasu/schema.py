@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SUBTASK_DELIVERIES = """
 CREATE TABLE subtask_deliveries (
@@ -48,7 +48,9 @@ CREATE TABLE task_runs (
     context_generation INTEGER NOT NULL DEFAULT 1,
     wait_for TEXT,
     wait_mode TEXT NOT NULL DEFAULT 'all',
-    subtask_result TEXT
+    subtask_result TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    retry_at REAL
 );
 CREATE UNIQUE INDEX idx_task_runs_dedupe_key ON task_runs(dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX idx_task_runs_spawned_by ON task_runs(spawned_by_task_id);
@@ -117,6 +119,10 @@ def initialize(conn: sqlite3.Connection) -> None:
                 conn.execute("""UPDATE task_runs SET task_json=json_remove(task_json, '$.metadata.resumed_subtasks')
                     WHERE status IN ('queued', 'running', 'waiting')""")
                 version = 5
+            if version == 5:
+                conn.execute("ALTER TABLE task_runs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE task_runs ADD COLUMN retry_at REAL")
+                version = 6
             if version != SCHEMA_VERSION:
                 raise ValueError(f"Unsupported state schema version {version}; expected {SCHEMA_VERSION}")
         else:

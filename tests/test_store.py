@@ -370,6 +370,8 @@ def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory
     state.record_task(original)
     state.bind_task_execution(original.task_id, "thread", "old-turn")
     with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE task_runs DROP COLUMN retry_count")
+        conn.execute("ALTER TABLE task_runs DROP COLUMN retry_at")
         conn.execute("ALTER TABLE task_runs DROP COLUMN wait_mode")
         conn.execute("DROP TABLE subtask_deliveries")
         conn.execute("ALTER TABLE task_turns DROP COLUMN developer_instructions")
@@ -381,7 +383,7 @@ def test_upgrade_preserves_existing_tasks_and_turns_and_records_immutable_memory
     migrated = StateStore(path)
     assert migrated.task_request(original.task_id) == original
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         assert conn.execute("SELECT task_id,backend,thread_id,turn_id,started_at FROM task_turns").fetchall() == before
         assert conn.execute("SELECT memory_context_json FROM task_turns").fetchall() == [(None,)]
         assert conn.execute("SELECT developer_instructions FROM task_turns").fetchall() == [(None,)]

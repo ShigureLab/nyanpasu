@@ -162,6 +162,8 @@ class TaskRunSummary(NyanpasuModel):
     context_generation: int = 1
     kind: str = "default"
     execution: ExecutionTarget | None = None
+    retry_count: int = 0
+    retry_at: float | None = None
 
     @field_validator("event_worktree", mode="before")
     @classmethod
@@ -230,6 +232,8 @@ class DashboardTaskItem(NyanpasuModel):
     created_at: float
     updated_at: float
     age_seconds: float
+    retry_count: int = 0
+    retry_at: float | None = None
 
 
 class DashboardSnapshot(NyanpasuModel):

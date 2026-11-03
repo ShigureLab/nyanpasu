@@ -92,6 +92,8 @@ At admission, the service resolves and records a task's backend, model, reasonin
 
 Queued and interrupted tasks retain their admitted target across configuration changes and resume their original native session and workspace. Newly admitted work uses the new settings. After an unclean exit, recovery waits for any remaining context lease to expire. Completed and failed tasks are not retried, and tasks from disabled plugins remain queued.
 
+Before marking a task failed, Codex `serverOverloaded` errors receive up to five retries after approximately 1, 2, 4, 8, and 15 minutes, with up to 20% additional jitter. The task remains `waiting` during backoff and releases its execution slot while retaining its context lease, native conversation, workspace, and existing children. Retry counts and deadlines survive restarts and appear as `retry_count` and `retry_at` in `/tasks` and `/api/dashboard`. Cleanup cancels pending retries. Authentication errors, exhausted usage limits, and other failures retain their normal failure behavior.
+
 ```bash
 uv run nyanpasu explain-target --kind github_reviewer.review
 uv run nyanpasu run-task task.json --target codex/your-model:high

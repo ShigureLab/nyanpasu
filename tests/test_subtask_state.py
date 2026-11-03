@@ -207,6 +207,8 @@ def test_v4_upgrade_preserves_wait_and_pending_continuation(tmp_path):
     store.wait_for_subtasks(parent.task_id, [child.task_id])
     store.update_task_input(parent.model_copy(update={"metadata": {"resumed_subtasks": [child.task_id]}}))
     with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE task_runs DROP COLUMN retry_count")
+        conn.execute("ALTER TABLE task_runs DROP COLUMN retry_at")
         conn.execute("ALTER TABLE task_runs DROP COLUMN wait_mode")
         conn.execute("DROP TABLE subtask_deliveries")
         conn.execute("PRAGMA user_version=4")

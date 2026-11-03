@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
 
 
+class CodexTurnError(RuntimeError):
+    def __init__(self, status: str | None, error: dict[str, Any] | None) -> None:
+        super().__init__(f"codex turn ended with status {status}: {error}")
+        self.code = error.get("codexErrorInfo") if error else None
+
+
 class CodexSessionSource(Protocol):
     async def read_thread(self, thread_id: str) -> dict[str, Any]: ...
 
@@ -145,7 +151,7 @@ class CodexAppServerBackend:
             status = completed.get("turn", {}).get("status")
             if status != "completed":
                 error = completed.get("turn", {}).get("error")
-                raise RuntimeError(f"codex turn ended with status {status}: {error}")
+                raise CodexTurnError(status, error)
             return RunResult(
                 thread_id=active_thread_id,
                 turn_id=turn_id,

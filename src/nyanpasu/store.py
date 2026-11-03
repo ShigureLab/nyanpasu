@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 TASK_RUNS = """
     SELECT r.task_id, r.dedupe_key, r.context_key, r.action, r.status, r.event_worktree,
            r.thread_id, r.turn_id, r.task_json, r.coalesced_into, r.error, r.created_at, r.updated_at,
-           r.spawned_by_task_id, r.context_generation,
+           r.spawned_by_task_id, r.context_generation, r.retry_count, r.retry_at,
            coalesce(parent.backend, r.backend) AS backend
     FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
 """
@@ -481,7 +481,7 @@ class StateStore:
             if descendants:
                 raise ValueError("context still has live descendants")
             conn.execute(
-                """UPDATE task_runs SET status='cancelled',updated_at=?
+                """UPDATE task_runs SET status='cancelled',retry_at=NULL,updated_at=?
                 WHERE context_key=? AND context_generation=? AND status IN ('queued','running','waiting')
                 AND action <> 'cleanup'""",
                 (time.time(), key, generation),
@@ -503,7 +503,7 @@ class StateStore:
     @staticmethod
     def _cancel_tasks(conn: sqlite3.Connection, ids: list[str]) -> None:
         conn.executemany(
-            """UPDATE task_runs SET status='cancelled',updated_at=?
+            """UPDATE task_runs SET status='cancelled',retry_at=NULL,updated_at=?
             WHERE task_id=? AND status IN ('queued','running','waiting')""",
             [(time.time(), identity) for identity in ids],
         )
@@ -652,6 +652,20 @@ class StateStore:
     def mark_task_failed(self, task_id: str, error: str) -> None:
         self._update_task(task_id, TaskStatus.FAILED, error=error)
 
+    def defer_task_retry(self, task_id: str, error: str, retry_at: float) -> bool:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._active_task(conn, task_id)
+            except ValueError:
+                return False
+            conn.execute(
+                """UPDATE task_runs SET status='waiting', retry_count=retry_count+1,
+                    retry_at=?, error=?, updated_at=? WHERE task_id=?""",
+                (retry_at, error, time.time(), task_id),
+            )
+            return True
+
     def mark_task_interrupted(self, task_id: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -694,7 +708,7 @@ class StateStore:
             row = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at, task_json
+                    created_at, updated_at, task_json, retry_count, retry_at
                 FROM ({TASK_RUNS}) WHERE dedupe_key = ?
                 """,
                 (dedupe_key,),
@@ -721,7 +735,7 @@ class StateStore:
             values.append(since)
         sql = f"""
             SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                created_at, updated_at, task_json
+                created_at, updated_at, task_json, retry_count, retry_at
             FROM ({TASK_RUNS})
             WHERE {" AND ".join(where)}
             ORDER BY created_at ASC
@@ -957,7 +971,7 @@ class StateStore:
             rows = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at, spawned_by_task_id, context_generation, task_json
+                    created_at, updated_at, spawned_by_task_id, context_generation, task_json, retry_count, retry_at
                 FROM ({TASK_RUNS}) ORDER BY updated_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -970,7 +984,7 @@ class StateStore:
             rows = conn.execute(
                 f"""
                 SELECT task_id, dedupe_key, context_key, backend, action, status, event_worktree, thread_id, turn_id, error,
-                    created_at, updated_at, task_json
+                    created_at, updated_at, task_json, retry_count, retry_at
                 FROM ({TASK_RUNS})
                 ORDER BY updated_at DESC
                 """
@@ -1051,6 +1065,8 @@ class StateStore:
     ) -> bool:
         updates = ["status = ?", "updated_at = ?", "error = ?"]
         values: list[Any] = [status.value, time.time(), error]
+        if status in {TaskStatus.RUNNING, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            updates.append("retry_at = NULL")
         if status is TaskStatus.COMPLETED and final_message is not None:
             updates.append(
                 "subtask_result = CASE WHEN spawned_by_task_id IS NOT NULL "
@@ -1143,6 +1159,8 @@ def _dashboard_task_from_row(row: sqlite3.Row, *, now: float) -> DashboardTaskIt
         created_at=float(row["created_at"]),
         updated_at=float(row["updated_at"]),
         age_seconds=max(0.0, now - float(row["created_at"])),
+        retry_count=int(row["retry_count"]),
+        retry_at=row["retry_at"],
     )
 
 
