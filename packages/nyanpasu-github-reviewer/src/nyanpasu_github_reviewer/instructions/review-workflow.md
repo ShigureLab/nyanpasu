@@ -6,6 +6,8 @@ The parent owns review coverage and cross-scope reconciliation. reviewer.md supp
 
 Apply review-output.md's eligibility check at every entry. A CI-only turn follows ci-followup.md alone. Otherwise, read current PR requirements, requests and existing review evidence; use `pr view --after <previous fetched_at>` when available and expand relevant discussions. An unchanged head does not dispose of an outstanding request.
 
+Use github-conversation to acknowledge a new review, human request or substantive feedback with one fitting reaction on the original item, while preserving the existing silence rules.
+
 Verify the worktree's pinned head and merge-base. Compare the current delta and requirements with the last verified coverage and remaining questions, including contracts affected by fixes. Reuse evidence for unchanged behavior. Distinguish new regressions, earlier misses and known findings; a pre-existing base defect is not a new regression. A previous task head is only a navigation hint. With completed publication and no new evidence, changed decision or outstanding request, remain silent; a policy upgrade alone does not reopen review.
 
 Follow scope-review.md to submit placement decisions before bulk investigation or code-review child dispatch. For stacks, use the direct-base diff and attribute inherited issues to their introducing layer. Establish the dashboard under review-output.md. Refresh CI under ci-followup.md alongside code review, without waiting for pending checks or duplicating broad tests.
