@@ -9,6 +9,7 @@ import pytest
 from nyanpasu.agent import AgentService
 from nyanpasu.models import SubtaskRequest
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, _task, fake_backends
+from tests.test_git_ops import _git
 
 
 @pytest.mark.anyio
@@ -99,10 +100,9 @@ async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path, cance
         if cancel_first:
             await agent.control.dispatch("parent", "cancel", {"task_ids": [child.task_id]})
             assert agent.store.task_status(child.task_id) == "cancelled"
-            context = agent.store.get_context(child.context_key)
-            assert context is not None and context.session_worktree is not None
-            assert context.session_worktree.exists()
-            assert worktrees.removed == []
+            assert agent.store.get_context(child.context_key) is None
+            assert agent.store.context_scope(child.context_key).lifecycle == "closed"
+            assert len(worktrees.removed) == 1
         cleanup = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
         await agent.submit(cleanup)
         await wait_status(agent, "cleanup", "completed")
@@ -117,6 +117,12 @@ async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path, cance
 async def wait_status(agent: AgentService, task_id: str, status: str):
     async with asyncio.timeout(15):
         while agent.store.task_status(task_id) != status:
+            await asyncio.sleep(0.005)
+
+
+async def wait_closed(agent: AgentService, context_key: str):
+    async with asyncio.timeout(15):
+        while agent.store.context_scope(context_key).lifecycle != "closed":
             await asyncio.sleep(0.005)
 
 
@@ -293,6 +299,8 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
                 assert second.store.task_status(child.task_id) == "completed"
                 evidence = json.loads(kwargs["prompt"].split("Subtask results (verify evidence before using):\n")[1])
                 assert evidence[0]["result"] == {"summary": "done", "artifacts": [], "data": {}}
+            else:
+                assert (kwargs["cwd"] / "unfinished").read_text() == "keep"
             return await super().run_turn(**kwargs)
 
     backend = Recovered()
@@ -304,9 +312,8 @@ async def test_restart_restores_waiting_tree_once_and_preserves_workspaces(tmp_p
         await wait_status(second, "parent", "completed")
         assert second.store.task_status(child.task_id) == "completed"
         assert len(backend.calls) == 2
-        child_context = second.store.get_context(child.context_key)
-        assert child_context is not None and child_context.session_worktree is not None
-        assert (child_context.session_worktree / "unfinished").read_text() == "keep"
+        await wait_closed(second, child.context_key)
+        assert second.store.get_context(child.context_key) is None
         assert any("Subtask results" in prompt for prompt in backend.prompts)
     finally:
         await second.shutdown()
@@ -542,5 +549,180 @@ async def test_workspace_free_parent_and_child_use_separate_scratch_directories(
             assert directory.parent == config.state_dir / "scratch"
         assert not (directories["child"] / "parent-artifact.txt").exists()
         assert [item.task_id for item in agent.store.subtasks("parent")] == [child.task_id]
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled"])
+async def test_terminal_child_releases_real_worktree_and_preserves_evidence(tmp_path, outcome):
+    from nyanpasu.models import WorkspaceRef
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "user.name", "Test"], repo)
+    _git(["config", "user.email", "test@example.invalid"], repo)
+    (repo / "source.txt").write_text("source")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "Initial"], repo)
+    revision = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    config = _config(tmp_path)
+    parent_started, parent_release, child_started, child_release, frozen = (asyncio.Event() for _ in range(5))
+    evidence = {}
+    directories = {}
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            if kwargs["prompt"] == "parent":
+                directories["parent"] = kwargs["cwd"]
+                parent_started.set()
+                await parent_release.wait()
+            elif kwargs["prompt"] == "child":
+                directory = directories["child"] = kwargs["cwd"]
+                child_started.set()
+                await child_release.wait()
+                (directory / "evidence.json").write_text('{"verified":true}')
+                evidence.update(
+                    await agent.control.dispatch(
+                        child.task_id, "complete", {"summary": "verified", "artifacts": ["evidence.json"]}
+                    )
+                )
+                frozen.set()
+                if outcome == "failed":
+                    raise RuntimeError("child failed after saving evidence")
+                if outcome == "cancelled":
+                    await asyncio.Event().wait()
+            return result
+
+    backend = Backend()
+    agent = AgentService(config, backends=fake_backends(config, backend))
+    try:
+        await agent.submit(
+            _task("parent").model_copy(
+                update={"prompt": "parent", "workspace": WorkspaceRef(key="repo", local_path=repo, revision=revision)}
+            )
+        )
+        await asyncio.wait_for(parent_started.wait(), 3)
+        child = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        await asyncio.wait_for(child_started.wait(), 3)
+        for directory in directories.values():
+            assert (directory / ".git").is_file()
+            assert _git(["rev-parse", "--git-common-dir"], directory).stdout.strip() == str(repo / ".git")
+        child_session = agent.store.get_context(child.context_key)
+        assert child_session is not None
+        child_release.set()
+        await asyncio.wait_for(frozen.wait(), 3)
+        if outcome == "cancelled":
+            await agent.control.dispatch("parent", "cancel", {"task_ids": [child.task_id]})
+        await wait_status(agent, child.task_id, outcome)
+        await wait_closed(agent, child.context_key)
+        assert not directories["child"].exists()
+        assert directories["parent"].is_dir()
+        assert str(directories["child"]) not in _git(["worktree", "list", "--porcelain"], repo).stdout
+        assert child_session.thread_id in backend.archived
+        assert agent.store.get_context(child.context_key) is None
+        assert agent.store.subtask_result(child.task_id) == evidence
+        assert Path(evidence["artifacts"][0]["path"]).read_text() == '{"verified":true}'
+        assert agent.store.task_turns(child.task_id)
+        replay = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        assert replay.task_id == child.task_id
+        assert not directories["child"].exists()
+        parent_release.set()
+        await wait_status(agent, "parent", "completed")
+        assert "verified" in backend.prompts[-1]
+        assert agent.store.unconsumed_subtasks("parent") == []
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_startup_retries_failed_subtask_cleanup_without_replaying_execution(tmp_path):
+    config = _config(tmp_path)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            if kwargs["prompt"] == "parent":
+                started.set()
+                await release.wait()
+            return result
+
+        async def archive(self, thread_id):
+            raise RuntimeError("archive unavailable")
+
+    first = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
+    )
+    try:
+        await first.submit(_task("parent").model_copy(update={"prompt": "parent"}))
+        await asyncio.wait_for(started.wait(), 3)
+        child = await first.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        await wait_status(first, child.task_id, "completed")
+        release.set()
+        await wait_status(first, "parent", "completed")
+    finally:
+        await first.shutdown()
+    assert first.store.get_context(child.context_key) is not None
+    result = first.store.subtask_result(child.task_id)
+    backend = FakeCodex()
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    second = AgentService(config, worktrees=worktrees, backends=fake_backends(config, backend))
+    try:
+        await second.startup()
+        await wait_closed(second, child.context_key)
+        assert second.store.task_status(child.task_id) == "completed"
+        assert second.store.subtask_result(child.task_id) == result
+        assert second.store.get_context("demo:1") is not None
+        assert len(worktrees.removed) == 1
+        assert backend.calls == []
+    finally:
+        await second.shutdown()
+
+
+@pytest.mark.anyio
+async def test_parent_failure_stops_and_reclaims_nested_children(tmp_path):
+    config = _config(tmp_path)
+    started = {name: asyncio.Event() for name in ("parent", "child", "grandchild")}
+    fail_parent = asyncio.Event()
+    stopped = set()
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            await super().run_turn(**kwargs)
+            name = kwargs["prompt"]
+            started[name].set()
+            if name == "parent":
+                await fail_parent.wait()
+                raise RuntimeError("parent failed")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.add(name)
+
+    backend = Backend()
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, backend)
+    )
+    try:
+        await agent.submit(_task("parent").model_copy(update={"prompt": "parent"}))
+        await asyncio.wait_for(started["parent"].wait(), 3)
+        child = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        await asyncio.wait_for(started["child"].wait(), 3)
+        grandchild = await agent.create_subtask(
+            child.task_id, SubtaskRequest(request_key="grandchild", prompt="grandchild")
+        )
+        await asyncio.wait_for(started["grandchild"].wait(), 3)
+        fail_parent.set()
+        await wait_status(agent, "parent", "failed")
+        for task in (child, grandchild):
+            await wait_closed(agent, task.context_key)
+            assert agent.store.task_status(task.task_id) == "cancelled"
+            assert agent.store.get_context(task.context_key) is None
+        assert stopped == {"child", "grandchild"}
+        assert len(backend.archived) == 2
+        assert agent.store.get_context("demo:1") is not None
     finally:
         await agent.shutdown()

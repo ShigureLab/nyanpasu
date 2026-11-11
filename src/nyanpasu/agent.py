@@ -124,6 +124,32 @@ class AgentService:
             migrated |= bool(changed)
         if migrated and self.config.memory.enabled and self.config.memory.consolidate:
             await self.rebuild_all_memory()
+        # A failed or interrupted cleanup remains closing and must be retried.
+        closing = await to_thread.run_sync(self.store.closing_contexts)
+        keys = {scope.context_key for scope in closing}
+        for scope in closing:
+            if scope.parent_context_key in keys:
+                continue
+            records = await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation)
+            if any(record.action is TaskAction.CLEANUP and record.task_id in self._runners for record in records):
+                continue
+            source = await to_thread.run_sync(self.store.task_request, records[0].task_id)
+            try:
+                await self.run_now(
+                    source.model_copy(
+                        update={
+                            "task_id": f"cleanup:{scope.context_key}:{time.time_ns()}",
+                            "action": TaskAction.CLEANUP,
+                            "prompt": "",
+                            "dedupe_key": None,
+                            "coalesce_key": None,
+                            "spawned_by_task_id": None,
+                        }
+                    )
+                )
+            except Exception:
+                logger.exception("context cleanup recovery failed context={}", scope.context_key)
+
         async with self._submit_lock:
             for task in await to_thread.run_sync(self.store.unfinished_tasks):
                 if task.spawned_by_task_id is not None:
@@ -141,29 +167,6 @@ class AgentService:
                 self._preparer_for(task)
                 self._schedule(task)
                 logger.info("task recovery scheduled task_id={} context={}", task.task_id, task.context_key)
-
-        # A failed or interrupted cleanup remains closing and must be retried.
-        closing = await to_thread.run_sync(self.store.closing_contexts)
-        keys = {scope.context_key for scope in closing}
-        for scope in closing:
-            if scope.parent_context_key in keys:
-                continue
-            records = await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation)
-            if any(record.action is TaskAction.CLEANUP and record.task_id in self._runners for record in records):
-                continue
-            source = await to_thread.run_sync(self.store.task_request, records[0].task_id)
-            await self.submit(
-                source.model_copy(
-                    update={
-                        "task_id": f"cleanup:{scope.context_key}:{time.time_ns()}",
-                        "action": TaskAction.CLEANUP,
-                        "prompt": "",
-                        "dedupe_key": None,
-                        "coalesce_key": None,
-                        "spawned_by_task_id": None,
-                    }
-                )
-            )
 
         self._start_memory_producer()
         await self.sweep_memory()
@@ -328,7 +331,10 @@ class AgentService:
             if root not in self._admitted_roots:
                 raise RuntimeError("subtask has no admitted root execution")
             async with self._context_execution(task):
-                return await self._run_task_attempts(task)
+                try:
+                    return await self._run_task_attempts(task)
+                finally:
+                    await self._cleanup_finished_subtask(task)
         # Waiting for a busy context must not reserve capacity needed by other contexts.
         async with self._context_execution(task):
             try:
@@ -445,8 +451,12 @@ class AgentService:
         }
 
     async def _stop_descendants(self, task_id: str) -> None:
-        ids = [child.task_id for child in await to_thread.run_sync(self.store.subtasks, task_id)]
-        await self.stop_tasks(ids)
+        children = await to_thread.run_sync(self.store.subtasks, task_id)
+        await self.stop_tasks([child.task_id for child in children])
+        for child in reversed(children):
+            task = await to_thread.run_sync(self.store.task_request, child.task_id)
+            async with self._context_execution(task):
+                await self._cleanup_finished_subtask(task)
 
     async def stop_tasks(self, ids: list[str]) -> None:
         runners = [self._runners[identity] for identity in ids if identity in self._runners]
@@ -460,7 +470,10 @@ class AgentService:
                     raise outcome
 
     async def cancel_subtask(self, task_id: str) -> None:
-        await self._stop_context_tree(await to_thread.run_sync(self.store.task_request, task_id))
+        task = await to_thread.run_sync(self.store.task_request, task_id)
+        await self._stop_context_tree(task)
+        async with self._context_execution(task):
+            await self._cleanup_finished_subtask(task)
 
     async def _stop_context_tree(self, task: AgentTask) -> None:
         scopes = await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
@@ -763,16 +776,7 @@ class AgentService:
         logger.info("task cleanup started task_id={} context={}", task.task_id, task.context_key)
         await to_thread.run_sync(self.store.mark_task_running, task.task_id, None)
         context = await to_thread.run_sync(self.store.get_context, task.context_key)
-        scopes = await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
-        for scope in reversed(scopes):
-            if scope.context_key == task.context_key:
-                await self._cleanup_thread(scope.context_key, scope.generation, task.workspace)
-            else:
-                child_cleanup = task.model_copy(update={"context_key": scope.context_key})
-                async with self._context_execution(child_cleanup):
-                    records = await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation)
-                    source = await to_thread.run_sync(self.store.task_request, records[0].task_id)
-                    await self._cleanup_thread(scope.context_key, scope.generation, source.workspace)
+        await self._cleanup_context_scopes(task)
         result = TaskRunResult(
             task_id=task.task_id,
             status=TaskStatus.COMPLETED,
@@ -791,6 +795,31 @@ class AgentService:
         )
         await self._run_post_process_hooks(task, result)
         return result
+
+    async def _cleanup_finished_subtask(self, task: AgentTask) -> None:
+        runner = asyncio.current_task()
+        if runner is not None and runner.cancelling():
+            return  # Interrupted executions must remain recoverable until stop is confirmed.
+        record = await to_thread.run_sync(self.store.task_run, task.task_id)
+        if record.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            return
+        try:
+            await self._cleanup_context_scopes(task)
+        except Exception:
+            # Keep the terminal result; closing scopes make housekeeping retryable on startup.
+            logger.exception("subtask cleanup failed task_id={} context={}", task.task_id, task.context_key)
+
+    async def _cleanup_context_scopes(self, task: AgentTask) -> None:
+        scopes = await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
+        for scope in reversed(scopes):
+            if scope.context_key == task.context_key:
+                await self._cleanup_thread(scope.context_key, scope.generation, task.workspace)
+            else:
+                child_cleanup = task.model_copy(update={"context_key": scope.context_key})
+                async with self._context_execution(child_cleanup):
+                    records = await to_thread.run_sync(self.store.tasks_for_scope, scope.context_key, scope.generation)
+                    source = await to_thread.run_sync(self.store.task_request, records[0].task_id)
+                    await self._cleanup_thread(scope.context_key, scope.generation, source.workspace)
 
     async def _cleanup_thread(self, key: str, generation: int, workspace) -> None:
         """Archive ended sessions, remove their workspaces, then close the context lifecycle."""

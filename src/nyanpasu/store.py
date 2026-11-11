@@ -507,6 +507,17 @@ class StateStore:
             WHERE task_id=? AND status IN ('queued','running','waiting')""",
             [(time.time(), identity) for identity in ids],
         )
+        StateStore._mark_finished_subtasks_closing(conn, ids)
+
+    @staticmethod
+    def _mark_finished_subtasks_closing(conn: sqlite3.Connection, ids: list[str]) -> None:
+        conn.executemany(
+            """UPDATE context_scopes SET lifecycle='closing' WHERE lifecycle='active' AND EXISTS (
+                SELECT 1 FROM task_runs r WHERE r.task_id=? AND r.spawned_by_task_id IS NOT NULL
+                    AND r.context_key=context_scopes.context_key AND r.context_generation=context_scopes.generation
+                    AND r.status IN ('completed','failed','cancelled'))""",
+            [(identity,) for identity in ids],
+        )
 
     def update_task_input(self, task: AgentTask) -> None:
         with self._connect() as conn:
@@ -1099,6 +1110,9 @@ class StateStore:
             if status is TaskStatus.FAILED and updated.rowcount:
                 # A restart must never see a failed owner with active descendants.
                 self._cancel_tasks(conn, [row["task_id"] for row in self._descendants(conn, task_id)])
+            if updated.rowcount and status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+                # Persist cleanup intent with the terminal result, including across a crash.
+                self._mark_finished_subtasks_closing(conn, [task_id])
             if updated.rowcount:
                 conn.executemany(
                     """UPDATE subtask_deliveries SET consumed_at=?

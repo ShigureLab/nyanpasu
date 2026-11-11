@@ -49,7 +49,10 @@ def test_prepare_context_reuses_context_key_path_and_resets_revision(tmp_path: P
 
     assert first_context.session_worktree == second_context.session_worktree
     assert second_context.session_worktree is not None
-    assert (second_context.session_worktree / ".git").is_dir()
+    assert (second_context.session_worktree / ".git").is_file()
+    assert _git(["rev-parse", "--git-common-dir"], second_context.session_worktree).stdout.strip() == str(
+        repo_path / ".git"
+    )
     assert (second_context.session_worktree / "README.md").read_text(encoding="utf-8") == "hello again\n"
 
 
@@ -86,12 +89,12 @@ def test_prepare_event_snapshot_resets_tracked_changes_and_removes_untracked_fil
 
     assert first == second
     assert second is not None
-    assert (second / ".git").is_dir()
+    assert (second / ".git").is_file()
     assert (second / "README.md").read_text(encoding="utf-8") == "hello\n"
     assert not (second / "untracked.txt").exists()
 
 
-def test_prepare_context_replaces_legacy_git_worktree_with_clone(tmp_path: Path) -> None:
+def test_prepare_context_rejects_standalone_repository(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
     _git(["init", str(repo_path)], tmp_path)
     _git(["config", "user.email", "nyanpasu@example.invalid"], repo_path)
@@ -116,11 +119,10 @@ def test_prepare_context_replaces_legacy_git_worktree_with_clone(tmp_path: Path)
     manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
     legacy_path = manager.session_worktree_path(task)
     legacy_path.parent.mkdir(parents=True)
-    _git(["worktree", "add", "--detach", str(legacy_path), head_sha], repo_path)
+    _git(["clone", str(repo_path), str(legacy_path)], tmp_path)
 
-    context = manager.prepare_context(task, None)
-
-    assert context.session_worktree == legacy_path
+    with pytest.raises(ValueError, match="linked Git worktree"):
+        manager.prepare_context(task, None)
     assert (legacy_path / ".git").is_dir()
     assert (legacy_path / "README.md").read_text(encoding="utf-8") == "hello\n"
 
@@ -160,7 +162,7 @@ def test_fetch_revision_uses_configured_remote_name(tmp_path: Path) -> None:
     assert _git(["show", f"{revision}:README.md"], repo_path).stdout == "upstream update\n"
 
 
-def test_remove_worktree_tolerates_stale_directory(tmp_path: Path) -> None:
+def test_remove_worktree_rejects_unregistered_directory(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
     _git(["init", str(repo_path)], tmp_path)
     stale_path = tmp_path / "stale-worktree"
@@ -168,9 +170,9 @@ def test_remove_worktree_tolerates_stale_directory(tmp_path: Path) -> None:
     (stale_path / "leftover").write_text("stale\n", encoding="utf-8")
     manager = WorktreeManager(NyanpasuConfig(state_dir=tmp_path / "state"))
 
-    manager.remove_worktree(WorkspaceRef(key="owner/repo", local_path=repo_path), stale_path)
-
-    assert not stale_path.exists()
+    with pytest.raises(subprocess.CalledProcessError):
+        manager.remove_worktree(WorkspaceRef(key="owner/repo", local_path=repo_path), stale_path)
+    assert (stale_path / "leftover").read_text() == "stale\n"
 
 
 @pytest.fixture
@@ -195,13 +197,14 @@ def workspace(tmp_path):
     return repo, manager, task
 
 
-def test_workspace_fetch_uses_base_after_clone_origin_changes(workspace):
+def test_context_reset_keeps_worktree_registration_and_base_checkout(workspace):
     repo, manager, task = workspace
     context = manager.prepare_context(task, None)
-    clone = context.session_worktree
-    assert clone is not None
-    _git(["remote", "set-url", "origin", "ssh://unreachable.invalid/repo"], clone)
-    _git(["config", "core.sshCommand", "touch .git/ssh-ran; false"], clone)
+    worktree = context.session_worktree
+    assert worktree is not None
+    registration = (worktree / ".git").read_text()
+    (worktree / "file.txt").write_text("task edits")
+    (worktree / "untracked.txt").write_text("temporary")
     (repo / "file.txt").write_text("next revision")
     _git(["commit", "-am", "Next"], repo)
     revision = _git(["rev-parse", "HEAD"], repo).stdout.strip()
@@ -211,12 +214,17 @@ def test_workspace_fetch_uses_base_after_clone_origin_changes(workspace):
     updated = manager.prepare_context(task, context)
 
     assert updated.revision == revision
-    assert (clone / "file.txt").read_text() == "next revision"
-    assert not (clone / ".git" / "ssh-ran").exists()
+    assert (worktree / "file.txt").read_text() == "next revision"
+    assert not (worktree / "untracked.txt").exists()
+    assert (worktree / ".git").read_text() == registration
+    assert _git(["rev-parse", "HEAD"], repo).stdout.strip() == revision
+    manager.remove_worktree(task.workspace, worktree)
+    assert not worktree.exists()
+    assert str(worktree) not in _git(["worktree", "list", "--porcelain"], repo).stdout
 
 
 @pytest.mark.parametrize("explicit_remote", [True, False])
-def test_clone_can_checkout_revisions_from_partial_source(tmp_path, workspace, explicit_remote):
+def test_worktree_can_checkout_revisions_from_partial_source(tmp_path, workspace, explicit_remote):
     repo, manager, task = workspace
     _git(["config", "uploadpack.allowFilter", "true"], repo)
     _git(["config", "uploadpack.allowAnySHA1InWant", "true"], repo)

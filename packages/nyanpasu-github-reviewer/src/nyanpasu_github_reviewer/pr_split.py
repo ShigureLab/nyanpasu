@@ -44,7 +44,7 @@ def prepare_pr_split(config: GitHubReviewerConfig, parent: AgentTask, request: S
         update={
             "kind": "github_reviewer.pr-split",
             "revision": inventory["head_sha"],
-            "workspace_mode": "clone",
+            "workspace_mode": "worktree",
             "memory_enabled": False,
             "inputs": {"split_source": source},
             "developer_instructions": instructions,

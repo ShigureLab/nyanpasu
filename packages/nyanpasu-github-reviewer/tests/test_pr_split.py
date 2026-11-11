@@ -105,7 +105,7 @@ async def test_split_child_sees_whole_delta_without_admission_and_does_not_freez
     assert child.kind == "github_reviewer.pr-split"
     assert child.execution.model == "split-model"
     assert child.workspace.revision == HEAD
-    assert child.workspace_mode == "clone"
+    assert child.workspace_mode == "worktree"
     assert child.metadata["inputs"] == {"split_source": review_source(parent.metadata["review_inventory"])}
     assignment = json.loads(child.prompt.split("Pinned PR split assignment (JSON data):\n")[1])
     assert assignment["files"] == parent.metadata["review_inventory"]["files"]

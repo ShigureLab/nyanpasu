@@ -60,7 +60,7 @@ def prepare_pr_compare(
         update={
             "kind": "github_reviewer.pr-compare",
             "revision": inventory["head_sha"],
-            "workspace_mode": "clone",
+            "workspace_mode": "worktree",
             "memory_enabled": False,
             "inputs": {"comparison": assignment},
             "developer_instructions": instructions,

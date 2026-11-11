@@ -8,7 +8,6 @@ import subprocess
 import tarfile
 import tempfile
 import threading
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,14 +50,15 @@ class WorktreeManager:
         with self._workspace_lock(workspace.key):
             self.fetch_revision(workspace)
             session_path = self.session_worktree_path(task)
+            created = not session_path.exists()
             try:
                 if task.workspace_mode == "snapshot":
                     self._snapshot(workspace, session_path)
                 else:
                     self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
             except Exception:
-                if existing is None:
-                    self._remove_worktree_unlocked(workspace, session_path)
+                if created and session_path.exists():
+                    self._remove_worktree_unlocked(workspace, session_path, snapshot=task.workspace_mode == "snapshot")
                 raise
         return AgentContext(
             context_key=task.context_key,
@@ -92,7 +92,7 @@ class WorktreeManager:
             with archive.open("rb") as stream:
                 export_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
             if path.exists():
-                self._remove_worktree_unlocked(workspace, path)
+                self._remove_worktree_unlocked(workspace, path, snapshot=True)
             path.mkdir(parents=True)
             with tarfile.open(archive) as contents:
                 # Git emits files, directories and symlinks. Validate member paths while
@@ -177,7 +177,7 @@ class WorktreeManager:
                 shutil.rmtree(path)
             return
         with self._workspace_lock(workspace.key):
-            self._remove_worktree_unlocked(workspace, path)
+            self._remove_worktree_unlocked(workspace, path, snapshot=(path / ".git" / "nyanpasu-source.json").is_file())
 
     def session_worktree_path(self, task: AgentTask) -> Path:
         return self.config.worktrees_dir / context_directory(task.context_key)
@@ -193,73 +193,19 @@ class WorktreeManager:
         )
 
     def _reset_worktree(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
-        if self._is_managed_clone(path):
-            self._sync_clone(workspace, path, ref)
-            return
-        if path.exists():
-            self._remove_worktree_unlocked(workspace, path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._clone_workspace(workspace, path)
-        self._sync_clone(workspace, path, ref)
-
-    def _is_managed_clone(self, path: Path) -> bool:
-        return (path / ".git").is_dir()
-
-    def _clone_workspace(self, workspace: WorkspaceRef, path: Path) -> None:
-        self._run(["git", "clone", "--no-checkout", str(workspace.local_path), str(path)], Path.cwd())
-        if workspace.remote:
-            self._run(["git", "remote", "set-url", "origin", workspace.remote], path)
-
-    def _sync_clone(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
-        remote = workspace.remote
-        if remote is None:
-            try:
-                remote = self._run(["git", "config", "--get", "remote.origin.url"], workspace.local_path).stdout.strip()
-            except subprocess.CalledProcessError as exc:
-                if exc.returncode != 1:  # A local-only base may have no origin.
-                    raise
-        if remote:
-            self._run(["git", "remote", "set-url", "origin", remote], path)
-
-        target = self._fetch_clone_target(workspace, path, ref, partial=bool(remote))
-        self._run(["git", "checkout", "--detach", "--force", target], path)
-        self._run(["git", "reset", "--hard", target], path)
-        self._run(["git", "clean", "-ffd"], path)
-
-    def _fetch_clone_target(self, workspace: WorkspaceRef, path: Path, ref: str, *, partial: bool) -> str:
-        # The base already fetched the requested ref. Sync from its pinned commit
-        # even when an earlier task changed the session clone's origin.
         source = workspace.revision or ("FETCH_HEAD" if workspace.ref else ref)
         target = self._run(
             ["git", "rev-parse", "--verify", f"{source}^{{commit}}"], workspace.local_path
         ).stdout.strip()
-        _, objects_in_tree = self._materialize_tree(workspace, target)
-        # A network-backed clone can lazily fetch history from its actual origin.
-        # A local-only base has no such provider, so transfer its complete history.
-        # Import the current tree's blobs explicitly because negotiation may omit
-        # objects missing from a previously copied partial clone.
-        source_url = workspace.local_path.as_uri()
-        self._run(
-            [
-                "git",
-                "fetch",
-                "--upload-pack=git -c uploadpack.allowFilter=true upload-pack",
-                *(["--filter=blob:none"] if partial else []),
-                "--force",
-                "--no-tags",
-                "--no-recurse-submodules",
-                source_url,
-                target,
-            ],
-            path,
-        )
-        if partial:
-            # Git persists filtered fetch URLs as promisor remotes. Keep history
-            # fetches on the original upstream, which has the missing blobs.
-            self._run(["git", "config", "--remove-section", f"remote.{source_url}"], path)
-            self._run(["git", "config", "remote.origin.promisor", "true"], path)
-        self._import_objects(workspace, path, objects_in_tree)
-        return target
+        if path.exists():
+            if not (path / ".git").is_file():
+                raise ValueError(f"expected a linked Git worktree: {path}")
+            self._run(["git", "checkout", "--detach", "--force", target], path)
+            self._run(["git", "reset", "--hard", target], path)
+            self._run(["git", "clean", "-ffd"], path)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._run(["git", "worktree", "add", "--detach", str(path), target], workspace.local_path)
 
     def _materialize_tree(self, workspace: WorkspaceRef, revision: str) -> tuple[str, str]:
         tree = self._run(["git", "rev-parse", f"{revision}^{{tree}}"], workspace.local_path).stdout.strip()
@@ -289,13 +235,11 @@ class WorktreeManager:
             pack.seek(0)
             subprocess.run(["git", "unpack-objects"], cwd=path, stdin=pack, capture_output=True, check=True)
 
-    def _remove_worktree_unlocked(self, workspace: WorkspaceRef, path: Path) -> None:
-        with suppress(subprocess.CalledProcessError):
-            self._run(["git", "worktree", "remove", "--force", str(path)], workspace.local_path)
-        if path.exists():
+    def _remove_worktree_unlocked(self, workspace: WorkspaceRef, path: Path, *, snapshot: bool = False) -> None:
+        if snapshot:
             shutil.rmtree(path)
-        with suppress(subprocess.CalledProcessError):
-            self._run(["git", "worktree", "prune"], workspace.local_path)
+        else:
+            self._run(["git", "worktree", "remove", "--force", str(path)], workspace.local_path)
 
     def _run(self, argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=True)

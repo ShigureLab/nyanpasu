@@ -65,7 +65,7 @@ class AgentTask(NyanpasuModel):
     dedupe_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     workspace_policy: Literal["context", "event_snapshot"] = "context"
-    workspace_mode: Literal["clone", "snapshot"] = "clone"
+    workspace_mode: Literal["worktree", "snapshot"] = "worktree"
     spawned_by_task_id: str | None = None
     context_generation: int = 1
 
@@ -87,7 +87,7 @@ class SubtaskRequest(NyanpasuModel):
     memory_enabled: bool = Field(
         default=True, description="Inherit the parent's authorized memory; false disables recall."
     )
-    workspace_mode: Literal["clone", "snapshot"] = "clone"
+    workspace_mode: Literal["worktree", "snapshot"] = "worktree"
     inputs: dict[str, Any] = Field(default_factory=dict, description="Plugin-specific structured child inputs.")
 
 

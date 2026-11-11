@@ -41,7 +41,7 @@ def prepare_ci_analysis(
             "kind": "github_reviewer.ci-analysis",
             "execution": ExecutionOverride(),
             "revision": snapshot.head_sha,
-            "workspace_mode": "clone",
+            "workspace_mode": "worktree",
             "memory_enabled": False,
             "inputs": {"ci_snapshot": data},
             "developer_instructions": build_ci_analysis_instructions(config, pr),

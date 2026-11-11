@@ -389,6 +389,12 @@ def prepare(
         }
         (staging / "task.json").write_bytes(json_bytes(task_data))
         (staging / "prepared.json").write_bytes(json_bytes(prepared))
+        if index:
+            # Each step has a different base repository. Retire its predecessor's
+            # worktree before resuming the same native session at the stable path.
+            manager = WorktreeManager(NyanpasuConfig(state_dir=home))
+            previous = AgentTask.model_validate(read_json(prior.parent / "task.json"))
+            manager.remove_worktree(previous.workspace, manager.session_worktree_path(task))
         staging.rename(step_dir)
     return prepared
 

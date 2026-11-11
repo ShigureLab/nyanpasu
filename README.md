@@ -15,7 +15,8 @@ See the [dependency index](DEPENDENCIES/index.md) for required and optional tool
 ## Core Responsibilities
 
 - Async task execution with per-context serialization and bounded concurrency.
-- Context workspace management. By default, one `context_key` owns one reusable managed clone that is reset to the task revision before each run.
+- Context workspace management. By default, one `context_key` owns one reusable Git worktree that shares the base repository's objects and is reset to the task revision before each run. Independent-design reference snapshots retain their history isolation.
+- Terminal subtasks archive their backend sessions and remove their workspaces promptly, retaining task records, frozen results, and copied artifacts. Waiting and interrupted subtasks retain their workspaces for recovery; startup retries unfinished cleanup.
 - Optional event snapshots for plugins that explicitly need per-event isolation.
 - Persistent task, thread, and context state.
 - Pluggable execution backends: Codex and Claude Code.

@@ -33,6 +33,24 @@ def finish(store: StateStore, task: AgentTask) -> None:
     )
 
 
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+def test_terminal_child_persists_cleanup_intent_with_its_result(tmp_path, terminal):
+    store = StateStore(tmp_path / "state.db")
+    parent = root(store)
+    child = store.create_subtask(parent.task_id, request(), execution=CONFIG.resolve_execution("subtask"))
+    if terminal == "completed":
+        finish(store, child)
+    elif terminal == "failed":
+        store.mark_task_failed(child.task_id, "failed")
+    else:
+        store.cancel_task_tree(child.task_id)
+    restarted = StateStore(store.db_path)
+    assert restarted.task_status(child.task_id) == terminal
+    assert restarted.context_scope(child.context_key).lifecycle == "closing"
+    assert restarted.context_scope(parent.context_key).lifecycle == "active"
+    assert [scope.context_key for scope in restarted.closing_contexts()] == [child.context_key]
+
+
 def test_concurrent_retries_create_one_child_and_preserve_input(tmp_path):
     store = StateStore(tmp_path / "state.db")
     parent = root(store)
