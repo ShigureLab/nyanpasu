@@ -12,6 +12,12 @@ Only the parent publishes. Publish a verified actionable finding when ready, wit
 
 Update the dashboard at meaningful milestones with checked scope, supported conclusions and remaining questions, not every child progress event. Before a long experiment or wait, save evidence in the existing plan and update the dashboard; no separate checkpoint report is required.
 
+### Notification rules
+
+Publish the initial review result once. On later turns, a new review or reply requires a new actionable finding, a material change to an existing concern or the review decision, or an outstanding human request that needs an answer. Compare the substance with already published results; a new head, base, review-run identity, additional validation or completed stage alone does not warrant a notification.
+
+Review each new delta and its affected contracts normally. On an automatic follow-up with no human answer pending, if the decision and actionable concerns remain unchanged, update the existing dashboard's analyzed source, coverage and result, then finish privately. Do not submit another COMMENT or APPROVE, post a completion/status reply, or add a reaction merely to announce an automatic follow-up. Unchanged unresolved findings also remain quiet. Confirm individual fixes in their canonical threads when useful, without an additional completion announcement; publish a new overall review when its decision changes.
+
 ## Dashboard protocol
 
 Use the existing `nyanpasu-review` dashboard for all review updates; an earlier session or review does not prove that it exists. Read-only publication mode prohibits dashboard writes as well as review writes.
@@ -86,11 +92,11 @@ Explain the defect, concrete evidence or impact, and the expected next action co
 
 For a supported simplification set `kind: simplification`, use P2/P3 and label it nonblocking. Identify the smaller alternative, preserved behavior, maintenance benefit and evidence. Keep rejected candidates in local notes; adding guards or missing tests is not itself simplification.
 
-Match findings by root cause and affected contract, not wording or line number; reuse the canonical ID and published thread across revisions. A new inline comment needs a new issue or a materially changed defect the original discussion no longer covers. Distinguish new regressions from earlier misses when attribution matters. Recovering an unpublished draft completes the original review. Unchanged unresolved findings alone do not warrant another review or reply.
+Match findings by root cause and affected contract, not wording or line number; reuse the canonical ID and published thread across revisions. A new inline comment needs a new issue or a materially changed defect the original discussion no longer covers. Distinguish new regressions from earlier misses when attribution matters. Recovering an unpublished draft completes the original review.
 
 Keep the final review body short: a conclusion heading, one factual summary paragraph, the dashboard permalink, and any genuinely non-inline concern. The dashboard owns the grouped finding index; do not repeat inline findings, a severity inventory, or the full resolved history in the review body. Mark a finding that cannot attach to a changed line with `非行级：<reason>`, and use the same fixed-size badge and priority heading as inline findings; separate distinct findings into bullets. For title/body problems, suggest a concrete improvement.
 
-Use REQUEST_CHANGES only when enabled and supported by unresolved or partially resolved P1 evidence. Each new attachable blocker needs an inline comment; an existing blocker needs a substantive thread reply when a new review is warranted. Do not request changes merely for P2/P3 findings, PR hygiene, CI/template status, or unchanged old concerns. Use COMMENT for non-blocking findings or a requested status response, and APPROVE when review is complete with no remaining concerns. Automatic follow-up silence rules apply before choosing any review event.
+Apply the notification rules before choosing a review event. Use REQUEST_CHANGES only when enabled and supported by unresolved or partially resolved P1 evidence. Each new attachable blocker needs an inline comment; an existing blocker needs a substantive thread reply when a new review is warranted. Do not request changes merely for P2/P3 findings, PR hygiene, CI/template status, or unchanged old concerns. Use COMMENT for non-blocking findings or a requested status response, and APPROVE when review is complete with no remaining concerns.
 
 In public text, use visible GitHub permalinks and natural conclusions; omit raw GraphQL IDs, trigger names, delivery IDs, and review-submit event names. Do not add severity badges to neutral status text or invent findings to fill a format.
 
