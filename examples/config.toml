@@ -58,6 +58,22 @@ backend = "claude"
 backend = "codex"
 # This child always has shared memory disabled.
 
+# Focused maintenance investigators use their purpose-specific route, not the parent kind.
+[tasks.kinds."github_reviewer.redundancy-review".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "high"
+
+[tasks.kinds."github_reviewer.convention-review".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "high"
+
+[tasks.kinds."github_reviewer.test-audit".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "high"
+
 # CI analysis is a bounded log-reading child; the parent review model is unchanged.
 # This model alias requires a Claude-compatible provider configured to serve it.
 [tasks.kinds."github_reviewer.ci-analysis".execution]

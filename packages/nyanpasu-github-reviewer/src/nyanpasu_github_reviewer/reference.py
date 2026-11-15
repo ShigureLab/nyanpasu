@@ -37,9 +37,12 @@ def prepare_reference(config: NyanpasuConfig, parent: AgentTask, request: Subtas
     """Pin common inputs after the reviewer decides that a reference is useful."""
     if request.purpose != "independent-design":
         role = "test-review.md" if request.purpose == "test-audit" else "investigator.md"
+        instructions = (INSTRUCTIONS / role).read_text()
+        if request.purpose in {"redundancy-review", "convention-review"}:
+            instructions += f"\nReview criteria: {INSTRUCTIONS / 'design-comparison.md'}\n"
         return request.model_copy(
             update={
-                "developer_instructions": (INSTRUCTIONS / role).read_text(),
+                "developer_instructions": instructions,
             }
         )
     if parent.spawned_by_task_id is not None:

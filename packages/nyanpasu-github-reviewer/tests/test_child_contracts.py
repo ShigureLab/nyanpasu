@@ -111,7 +111,10 @@ async def test_unknown_child_inputs_cannot_be_silently_hidden(monkeypatch, purpo
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("purpose", ["subtask", "module-review", "custom-domain-expert", "test-audit"])
+@pytest.mark.parametrize(
+    "purpose",
+    ["subtask", "module-review", "custom-domain-expert", "test-audit", "redundancy-review", "convention-review"],
+)
 async def test_questions_and_pinned_assignments_are_visible_under_a_fixed_role(scoped_parent, purpose):
     plugin, parent = scoped_parent
     request = SubtaskRequest(
@@ -138,6 +141,40 @@ async def test_questions_and_pinned_assignments_are_visible_under_a_fixed_role(s
     assert prepared.inputs["review_scope"]["files"] == [PATHS[0]]
     assert PATHS[0] not in prepared.developer_instructions
     assert "Parent-only" not in prepared.prompt + prepared.developer_instructions
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("purpose", ["redundancy-review", "convention-review", "test-audit"])
+async def test_maintenance_children_use_kind_routes_without_changing_parent_or_designer(scoped_parent, purpose):
+    plugin, parent = scoped_parent
+    config = NyanpasuConfig(
+        tasks={
+            "defaults": {"execution": {"backend": "codex", "model": "gpt-6.1-sol", "reasoning": "xhigh"}},
+            "kinds": {
+                f"github_reviewer.{role}": {
+                    "execution": {"backend": "codex", "model": "gpt-6-luna", "reasoning": "high"}
+                }
+                for role in ("redundancy-review", "convention-review", "test-audit")
+            },
+        }
+    )
+    plugin.runtime.config = config
+    prepared = await plugin.prepare_subtask(
+        parent,
+        SubtaskRequest(
+            request_key=purpose,
+            purpose=purpose,
+            prompt="Investigate this responsibility against its callers and repository rules",
+            inputs={"review_files": PATHS},
+        ),
+    )
+
+    assert prepared.kind == f"github_reviewer.{purpose}"
+    target = config.resolve_execution(prepared.kind, prepared.execution)
+    assert (target.backend, target.model, target.reasoning) == ("codex", "gpt-6-luna", "high")
+    for kind in ("github_reviewer.review", "github_reviewer.independent-design"):
+        target = config.resolve_execution(kind)
+        assert (target.backend, target.model, target.reasoning) == ("codex", "gpt-6.1-sol", "xhigh")
 
 
 @pytest.mark.anyio
