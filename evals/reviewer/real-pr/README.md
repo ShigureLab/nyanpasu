@@ -26,7 +26,7 @@ uv run python scripts/reviewer_eval.py list-cases --cases "$eval_data/cases.json
 
 ## 2. 运行 reviewer
 
-在仓库根目录运行，需要项目依赖和 Git。缓存和运行输出放在仓库外。公共工具按 `case_id` 下载并校验该案例的全部 reviewer 输入，不需要额外安装案例验证依赖：
+在仓库根目录运行，需要项目依赖、Git，以及支持用户和挂载 namespace 的 Linux `unshare`。缓存和运行输出放在仓库外，且不能位于 `/tmp` 或 `/var/tmp`。公共工具按 `case_id` 下载并校验该案例的全部 reviewer 输入，不需要额外安装案例验证依赖：
 
 ```sh
 eval_data=evals/reviewer/real-pr
@@ -44,7 +44,7 @@ uv run python scripts/reviewer_eval.py prepare-case \
 
 工具只提取该案例的输入文件和中性需求，生成中性提交，并在仓库外冻结本次使用的评测配置。历史评论、讨论和 `expected` 不进入 reviewer 输入。完整案例 ID 保留在评测方的 manifest 中；实验目录宜使用中性名称。新案例或新实验使用新的输出目录。
 
-运行前配置返回的 `home/config.toml`，然后依次执行返回的 `command` 和 `record_command`。例如使用 Codex 时：
+运行前配置返回的 `home/config.toml`，然后依次执行返回的 `command` 和 `record_command`。`command` 通过 `reviewer_eval_isolate.py` 把该 home 的 `temporary/tmp`、`temporary/var-tmp` 分别挂载为私有 `/tmp`、`/var/tmp`；子进程继承挂载，产物保留在原 home。即使模型硬编码同名绝对临时路径，不同组和重复也不会串读。隔离失败时命令直接失败，不降级为共享临时目录。不要绕过返回的命令直接启动 `run-task`。例如使用 Codex 时：
 
 ```toml
 [backends.codex]
@@ -65,13 +65,17 @@ enabled = false
 consolidate = false
 ```
 
-`tasks.defaults.execution` 应与 `--target` 一致，使自动创建的子任务也使用同一模型和推理强度。每个实验使用独立 runtime 和原生后端 home，不复用在线服务状态。只读设置不禁止读取其他目录或访问网络；严格隔离需要独立容器、挂载和网络限制。工具固定并校验输入、指令、runtime 和原生输出摘要，但不替你安装 reviewer 依赖或验证完整 GitHub 发布流程。
+`tasks.defaults.execution` 应与 `--target` 一致；专门角色另按 `tasks.kinds` 显式固定模型、推理强度和预算。每个实验使用独立 runtime 和原生后端 home，不复用在线服务状态。临时路径挂载不限制其他目录或网络，也不保证模型沙箱允许写入 `/var/tmp`；严格输入隔离仍需额外的文件和网络限制。工具固定并校验输入、指令、runtime 和原生输出摘要，但不替你安装 reviewer 依赖或验证完整 GitHub 发布流程。
+
+要评估托管角色的选择、路由、结果冻结和父任务收敛，给 `prepare` 或 `prepare-case` 加 `--managed-instructions <冻结的 instructions 目录>`。返回命令使用 `reviewer_eval_managed.py` 注册正式插件的本地范围准入和子任务准备器；远程 PR 分析、线上事件、CI、Dashboard 和发布仍不可用。两组使用同一适配器，各自冻结完整父/子指令目录，并配置相同的角色路由。执行器等待父任务在子任务完成后续接到终态，再录制最终报告；普通 `run-task` 对照不能代替这条链路的验证。
 
 A/B 对比使用相同案例、模型、预算和环境，在同一实验输出目录准备 `--arm B`。默认使用当前正式指令；只有对照另一份已渲染的指令时才显式提供 `--instructions PATH`。两组会话相互隔离。工具冻结实际使用的指令，并记录正式指令及引用文档的摘要；这些文档变更后需要新实验，不能沿用旧记录。
 
 ## 3. 判分
 
 独立裁判读取匿名 `blind/<sample-id>/report.txt`，对照冻结的 `evaluation.expected`、固定源码和引用证据判分。`expected.kind` 区分 `defect`（发现具体缺陷）、`simplification`（提出能保持契约的精简）和 `retention`（保留有必要的机制、避免错误删除）。`expected.behavior` 给出具体触发条件、正确结果及应拒绝的结论；来源评论本身不等于答案。
+
+`report.txt` 按顺序保留该任务所有父任务轮次的已交付答复，包括等待子任务后的对账与修正；最后一轮仍必须有最终答复。它不包含原生指令、私有推理、其他任务或未经父任务采纳的子任务输出。裁判按后续明确修正确定最终主张，按根因去重，并另记曾交付后撤回的主张及建议范围修正，不能只读取一句结束语。历史冻结记录也可引用其 `native-history.json` 中的父任务交付文本；这不允许把指令或未采纳的子任务候选当作发现，原生全文不进入盲判包。
 
 `criteria` 将该案例的目标判为 `pass`、`fail` 或 `inconclusive`；每项必须绑定 `expected.root_cause`、引用原始报告并提供核验证据。`findings` 另行记录缺陷、有效精简、误报等发现。保留机制和精简案例不应被强行计入缺陷分母。公共工具核验引用、冻结目标和摘要并汇总，语义判断由独立裁判完成。
 

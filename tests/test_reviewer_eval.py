@@ -15,6 +15,7 @@ from pydantic import ValidationError
 import nyanpasu
 from nyanpasu.agent import AgentService
 from nyanpasu.models import AgentTask
+from nyanpasu.store import StateStore
 from nyanpasu.transcript.codex import CodexHistorySource
 from scripts.reviewer_eval import Assessment, Manifest, git, prepare, prepare_case, read_json, record, report
 from tests.test_agent import FakeCodex, _config, fake_backends
@@ -106,6 +107,42 @@ def case(tmp_path):
 
 def stage(case, arm="A", step="initial"):
     return prepare(case["manifest"], case["repo"], case["output"], arm, step, case["guidance"], "codex/test-model:high")
+
+
+def test_managed_replay_exposes_local_admission_and_pins_child_instructions(case, tmp_path):
+    roles = tmp_path / "roles"
+    roles.mkdir()
+    (roles / "investigator.md").write_text("Trace the assigned contract.")
+    prepared = prepare(
+        case["manifest"],
+        case["repo"],
+        case["output"],
+        "A",
+        "initial",
+        case["guidance"],
+        "codex/test-model:high",
+        managed_instructions=roles,
+    )
+    task = read_json(Path(prepared["task_path"]))
+    assert task["kind"] == "github_reviewer.review"
+    assert task["metadata"]["plugin_id"] == "github_reviewer"
+    assert task["metadata"]["pull_request"]["base_sha"] == prepared["synthetic"]["base"]
+    assert task["workspace"]["remote"] == str(Path(prepared["task_path"]).parent / "input")
+    assert "Local review-scope admission" in task["developer_instructions"]
+    assert "reviewer_eval_isolate.py" in prepared["command"]
+    assert "reviewer_eval_managed.py" in prepared["command"]
+    (roles / "investigator.md").write_text("Changed child policy.")
+    with pytest.raises(ValueError, match="new experiment directory"):
+        prepare(
+            case["manifest"],
+            case["repo"],
+            case["output"],
+            "A",
+            "initial",
+            case["guidance"],
+            "codex/test-model:high",
+            managed_instructions=roles,
+        )
 
 
 def test_default_instructions_use_production_builder_and_freeze_actual_guidance(case, monkeypatch):
@@ -203,6 +240,47 @@ def assessment(sample, *, root="retry", first="initial", occurrence="new"):
             }
         ],
     }
+
+
+@pytest.mark.anyio
+async def test_record_retains_parent_deliveries_before_child_reconciliation(case):
+    prepared = stage(case)
+    backend = await execute(prepared, message="Earlier supported finding.")
+    home = Path(prepared["home"])
+    StateStore(home / "state.sqlite3").bind_task_execution(prepared["task_id"], "thread-1", "turn-2")
+    backend.turns.extend(
+        [
+            {
+                "id": "foreign-turn",
+                "items": [
+                    {
+                        "id": "private",
+                        "type": "agentMessage",
+                        "phase": "final_answer",
+                        "text": "OTHER_TASK_PRIVATE_MESSAGE",
+                    }
+                ],
+            },
+            {"id": "turn-2", "items": []},
+        ]
+    )
+    step = Path(prepared["task_path"]).parent
+    with pytest.raises(ValueError, match="native history"):
+        await record(step, [], None, source=CodexHistorySource(backend))
+    backend.turns[-1]["items"].append(
+        {
+            "id": "closing",
+            "type": "agentMessage",
+            "phase": "final_answer",
+            "text": "Child reconciled; the earlier finding is retained.",
+        }
+    )
+    await record(step, [], None, source=CodexHistorySource(backend))
+    text = (step / "artifacts/report.txt").read_text()
+    assert text == "Earlier supported finding.\n\nChild reconciled; the earlier finding is retained."
+    blind = step.parents[2] / "blind" / prepared["sample_id"] / "report.txt"
+    assert blind.read_text() == text
+    assert "OTHER_TASK_PRIVATE_MESSAGE" not in text
 
 
 def test_input_stage_contains_only_selected_trees_and_historical_context(case):

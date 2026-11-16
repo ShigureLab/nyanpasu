@@ -24841,6 +24841,1028 @@
           "limits": "Evidence is limited to the pinned source and stated trigger"
         }
       }
+    },
+    {
+      "case_id": "relax-678-pre",
+      "evaluation": {
+        "cutoff": "2026-11-14T13:40:54+08:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "Streaming dataset sample retrieval, batching, state and background prefetch. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "simplification",
+          "root_cause": "relax-678-pre-bounded-targets",
+          "targets": [
+            {
+              "behavior": "The non-prefetch batch path repeats the same cache/read/process/cache contract as __getitem__. Propose reuse or a common implementation, preserving filtered None and batch refill.",
+              "kind": "simplification",
+              "root": "streaming-single-read-duplication"
+            },
+            {
+              "behavior": "shuffle and epoch crossing repeat the remaining-index window/reset contract. Propose a common reset entry preserving epoch and position.",
+              "kind": "simplification",
+              "root": "streaming-prefetch-reset-duplication"
+            },
+            {
+              "behavior": "get_next_indices receives min(need,100), so one sample per index cannot fill n before the last index. Inner len(samples)>=n guard can be removed while retaining max_attempts and filtering.",
+              "kind": "simplification",
+              "root": "streaming-unreachable-inner-break"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "439d199c895953f1e04a4d9442c1020cfe2c1d93",
+            "path": "relax/utils/data/streaming_dataset.py",
+            "sha256": "be48f10374ac0e613539c9561b5d29db5da591c6fb25335f86d108db1c182e0a"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "f767de292cc684740c9beda443e5ddd0645c4413",
+            "path": "relax/engine/rollout/data_source.py",
+            "sha256": "14fce44d993596a16be85daa97a3bf4bfb90ef343c80712cfd4d295634fd7f4f"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "1051e758fc90a8ba475094b43806940edc2aaf6f",
+            "path": "relax/utils/data/data.py",
+            "sha256": "d6da9aad20885c60fd8cb25ff0139b2735ddef2663bbc5d9948790e7970b8152"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "708b6400cadf93eea0517c64e6e9c1924b347b87",
+            "path": "relax/utils/data/data_utils.py",
+            "sha256": "cfd26c91bf322fbc848584c124463210954b6c730664df06f6042612e8c9e816"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "bbe8eeb13ffb47d8d38e03fc9914f2e1f109301c",
+            "path": "relax/utils/types.py",
+            "sha256": "5c7b6ee8af4232e3c8ec131ebf51beb30fa47c7a46ace6805a0efbdb7738260f"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "63b3b52e235ee2e0721226153a217951b83642d8",
+            "path": "tests/cpu/utils/data/test_streaming_dataset.py",
+            "sha256": "007c24c2ace869e36696d1f5f48ecf36240ca206854809286fbbc3a8b48e6c56"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "7cb8b4e894276a3fc548f03d45c022cfae108cc6",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-14T13:40:54+08:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: Streaming dataset sample retrieval, batching, state and background prefetch."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/7cb8b4e894276a3fc548f03d45c022cfae108cc6"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "regression",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-678-pre",
+      "timeline": [],
+      "title": "Streaming dataset sample retrieval, batching, state and background prefetch.",
+      "url": "https://github.com/redai-studio/Relax/pull/678"
+    },
+    {
+      "case_id": "relax-689-pre",
+      "evaluation": {
+        "cutoff": "2026-11-16T11:59:03+08:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "Service orchestration, GPU placement and argument normalization. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "simplification",
+          "root_cause": "relax-689-pre-bounded-targets",
+          "targets": [
+            {
+              "behavior": "actor_rollout_pgs receives a teacher-created PG and is later selected/overwritten as the PG passed to services. Separate acquisition from final selection or give an equally concrete responsibility separation, preserving existing layout behavior. Naming alone without the dataflow issue is insufficient.",
+              "kind": "simplification",
+              "root": "teacher-pg-capture-selection-responsibility"
+            },
+            {
+              "behavior": "get_base_gpu_id repeats rank*num_gpus and modulo in both branches; factor the shared arithmetic and conditional actor offset while preserving debug_rollout_only and colocate semantics.",
+              "kind": "simplification",
+              "root": "sglang-base-gpu-duplicated-arithmetic"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "87901a087c8d996ddf5602642fdf689d67957eb2",
+            "path": "relax/core/controller.py",
+            "sha256": "6294294d1b3488c58ccb4db3739c1c581fe2998583c79699c101452d32d96b8a"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "8f229bb922b5054f8638494f13716b7789869d08",
+            "path": "relax/core/service.py",
+            "sha256": "1c2715ecb214dde7a3a0a5c83c1c83a71a8a8775bc5709ec734abba3139a86e2"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "1c049abec113f66c9c3261e3525cf0f37cc6dcea",
+            "path": "relax/core/registry.py",
+            "sha256": "bccaa88202e7ae05d95dcb06bba884007a6c1909f822a721ab99dccd19b97084"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "a18d589126d5ae38ea9125a060ec5162410920eb",
+            "path": "relax/utils/opd/opd_utils.py",
+            "sha256": "bd107c5766e1e3483868192f23d22d2210a757b4859ac149a98cc277b73ea442"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "17b1bfd3a485b10a592599ea19344b131967a7f0",
+            "path": "relax/distributed/ray/teacher_manager.py",
+            "sha256": "93fc112b39eb45e17895e80db063b7485afcafb7696f9665ebe7f8608a08ee62"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "4b767b3189ca675e225d9750ebcbc585f1bde231",
+            "path": "relax/distributed/ray/placement_group.py",
+            "sha256": "7e5c7c12f45a0404d873bba887c9ab877db7f2aab7737a54dceeb69f21dcf760"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "4944369db96eb12b84346d5dcbd20cfe3cef8a49",
+            "path": "relax/backends/sglang/sglang_engine.py",
+            "sha256": "3ccfe0a0bf56d5141aa551bc32560f6481553f1e801c6cdec02fb9825a410a7e"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "95fde5dcefd0fb843bf1eb1e9e356cfb6d36a70a",
+            "path": "relax/backends/sglang/arguments.py",
+            "sha256": "a4b0c96163ea7e09462da74d5fbae47c4eb72808382ef8ac2baf7fa87c7b9df5"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "188be8ca7bd3aa9d00e4424f9783c461f773a09e",
+            "path": "relax/utils/arguments.py",
+            "sha256": "eb27ab03dd8ad854413c7cd105c17d6fcc72dfc1f1197e996f906e4b07210269"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "60c46db718eccab301b3356ddf823cde5e24b63d",
+            "path": "relax/utils/utils.py",
+            "sha256": "8fd5b3575898d5e9ba2b58f3e318671459ca3037a0db61580cfb09c52b661198"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "b79eac771cf5cd9f1dec0de4cba47e26b514252c",
+            "path": "examples/on_policy_distillation/mopd/README.md",
+            "sha256": "a8412dfaa93fd8b0ae8c4c7f18ded7c74ce5ce985e6d052b759ebfb4afe302c0"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "b98918387c096126ba9a4860a3cb62695fd6533c",
+            "path": "tests/cpu/distributed/ray/test_opd_teacher_controller_colocate.py",
+            "sha256": "34d8dae327855fac969080be157db8f6afeb53cd5f9ec2a23a6d78069824c6bf"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "4ad7ca1b22009c641d7801fa5ea6537ff349ccb0",
+            "path": "tests/cpu/utils/test_arguments_opd_teacher_colocate.py",
+            "sha256": "b0477fc184c6a1de474131f7473d235d6ea858d19399276266b904ffc8564216"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "3816c3e5961b9f3645b4f2562f3e8524082878f3",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-16T11:59:03+08:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: Service orchestration, GPU placement and argument normalization."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/3816c3e5961b9f3645b4f2562f3e8524082878f3"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "regression",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-689-pre",
+      "timeline": [],
+      "title": "Service orchestration, GPU placement and argument normalization.",
+      "url": "https://github.com/redai-studio/Relax/pull/689"
+    },
+    {
+      "case_id": "relax-687-pre",
+      "evaluation": {
+        "cutoff": "2026-11-16T05:33:12+00:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "Service orchestration, GPU placement and argument normalization. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "defect",
+          "root_cause": "relax-687-pre-bounded-targets",
+          "targets": [
+            {
+              "behavior": "Combining managed colocated teachers and debug_rollout_only rewrites actor/rollout budgets and disables colocate before teacher validation. Identify the incompatible normalization and startup rejection; either preserve the configured split coherently or explicitly delimit the supported mode at a boundary. Do not require the later exact patch.",
+              "kind": "defect",
+              "root": "rollout-only-teacher-config-rewrite"
+            },
+            {
+              "behavior": "register_all_serve excludes actor in rollout-only; actor_rollout_colocate becomes false and shared_pg None although teacher_pg already reserves the entire pool. Trace the missing PG transfer and extra allocation/deadlock consequence. This is a downstream failure masked by the earlier normalization error; report its conditional reachability honestly.",
+              "kind": "defect",
+              "root": "rollout-only-discards-existing-teacher-pg"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "21c9f7f5f9670c0c43ef90c0803890914f53e298",
+            "path": "relax/core/controller.py",
+            "sha256": "25bacd6d62c52b3745f5360245ceae30bba82469182a34c750a3ee499b949a19"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "8f229bb922b5054f8638494f13716b7789869d08",
+            "path": "relax/core/service.py",
+            "sha256": "1c2715ecb214dde7a3a0a5c83c1c83a71a8a8775bc5709ec734abba3139a86e2"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "1c049abec113f66c9c3261e3525cf0f37cc6dcea",
+            "path": "relax/core/registry.py",
+            "sha256": "bccaa88202e7ae05d95dcb06bba884007a6c1909f822a721ab99dccd19b97084"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "a18d589126d5ae38ea9125a060ec5162410920eb",
+            "path": "relax/utils/opd/opd_utils.py",
+            "sha256": "bd107c5766e1e3483868192f23d22d2210a757b4859ac149a98cc277b73ea442"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "17b1bfd3a485b10a592599ea19344b131967a7f0",
+            "path": "relax/distributed/ray/teacher_manager.py",
+            "sha256": "93fc112b39eb45e17895e80db063b7485afcafb7696f9665ebe7f8608a08ee62"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "4b767b3189ca675e225d9750ebcbc585f1bde231",
+            "path": "relax/distributed/ray/placement_group.py",
+            "sha256": "7e5c7c12f45a0404d873bba887c9ab877db7f2aab7737a54dceeb69f21dcf760"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "d69cd41f7f33b45a2e4e8dfea72cb8313d533eb1",
+            "path": "relax/backends/sglang/sglang_engine.py",
+            "sha256": "861581193791b4ffdc2a0840c82fa3f1a06ba78c43b2cd2a9130ec8c5062099d"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "95fde5dcefd0fb843bf1eb1e9e356cfb6d36a70a",
+            "path": "relax/backends/sglang/arguments.py",
+            "sha256": "a4b0c96163ea7e09462da74d5fbae47c4eb72808382ef8ac2baf7fa87c7b9df5"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "3a484c681fdee61551fb20b417e1412f8b62c79a",
+            "path": "relax/utils/arguments.py",
+            "sha256": "141f167f11743f718e839006d2a70b4f6225e06443b20f50d0281f14465d3b52"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "ea579e653f244a8c8bf3fe823021e4e76ffd6ccc",
+            "path": "relax/utils/utils.py",
+            "sha256": "53508683573f88cbe0c92d0aa4211fea328da3d6b7832b1ed980dde59fcf6f58"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "b79eac771cf5cd9f1dec0de4cba47e26b514252c",
+            "path": "examples/on_policy_distillation/mopd/README.md",
+            "sha256": "a8412dfaa93fd8b0ae8c4c7f18ded7c74ce5ce985e6d052b759ebfb4afe302c0"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "2155dcc094d4adffcedcf9febba3ab5248b27078",
+            "path": "tests/cpu/distributed/ray/test_opd_teacher_controller_colocate.py",
+            "sha256": "1fdf27ed59da52c61d546b08ff5dcb93662ec944040925a1c7458deb26c69a7f"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "916d2fc9ec9f6bcd413c468f11eca863e4757feb",
+            "path": "tests/cpu/utils/test_arguments_opd_teacher_colocate.py",
+            "sha256": "3cb5ecd540f1cc432d55b967297417868c2f6607780dc9c14320a22526c7c008"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-16T05:33:12+00:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: Service orchestration, GPU placement and argument normalization."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/ed7bcbdf805cd75c6cbe3b3436053e41ee5b3808"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "regression",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-687-pre",
+      "timeline": [],
+      "title": "Service orchestration, GPU placement and argument normalization.",
+      "url": "https://github.com/redai-studio/Relax/pull/687"
+    },
+    {
+      "case_id": "relax-676-pre",
+      "evaluation": {
+        "cutoff": "2026-11-11T17:21:40+08:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "Trajectory replay capture and rollout/training metric configuration. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "simplification",
+          "root_cause": "relax-676-pre-bounded-targets",
+          "targets": [
+            {
+              "behavior": "Core training parameters in capture_hooks/metrics are unconditionally declared or normalized before use; supported removal of repeated fallback defaults with parser/caller evidence is useful. Do not generalize to conditionally present opd/profile/checkpoint fields, and preserve None normalization where reachable.",
+              "kind": "simplification",
+              "root": "declared-core-argument-defaults-duplicated"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "fc00793d78e4371694f2b2edffcefc8804193d5a",
+            "path": "relax/utils/replay/capture_hooks.py",
+            "sha256": "093d2e9246108e4a49aed5a123d7caa5eff55e0b22c0c5b8be598029651df9ed"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "b2efb455d86d57b0cf323c4c427e5e00f99f7ca2",
+            "path": "relax/utils/replay/capture.py",
+            "sha256": "b1b7fa7e864e62c7db38a58ed7548d4d9dd6acfb41031978f6e98721544a3da1"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "df7187da541c28955813c94aac6f1ee0a5df0d7f",
+            "path": "relax/utils/replay/schema.py",
+            "sha256": "eb6a3e9fd615249522d927c41ac80d1008d5fba5e715c34cbaa74ede7b33cd4f"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "0c04677e7afd1d3e010009a55fa59655e7f0c020",
+            "path": "relax/utils/replay/identity.py",
+            "sha256": "5c6010f0f37195d2c5de6dad92956caa88a74748b577322ad90e6cd1471bf924"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "96e1f805fe7cd0f36faa35f7bec9e6b8353c1222",
+            "path": "relax/utils/metrics/metric_utils.py",
+            "sha256": "889d7fe7aaa2f0002808a62341350b7dcbea2112637bd5aa1b23b6f933cf1ae1"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "6b2c0f1100e6ef837a59e58bd5c4da62ed17e9b1",
+            "path": "relax/utils/metrics/rollout_metrics.py",
+            "sha256": "6e916a2d34f946e21023f4b62a531c375e77e29fea4a136bd642967d0235ef4d"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "45eae113b9e1605999a8f478a80891726c5e87f8",
+            "path": "relax/utils/arguments.py",
+            "sha256": "3abf37fe8d59aa945b48dc07f1fd169e4d1862a3ba5cb1508a6777cb5b364c48"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "95fde5dcefd0fb843bf1eb1e9e356cfb6d36a70a",
+            "path": "relax/backends/sglang/arguments.py",
+            "sha256": "a4b0c96163ea7e09462da74d5fbae47c4eb72808382ef8ac2baf7fa87c7b9df5"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "5a2db6684f750a6c43499e53726ea1bef90b236f",
+            "path": "relax/distributed/ray/rollout.py",
+            "sha256": "adab9edce1e94e0f9efbf032570608f454844ff96b86fb774f73d66ce6ac9f72"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "7a3989e2de0ba7f3e5b9da24a85d9ef3e3eee217",
+            "path": "relax/backends/megatron/actor.py",
+            "sha256": "5950d0612f6e5b9f6f0fae7b91438a8a0bfad90f189a2576d9b999b4badc0c13"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "8311d07a614b4d03a4dccdce225623f279790af5",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-11T17:21:40+08:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: Trajectory replay capture and rollout/training metric configuration."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/8311d07a614b4d03a4dccdce225623f279790af5"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "holdout",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-676-pre",
+      "timeline": [],
+      "title": "Trajectory replay capture and rollout/training metric configuration.",
+      "url": "https://github.com/redai-studio/Relax/pull/676"
+    },
+    {
+      "case_id": "relax-673-pre",
+      "evaluation": {
+        "cutoff": "2026-11-13T22:39:21+08:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "DeepSeek-V4 model construction and indexer configuration lifecycle. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "defect",
+          "root_cause": "relax-673-pre-bounded-targets",
+          "targets": [
+            {
+              "behavior": "install_indexer_qat tests config.relax_use_indexer_replay during model construction, but fill_indexer_replay sets it later. With native indexer QAT plus rollout replay the unsupported combination bypasses its guard. Propose validating authoritative launch args before model construction; evidence must connect producer, consumer and order.",
+              "kind": "defect",
+              "root": "indexer-replay-guard-before-flag-publication"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "dc8bd563368fd3140391fe2512755bffa91e734c",
+            "path": "relax/models/deepseek_v4/provider.py",
+            "sha256": "9c1ef8a4e91ee516945736091553fe0cd9b84055ab8613faf191575dfd4ae052"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "82957479efe69fef7a178abc111f9d4a54d5bfef",
+            "path": "relax/models/deepseek_v4/indexer.py",
+            "sha256": "a9d96a7e4c2e4c8f45f734e5d3d765e6a9e69104abb8d4fb77cc52ccd320ca2f"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "bca20b953447e1d0cde2ac5332c55b018b71a865",
+            "path": "relax/models/deepseek_v4/qat.py",
+            "sha256": "eb76e7dd9dcd5b80427793e3c1f68e1bc3f6b0b204352fb2c283c9bf3b67aaf5"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "3c6d3dad47bf7ba1bd634113512e71c83f188a1a",
+            "path": "relax/models/deepseek_v4/fp8_weights.py",
+            "sha256": "3123ab83b1a72f051f82e5025229f792e96e838a6afef1f9f6eb99e913e0ab7a"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "147db56b728232b269ed7dbaa0c19f6d4adfee33",
+            "path": "relax/backends/megatron/actor.py",
+            "sha256": "d58f1bf9014614ba62ad51d88ffa11b9c21650a673ffd60a8abea788b9370766"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "dfa8ff3726a9caea9fa0a7fdac934322361a1735",
+            "path": "relax/backends/megatron/model.py",
+            "sha256": "a09a505e9817c5383d00304df1126a6872f71c7834d421a6ef089659c71a7215"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "167a9145163aca1bb9bcfb90fc57b9df5010fe06",
+            "path": "relax/backends/megatron/model_provider.py",
+            "sha256": "7b4c0e2176df6120f393efea9281daebb56d44578a4132da29fdbb168e869fe7"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "2c4f0607060c7791fe5fd2cbfb5d72e1dd8fa2f5",
+            "path": "relax/utils/training/indexer_replay.py",
+            "sha256": "c15936c203ea8877e49f907abfbcf79a40086be7056456f40d2438692b037054"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "1ca86f0115168c761f90a30795db05fc0902ea1c",
+            "path": "relax/utils/env.py",
+            "sha256": "46f8de074d2092ab235e053cb0fab9969ecf73690512a776bb0b41ba632cb170"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "188be8ca7bd3aa9d00e4424f9783c461f773a09e",
+            "path": "relax/utils/arguments.py",
+            "sha256": "eb27ab03dd8ad854413c7cd105c17d6fcc72dfc1f1197e996f906e4b07210269"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "6cc31de20f2149a30f2bf69bc56fdac572aabcff",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-13T22:39:21+08:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: DeepSeek-V4 model construction and indexer configuration lifecycle."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/6cc31de20f2149a30f2bf69bc56fdac572aabcff"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "holdout",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-673-pre",
+      "timeline": [],
+      "title": "DeepSeek-V4 model construction and indexer configuration lifecycle.",
+      "url": "https://github.com/redai-studio/Relax/pull/673"
+    },
+    {
+      "case_id": "relax-671-retention",
+      "evaluation": {
+        "cutoff": "2026-11-13T22:02:36+08:00",
+        "environment": {
+          "dependencies": "Historical Relax with Ray/PyTorch/Megatron/SGLang; full GPU runtime unavailable. Source/AST or narrow CPU harness can establish local contracts.",
+          "language": "Python",
+          "scope": "Rollout generation/evaluation and argument lifecycle. All supplied files are historical, unmodified source; missing modules do not establish a defect."
+        },
+        "expected": {
+          "behavior": "Judge each independently frozen target; case-level pass requires all targets to pass.",
+          "kind": "retention",
+          "root_cause": "relax-671-retention-bounded-targets",
+          "targets": [
+            {
+              "behavior": "Keep optional eval_datasets reading justified by the offline SFT normalization path explicitly deleting the attribute. Silent absence of a deletion proposal is not an explicit retention hit; mark it inconclusive. A blanket direct-attribute proposal that breaks optional callers is harmful. This is a bounded retention control, not a globally defect-free PR.",
+              "kind": "retention",
+              "root": "optional-eval-datasets-read-retained"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "33bbba93a2657ba9b72392ad73aa2768156cb1e6",
+            "path": "AGENTS.md",
+            "sha256": "7f9cea9dbd2cdd2e5af58b0fa5882786ad67e7d055d911e0f9ee306322352616"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "ddb7aa6e2332fd26cf9a363970337d71d181dac9",
+            "path": "pyproject.toml",
+            "sha256": "71a42fee0e83d97070d780091243891e790b01fe860b98b92531a7daac72d36a"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "56bcaf965f92e87bee43a01c615b8ec67ab2aa98",
+            "path": "skills/code-review/SKILL.md",
+            "sha256": "b56d8982d5c7d4171a402a5248b11a816d2bddf4c938ca29bf2a8669f24d4be1"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "cdd9c7a442b12ad7c5fe8d4d023cb1ab8e8d63dc",
+            "path": "relax/engine/rollout/sglang_rollout.py",
+            "sha256": "4fb353642b7e76e30ebf661b70314c4293657ebe4526b0358bd69b0f61debb32"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "45eae113b9e1605999a8f478a80891726c5e87f8",
+            "path": "relax/utils/arguments.py",
+            "sha256": "3abf37fe8d59aa945b48dc07f1fd169e4d1862a3ba5cb1508a6777cb5b364c48"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "95fde5dcefd0fb843bf1eb1e9e356cfb6d36a70a",
+            "path": "relax/backends/sglang/arguments.py",
+            "sha256": "a4b0c96163ea7e09462da74d5fbae47c4eb72808382ef8ac2baf7fa87c7b9df5"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "5a2db6684f750a6c43499e53726ea1bef90b236f",
+            "path": "relax/distributed/ray/rollout.py",
+            "sha256": "adab9edce1e94e0f9efbf032570608f454844ff96b86fb774f73d66ce6ac9f72"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "6b2c0f1100e6ef837a59e58bd5c4da62ed17e9b1",
+            "path": "relax/utils/metrics/rollout_metrics.py",
+            "sha256": "6e916a2d34f946e21023f4b62a531c375e77e29fea4a136bd642967d0235ef4d"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "cb3d193c6fbce07f794de9a766e8250bcb5ab84d",
+            "path": "skills/code-review/references/code-quality-checklist.md",
+            "sha256": "80b7aa051f279a7886b6b11359ed195f9a3896723534605ef31353eac620c75a"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "94b22f6111afc547b77b146a55df43c55fc81161",
+            "path": "skills/code-review/references/development-checklist.md",
+            "sha256": "bfcb6bf0be226edc1a5b0efb5c10726aff1547a72ccdf8df913dceaa2ba34db8"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "b209838ed7ca10c014d2b9fc9eed2d00fa569e75",
+            "path": "skills/code-review/references/python-ml-checklist.md",
+            "sha256": "ba7f15e607a2050be2b33aa314392e6afa4185a73a334e2fe17eda8012611dfa"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "ee1ab1321012dd19428c943cd5e7b4377d18bb30",
+            "path": "skills/code-review/references/removal-plan.md",
+            "sha256": "7240770a93a320643a41c90fdbb7ef3bb08809091739869f674d35b2fb6648d2"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "7a8621384e8de69e6f881bbb0a0c800e3686d870",
+            "path": "skills/code-review/references/security-checklist.md",
+            "sha256": "7b82f5ba7677550cd1015d6210858f3ed46b0f8d9238dd149654830fede39ef7"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "daaf35d69c6418f0fac39aa1e6ea734dd236c773",
+            "path": "skills/code-review/references/solid-checklist.md",
+            "sha256": "872df9a5422907716e76aaf454abe8e03c29b31c818dd397297fa49eabf1fc7d"
+          },
+          {
+            "commit": "d95da74017d525fc4aaaf29fde9587e056807443",
+            "git_blob_sha": "47920e93ba3b67c0b02f3c5c2643d82907ff35a3",
+            "path": "skills/code-review/references/test-quality-checklist.md",
+            "sha256": "f7afa7d49a50ea733c1e73b441a226947945c82fd81d8762caea66df42fcfc02"
+          }
+        ],
+        "kind": "source-snapshot",
+        "requirements": [
+          {
+            "observed_at": "2026-11-13T22:02:36+08:00",
+            "provenance": "evaluator_neutral",
+            "source": "Evaluator-neutral module review request; not a reconstructed original PR description",
+            "text": "Review the supplied historical implementation against its documented behavior and repository contracts. Report actionable findings with locations, evidence, proposed change and limitations. No finding quota. Scope: Rollout generation/evaluation and argument lifecycle."
+          }
+        ]
+      },
+      "evaluator_summary": "Historical source snapshot before the referenced change, except the explicitly declared bounded retention control.",
+      "evidence": [
+        {
+          "claim": "Exact pre-change source hash verified locally; later PR explanations are evaluator-only.",
+          "kind": "locally-inspected-source",
+          "url": "https://github.com/redai-studio/Relax/tree/d95da74017d525fc4aaaf29fde9587e056807443"
+        }
+      ],
+      "original_pr_body_reconstructed": false,
+      "ready_for_blind_full_pr_replay": false,
+      "recommended_split": "holdout-control",
+      "repository": "redai-studio/Relax",
+      "root_cause_group": "relax-671-retention",
+      "timeline": [],
+      "title": "Rollout generation/evaluation and argument lifecycle.",
+      "url": "https://github.com/redai-studio/Relax/pull/671"
     }
   ],
   "timeline_policy": {

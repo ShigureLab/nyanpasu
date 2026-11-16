@@ -112,7 +112,7 @@ class FindingJudgment(FrozenModel):
     verdict: Literal[
         "confirmed_defect", "useful_simplification", "false_positive", "harmful_suggestion", "inconclusive"
     ]
-    artifact: Literal["report.txt"] = "report.txt"
+    artifact: Literal["report.txt", "native-history.json"] = "report.txt"
     quote: Nonempty
     evidence: list[Nonempty] = Field(min_length=1)
     root_cause: str | None = None
@@ -129,7 +129,7 @@ class FindingJudgment(FrozenModel):
 class CriterionJudgment(FrozenModel):
     root_cause: Nonempty
     outcome: Literal["pass", "fail", "inconclusive"]
-    artifact: Literal["report.txt"] = "report.txt"
+    artifact: Literal["report.txt", "native-history.json"] = "report.txt"
     quote: Nonempty
     evidence: list[Nonempty] = Field(min_length=1)
 
@@ -209,7 +209,7 @@ def runtime_identity() -> dict[str, Any]:
     }
 
 
-def review_guidance(step: Step, instructions: Path | None) -> bytes:
+def review_guidance(step: Step, instructions: Path | None, *, managed: bool = False) -> bytes:
     if instructions is None:
         pr = PullRequestRef(
             repo="evaluation/local",
@@ -225,12 +225,19 @@ def review_guidance(step: Step, instructions: Path | None) -> bytes:
         guidance = build_review_instructions(GitHubReviewerConfig(dry_run=True, github_login="reviewer-eval"), pr)
     else:
         guidance = instructions.read_text()
+    operations = (
+        "Local review-scope admission and managed code-review children use the real reviewer plugin hooks. "
+        "Use the injected task-control operations for admission, child creation and result reconciliation. "
+        if managed
+        else "Repository admission and reviewer-plugin task-control operations are unavailable. "
+    )
     return (
         guidance + "\n\nOffline evaluation environment: the PR identity is synthetic. "
         "Apply the review and bounded-testing criteria to the pinned local input and supplied historical context. "
-        "Live GitHub context, labels, CI, publication, dashboards, repository admission and reviewer-plugin "
-        "task-control operations are unavailable and outside this experiment. Do not attempt these operations "
-        "or stop the local review because they are unavailable. Return findings and evidence gaps privately.\n"
+        "Live GitHub context, labels, CI, publication, dashboards and remote PR analyses are unavailable. "
+        + operations
+        + "Do not attempt unavailable operations or stop the local review because they are unavailable. "
+        "Return findings and evidence gaps privately.\n"
     ).encode()
 
 
@@ -274,7 +281,15 @@ def stage_repository(source: Path, destination: Path, step: Step) -> dict[str, s
 
 
 def prepare(
-    manifest_path: Path, source: Path, output: Path, arm: str, step_id: str, instructions: Path | None, target: str
+    manifest_path: Path,
+    source: Path,
+    output: Path,
+    arm: str,
+    step_id: str,
+    instructions: Path | None,
+    target: str,
+    *,
+    managed_instructions: Path | None = None,
 ) -> dict[str, Any]:
     manifest = Manifest.model_validate(read_json(manifest_path))
     source, output = source.resolve(), output.resolve()
@@ -292,7 +307,7 @@ def prepare(
         raise ValueError("pin backend, model and reasoning in the execution target")
     manifest_data = manifest.model_dump(mode="json")
     freeze(output / "manifest.json", json_bytes(manifest_data))
-    guidance = review_guidance(step, instructions)
+    guidance = review_guidance(step, instructions, managed=managed_instructions is not None)
     branch = output / arm
     identity_path = branch / "identity.json"
     identity: dict[str, Any]
@@ -301,6 +316,11 @@ def prepare(
         "instructions_sha256": sha256(guidance),
         "tool_sha256": sha256(Path(__file__).read_bytes()),
         "runtime": runtime_identity(),
+        "managed_instructions_sha256": {
+            path.name: sha256(path.read_bytes()) for path in sorted(managed_instructions.glob("*.md"))
+        }
+        if managed_instructions is not None
+        else None,
     }
     if identity_path.exists():
         identity = read_json(identity_path)
@@ -346,8 +366,13 @@ def prepare(
             )
             + "Use only the supplied historical evidence and staged repository; do not fetch current PR data, "
             "other experiment conditions or evaluator material. Return supported findings and evidence gaps. "
-            "This generic offline task does not provide the GitHub reviewer plugin's admission or publication tools. "
-            "Do not publish externally.\n\nHistorical input:\n" + json.dumps(visible, ensure_ascii=False, indent=2)
+            + (
+                "Local reviewer admission and code-review child tools are available; remote operations are not. "
+                if managed_instructions is not None
+                else "This generic offline task does not provide the GitHub reviewer plugin's admission or publication tools. "
+            )
+            + "Do not publish externally.\n\nHistorical input:\n"
+            + json.dumps(visible, ensure_ascii=False, indent=2)
         )
         task = AgentTask(
             task_id=str(uuid.uuid4()),
@@ -357,8 +382,19 @@ def prepare(
             execution_override=override,
             developer_instructions=guidance.decode(),
             workspace=WorkspaceRef(
-                key=identity["context_key"], local_path=step_dir / "input", revision=commits["head"]
+                key=identity["context_key"],
+                local_path=step_dir / "input",
+                revision=commits["head"],
+                remote=str(step_dir / "input") if managed_instructions is not None else None,
             ),
+            kind="github_reviewer.review" if managed_instructions is not None else "default",
+            metadata={
+                "plugin_id": "github_reviewer",
+                "pull_request": {"head_sha": commits["head"], "base_sha": commits["base"], "base_ref": "base"},
+                "evaluation_instructions": str(managed_instructions.resolve()),
+            }
+            if managed_instructions is not None
+            else {},
         )
         task_data = task.model_dump(mode="json")
         environment = ["env", f"NYANPASU_HOME={home}", f"PYTHONPATH={Path(nyanpasu.__file__).resolve().parent.parent}"]
@@ -379,13 +415,30 @@ def prepare(
             "home": str(home),
             "task_path": str(step_dir / "task.json"),
             "command": shlex.join(
-                [*environment, sys.executable, "-m", "nyanpasu", "run-task", str(step_dir / "task.json")]
+                [
+                    *environment,
+                    sys.executable,
+                    str(Path(__file__).with_name("reviewer_eval_isolate.py").resolve()),
+                    str(home),
+                    "--",
+                    sys.executable,
+                    *(
+                        [str(Path(__file__).with_name("reviewer_eval_managed.py").resolve())]
+                        if managed_instructions is not None
+                        else ["-m", "nyanpasu", "run-task"]
+                    ),
+                    str(step_dir / "task.json"),
+                ]
             ),
             "record_command": shlex.join(
                 [*environment, sys.executable, str(Path(__file__).resolve()), "record", str(step_dir)]
             ),
-            "isolation": "staged input only; filesystem and network are not sandboxed",
-            "lifecycle": "generic run-task; not the complete GitHub reviewer plugin lifecycle",
+            "isolation": "private /tmp and /var/tmp mounts per home via command; other paths/network are not sandboxed",
+            "lifecycle": (
+                "real local admission, managed reviewer roles and parent reconciliation; no live GitHub lifecycle"
+                if managed_instructions is not None
+                else "generic run-task; not the complete GitHub reviewer plugin lifecycle"
+            ),
         }
         (staging / "task.json").write_bytes(json_bytes(task_data))
         (staging / "prepared.json").write_bytes(json_bytes(prepared))
@@ -449,7 +502,15 @@ def list_cases(cases_path: Path, runnable_only: bool = False) -> dict[str, Any]:
 
 
 def prepare_case(
-    cases_path: Path, case_id: str, output: Path, arm: str, instructions: Path | None, target: str, source_cache: Path
+    cases_path: Path,
+    case_id: str,
+    output: Path,
+    arm: str,
+    instructions: Path | None,
+    target: str,
+    source_cache: Path,
+    *,
+    managed_instructions: Path | None = None,
 ) -> dict[str, Any]:
     """Stage one runnable case from the unified real-PR dataset."""
     case = next((case for case in read_json(cases_path)["cases"] if case["case_id"] == case_id), None)
@@ -516,7 +577,16 @@ def prepare_case(
         }
         manifest_path = Path(temporary) / "manifest.json"
         manifest_path.write_bytes(json_bytes(manifest))
-        return prepare(manifest_path, source, output, arm, "snapshot", instructions, target)
+        return prepare(
+            manifest_path,
+            source,
+            output,
+            arm,
+            "snapshot",
+            instructions,
+            target,
+            managed_instructions=managed_instructions,
+        )
 
 
 def runtime_record(prepared: dict[str, Any], expected: AgentTask) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -560,6 +630,11 @@ async def record(
     if sha256(task_bytes) != prepared["task_sha256"]:
         raise ValueError("the prepared task changed")
     expected = AgentTask.model_validate_json(task_bytes)
+    if directory := expected.metadata.get("evaluation_instructions"):
+        pinned = read_json(step_dir.parents[1] / "identity.json")["managed_instructions_sha256"]
+        current = {path.name: sha256(path.read_bytes()) for path in sorted(Path(directory).glob("*.md"))}
+        if current != pinned:
+            raise ValueError("managed reviewer instructions changed after preparation")
     row, turns = runtime_record(prepared, expected)
     measurements = Measurement.model_validate(read_json(measurements_path)) if measurements_path else Measurement()
     contents = {}
@@ -581,11 +656,16 @@ async def record(
         final_items = [
             item
             for turn in selected
-            if turn.id == row["turn_id"]
             for item in turn.items
             if item.presentation.kind == "message" and item.presentation.phase == "final_answer"
         ]
-        if history.metadata.id != row["thread_id"] or (row["status"] == "completed" and not final_items):
+        last_turn_finished = any(
+            item.presentation.kind == "message" and item.presentation.phase == "final_answer"
+            for turn in selected
+            if turn.id == row["turn_id"]
+            for item in turn.items
+        )
+        if history.metadata.id != row["thread_id"] or (row["status"] == "completed" and not last_turn_finished):
             raise ValueError("native history does not contain the recorded task's final answer")
         contents["report.txt"] = "\n\n".join(
             block.text for item in final_items for block in item.presentation.blocks
@@ -789,6 +869,11 @@ def main() -> None:
     for name in ("manifest", "repo", "output"):
         prepare_parser.add_argument(f"--{name}", type=Path, required=True)
     prepare_parser.add_argument("--instructions", type=Path, help="override production reviewer instructions for A/B")
+    prepare_parser.add_argument(
+        "--managed-instructions",
+        type=Path,
+        help="frozen reviewer role directory; enable local managed admission/children",
+    )
     prepare_parser.add_argument("--arm", choices=("A", "B"), required=True)
     prepare_parser.add_argument("--step", required=True)
     prepare_parser.add_argument("--target", required=True, help="backend/model[:reasoning]")
@@ -796,6 +881,11 @@ def main() -> None:
     for name in ("cases", "output", "source-cache"):
         case_parser.add_argument(f"--{name}", type=Path, required=True)
     case_parser.add_argument("--instructions", type=Path, help="override production reviewer instructions for A/B")
+    case_parser.add_argument(
+        "--managed-instructions",
+        type=Path,
+        help="frozen reviewer role directory; enable local managed admission/children",
+    )
     case_parser.add_argument("--case-id", required=True)
     case_parser.add_argument("--arm", choices=("A", "B"), required=True)
     case_parser.add_argument("--target", required=True, help="backend/model:reasoning")
@@ -811,10 +901,26 @@ def main() -> None:
         if args.command == "list-cases":
             result = list_cases(args.cases, args.runnable)
         elif args.command == "prepare":
-            result = prepare(args.manifest, args.repo, args.output, args.arm, args.step, args.instructions, args.target)
+            result = prepare(
+                args.manifest,
+                args.repo,
+                args.output,
+                args.arm,
+                args.step,
+                args.instructions,
+                args.target,
+                managed_instructions=args.managed_instructions,
+            )
         elif args.command == "prepare-case":
             result = prepare_case(
-                args.cases, args.case_id, args.output, args.arm, args.instructions, args.target, args.source_cache
+                args.cases,
+                args.case_id,
+                args.output,
+                args.arm,
+                args.instructions,
+                args.target,
+                args.source_cache,
+                managed_instructions=args.managed_instructions,
             )
         elif args.command == "record":
             result = anyio.run(record, args.step_dir, args.artifact, args.measurements)
