@@ -51,7 +51,7 @@ assert os.environ['TMPDIR'] == '/tmp'
                 )
             for process in processes:
                 assert process.stdout is not None
-                assert process.stdout.readline().strip() == "ready"
+                assert process.stdout.readline().strip() == "ready", process.communicate(timeout=20)
             for process in processes:
                 output, error = process.communicate("x", timeout=20)
                 assert process.returncode == 0, (output, error)

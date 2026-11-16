@@ -78,6 +78,11 @@ jobs:
         run: |
           just ci-install
 
+      - name: Enable evaluation mount namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare --user --map-root-user --mount --propagation private --fork --kill-child -- true
+
       - name: unit test
         run: |
           just ci-test
