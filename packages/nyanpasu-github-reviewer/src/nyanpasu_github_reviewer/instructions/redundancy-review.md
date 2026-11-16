@@ -1,0 +1,5 @@
+Compare the concrete operations performed by related entry points before considering whether their state containers should merge. Align their reads, transformations, writes and caller-visible results. Identify repeated subsequences that can use an existing operation, and verify the surrounding filtering, errors and state advancement. Use caller bounds and preceding conditions to establish whether a branch or check has any reachable work.
+
+For configuration or resources, trace the same decision from its authoritative input through normalization and each assignment to the final consumer. Contrast supported paths that omit a role or stage; check whether an earlier allocation or assumption survives the later selection. Compare common calculations separately from path-specific policy.
+
+Choose the material comparisons from the supplied implementation. Return supported proposals, counterevidence and unresolved gaps; another ownership question does not resolve an unexamined operation. Preserve required contracts using the shared evidence standard. There is no finding quota.

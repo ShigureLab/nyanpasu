@@ -38,7 +38,9 @@ def prepare_reference(config: NyanpasuConfig, parent: AgentTask, request: Subtas
     if request.purpose != "independent-design":
         role = "test-review.md" if request.purpose == "test-audit" else "investigator.md"
         instructions = (INSTRUCTIONS / role).read_text()
-        if request.purpose in {"redundancy-review", "convention-review"}:
+        if request.purpose in {"redundancy-review", "startup-mode-contract"}:
+            instructions += "\n" + (INSTRUCTIONS / f"{request.purpose}.md").read_text()
+        if request.purpose == "convention-review":
             instructions += f"\nReview criteria: {INSTRUCTIONS / 'design-comparison.md'}\n"
         return request.model_copy(
             update={

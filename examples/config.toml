@@ -64,6 +64,11 @@ backend = "codex"
 model = "gpt-6-luna"
 reasoning = "high"
 
+[tasks.kinds."github_reviewer.startup-mode-contract".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "high"
+
 [tasks.kinds."github_reviewer.convention-review".execution]
 backend = "codex"
 model = "gpt-6-luna"
