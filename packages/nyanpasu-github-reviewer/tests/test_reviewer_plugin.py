@@ -214,11 +214,10 @@ async def test_preparation_uses_review_subject_for_memory_instead_of_dashboard_t
     if topic_source == "ci_trigger_body":
         from nyanpasu_github_reviewer.ci import CISnapshot
 
-        monkeypatch.setattr(
-            importlib.import_module("nyanpasu_github_reviewer.plugin"),
-            "fetch_ci_snapshot",
-            lambda *args: CISnapshot(head_sha="head-b"),
-        )
+        module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+        monkeypatch.setattr(module, "fetch_ci_snapshot", lambda *args: CISnapshot(head_sha="head-b"))
+        monkeypatch.setattr(module, "_has_skip_review_label", lambda *args: False)
+        monkeypatch.setattr(module, "read_review_dashboard", lambda *args: None)
     unrelated = MemorySummary(
         id="a" * 32,
         domain="shared:github:ExampleOrg/ExampleRepo",

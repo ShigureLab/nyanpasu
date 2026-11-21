@@ -148,3 +148,7 @@ class GitHubReviewerConfig(BaseModel):
     @property
     def repo_configs(self) -> dict[str, RepoConfig]:
         return repo_configs_from_settings(self.repos)
+
+    @property
+    def can_publish(self) -> bool:
+        return self.post_reviews and not self.dry_run

@@ -119,7 +119,7 @@ model = "deepseek-v4.1-flash-ali"
 reasoning = "xhigh"
 ```
 
-This requires a `claude` backend with provider credentials that serve the alias. CI-only parent turns retain the regular `github_reviewer.review` execution configuration and session. When ordinary review events and CI events coalesce, the parent performs the ordinary review and handles CI alongside it. Same-PR serialization and root concurrency limits still apply: a long active review may delay its queued CI follow-up. The observer does not reserve a task while CI is pending.
+This requires a `claude` backend with provider credentials that serve the alias. For CI-only follow-ups, the service uses `gh-slate` on its own PATH and the configured GitHub integration to clear recovered failures or reuse existing dashboard evidence. It checks live PR eligibility, the CI snapshot, and the dashboard revision before publishing. New failure instances enter the regular `github_reviewer.review` session for analysis. When ordinary review events and CI events coalesce, the parent performs the ordinary review and handles CI alongside it. Same-PR serialization and root concurrency limits still apply. A long active review may delay its queued CI follow-up.
 
 ## Run
 

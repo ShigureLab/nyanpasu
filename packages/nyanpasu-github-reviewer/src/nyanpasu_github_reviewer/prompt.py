@@ -23,7 +23,7 @@ def review_testing_instructions() -> str:
 
 
 def publication_mode(config: GitHubReviewerConfig) -> str:
-    if config.dry_run or not config.post_reviews:
+    if not config.can_publish:
         return "read-only; do not write to GitHub, including reviews, replies, or the dashboard"
     return "review and dashboard writes allowed when the review policy warrants them"
 

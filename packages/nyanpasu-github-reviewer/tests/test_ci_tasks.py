@@ -81,6 +81,9 @@ def ci_plugin(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(plugin_module, "_fetch_pr", lambda *args: pr)
     monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", lambda *args: snapshot())
+    monkeypatch.setattr(plugin_module, "_has_skip_review_label", Mock(return_value=False))
+    monkeypatch.setattr(plugin_module, "read_review_dashboard", Mock(return_value=None))
+    monkeypatch.setattr(plugin_module, "apply_ci_patch", Mock())
     return plugin, pr
 
 
@@ -117,7 +120,7 @@ async def test_ci_followup_refreshes_current_state_without_building_review_inven
 
     prepared = await plugin.prepare_task(queued, (), context)
 
-    assert prepared.action is TaskAction.RUN
+    assert prepared.action is (TaskAction.RUN if failed else TaskAction.IGNORED)
     assert prepared.context_key == queued.context_key == "github:owner/repo#1"
     assert prepared.kind == "github_reviewer.review"
     assert prepared.execution.model == "review-model"
@@ -126,6 +129,149 @@ async def test_ci_followup_refreshes_current_state_without_building_review_inven
     assert bool(prepared.metadata["ci_snapshot"]["failures"]) is failed
     assert "review_inventory" not in prepared.metadata
     inventory.assert_not_called()
+
+
+def existing_dashboard(observed: CISnapshot, *, status: str = "completed") -> dict:
+    return {
+        "revision": 42,
+        "url": "https://github.com/owner/repo/pull/1#issuecomment-1",
+        "data": {
+            "status": "approved",
+            "source": {"head_sha": HEAD},
+            "ci": {
+                "source": {"head_sha": observed.head_sha},
+                "snapshot_fingerprint": observed.fingerprint,
+                "status": status,
+                "failures": {
+                    failure.id: {
+                        "name": failure.name,
+                        "url": failure.url,
+                        "conclusion": failure.conclusion,
+                        "tested_sha": failure.tested_sha,
+                        "run_id": failure.run_id,
+                        "run_attempt": failure.run_attempt,
+                        "summary": "Existing diagnosis",
+                        "evidence": "Verified job log",
+                        "next_step": "Inspect configuration",
+                    }
+                    for failure in observed.failures
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_recovered_ci_only_removes_ci_field_with_observed_revision(ci_plugin, monkeypatch):
+    plugin, pr = ci_plugin
+    queued = event_task(plugin, pr)
+    recovered = snapshot(NEXT_HEAD, failed=False)
+    current = pr.model_copy(update={"head_sha": NEXT_HEAD})
+    monkeypatch.setattr(plugin_module, "_fetch_pr", Mock(return_value=current))
+    monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", Mock(return_value=recovered))
+    dashboard = existing_dashboard(snapshot())
+    plugin_module.read_review_dashboard.return_value = dashboard
+
+    prepared = await plugin.prepare_task(queued, (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    patch = [{"op": "remove", "path": "/ci"}]
+    preview, publication = plugin_module.apply_ci_patch.call_args_list
+    assert preview.args == publication.args == (plugin.config, current, dashboard["revision"], patch)
+    assert preview.kwargs == {"preview": True}
+    assert not publication.kwargs
+    assert plugin_module.fetch_ci_snapshot.call_count == 2
+    assert plugin_module._has_skip_review_label.call_count == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["completed", "analyzing", "incomplete"])
+async def test_ci_unchanged_failure_instances_finish_without_model_or_write(ci_plugin, status):
+    plugin, pr = ci_plugin
+    plugin_module.read_review_dashboard.return_value = existing_dashboard(snapshot(), status=status)
+
+    prepared = await plugin.prepare_task(event_task(plugin, pr), (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    plugin_module.apply_ci_patch.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_ci_recovery_of_one_job_reuses_remaining_explanation(ci_plugin):
+    plugin, pr = ci_plugin
+    observed = snapshot()
+    prior = observed.model_copy(update={"failures": (*observed.failures, *snapshot(attempt=2).failures)})
+    dashboard = existing_dashboard(prior)
+    plugin_module.read_review_dashboard.return_value = dashboard
+
+    prepared = await plugin.prepare_task(event_task(plugin, pr), (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    current_ci = plugin_module.apply_ci_patch.call_args.args[3][0]
+    assert current_ci["op"] == "replace"
+    assert current_ci["path"] == "/ci"
+    assert current_ci["value"]["snapshot_fingerprint"] == observed.fingerprint
+    failure_id = observed.failures[0].id
+    assert current_ci["value"]["failures"] == {failure_id: dashboard["data"]["ci"]["failures"][failure_id]}
+
+
+@pytest.mark.anyio
+async def test_ci_rerun_requires_new_analysis(ci_plugin, monkeypatch):
+    plugin, pr = ci_plugin
+    plugin_module.read_review_dashboard.return_value = existing_dashboard(snapshot())
+    monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", Mock(return_value=snapshot(attempt=2)))
+
+    prepared = await plugin.prepare_task(event_task(plugin, pr), (), None)
+
+    assert prepared.action is TaskAction.RUN
+    plugin_module.apply_ci_patch.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("change", ["labels", "head", "retry", "closed", "refresh-error"])
+async def test_ci_publication_rechecks_current_eligibility_and_failures(ci_plugin, monkeypatch, change):
+    plugin, pr = ci_plugin
+    plugin_module.read_review_dashboard.return_value = existing_dashboard(snapshot())
+    current = snapshot(failed=False)
+    if change == "labels":
+        plugin_module._has_skip_review_label.side_effect = [False, True]
+    next_snapshot = snapshot(NEXT_HEAD, failed=False) if change == "head" else snapshot(attempt=2)
+    if change not in {"head", "retry"}:
+        next_snapshot = current
+    monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", Mock(side_effect=[current, next_snapshot]))
+    if change == "head":
+        monkeypatch.setattr(
+            plugin_module, "_fetch_pr", Mock(side_effect=[pr, pr.model_copy(update={"head_sha": NEXT_HEAD})])
+        )
+    if change == "closed":
+        monkeypatch.setattr(
+            plugin_module, "_fetch_pr", Mock(side_effect=[pr, pr.model_copy(update={"state": "closed"})])
+        )
+    if change == "refresh-error":
+        plugin_module.fetch_ci_snapshot.side_effect = [current, ValueError("CI refresh failed")]
+
+    queued = event_task(plugin, pr)
+    if change in {"closed", "refresh-error"}:
+        with pytest.raises(ValueError, match="no longer eligible|CI refresh failed"):
+            await plugin.prepare_task(queued, (), None)
+    else:
+        assert (await plugin.prepare_task(queued, (), None)).action is TaskAction.IGNORED
+    assert len(plugin_module.apply_ci_patch.call_args_list) == 1
+    assert plugin_module.apply_ci_patch.call_args.kwargs == {"preview": True}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("config_updates", [{"dry_run": True}, {"post_reviews": False}])
+async def test_ci_recovery_respects_read_only_publication(ci_plugin, monkeypatch, config_updates):
+    plugin, pr = ci_plugin
+    plugin.config = plugin.config.model_copy(update=config_updates)
+    monkeypatch.setattr(plugin_module, "fetch_ci_snapshot", Mock(return_value=snapshot(failed=False)))
+
+    prepared = await plugin.prepare_task(event_task(plugin, pr), (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    plugin_module.read_review_dashboard.assert_not_called()
+    plugin_module.apply_ci_patch.assert_not_called()
 
 
 @pytest.mark.anyio

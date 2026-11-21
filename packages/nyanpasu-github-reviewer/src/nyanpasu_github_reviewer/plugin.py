@@ -22,6 +22,7 @@ from nyanpasu.memory_consolidation import MemoryPolicy
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
+from nyanpasu_github_reviewer.ci_dashboard import apply_ci_patch, read_review_dashboard, reuse_ci_section
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.memory_evidence import fetch_review_feedback
@@ -480,7 +481,60 @@ class GitHubReviewerPlugin:
     async def prepare_task(
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
     ) -> AgentTask:
-        return await asyncio.to_thread(self._prepare_review, task, coalesced, context)
+        prepared = await asyncio.to_thread(self._prepare_review, task, coalesced, context)
+        if prepared.action is TaskAction.RUN and "ci_snapshot" in prepared.metadata:
+            return await self._handle_ci_followup(prepared)
+        return prepared
+
+    async def _handle_ci_followup(self, task: AgentTask) -> AgentTask:
+        assert self.config is not None
+        config = self.config
+        pr = PullRequestRef.model_validate(task.metadata["pull_request"])
+        snapshot = CISnapshot.model_validate(task.metadata["ci_snapshot"])
+
+        def finish(message: str) -> AgentTask:
+            return task.model_copy(update={"action": TaskAction.IGNORED, "prompt": message})
+
+        if await asyncio.to_thread(_has_skip_review_label, config, pr):
+            return finish("CI follow-up skipped because the PR has the nyanpasu: skip-review label.")
+        if not snapshot.failures and not config.can_publish:
+            return finish("No current CI failures. Dashboard publication is read-only.")
+
+        dashboard = await asyncio.to_thread(read_review_dashboard, config, pr)
+        previous = dashboard["data"].get("ci") if dashboard is not None else None
+        if snapshot.failures:
+            ci = reuse_ci_section(snapshot, previous)
+            if ci is None:
+                return task
+            if ci == previous:
+                return finish("Current CI failures already match the dashboard.")
+            patch = [{"op": "replace", "path": "/ci", "value": ci}]
+            message = "Updated the CI dashboard using the existing analysis."
+        else:
+            if previous is None:
+                return finish("No current CI failures or dashboard CI field to clear.")
+            patch = [{"op": "remove", "path": "/ci"}]
+            message = "Cleared the dashboard CI field because there are no current failures."
+        if not config.can_publish:
+            return finish("Dashboard publication is read-only.")
+
+        assert dashboard is not None
+        revision = dashboard["revision"]
+        await asyncio.to_thread(apply_ci_patch, config, pr, revision, patch, preview=True)
+        current_pr, current = await asyncio.to_thread(self._refresh_ci, task)
+        if current.fingerprint != snapshot.fingerprint:
+            return finish("CI changed before the dashboard update.")
+        if await asyncio.to_thread(_has_skip_review_label, config, current_pr):
+            return finish("CI follow-up skipped because the PR has the nyanpasu: skip-review label.")
+
+        publication = asyncio.create_task(asyncio.to_thread(apply_ci_patch, config, current_pr, revision, patch))
+        try:
+            await asyncio.shield(publication)
+        except asyncio.CancelledError:
+            # Join the write before releasing this PR's context lease.
+            await publication
+            raise
+        return finish(f"{message} {dashboard['url']}")
 
     def _prepare_review(
         self, task: AgentTask, coalesced: tuple[AgentTask, ...], context: AgentContext | None
@@ -532,6 +586,7 @@ class GitHubReviewerPlugin:
                     "metadata": metadata,
                 }
             )
+        metadata.pop("ci_snapshot", None)
         metadata["review_inventory"] = build_inventory(
             self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
         )
@@ -672,6 +727,13 @@ def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -
 def _fetch_pr(config: GitHubReviewerConfig, repo: str, pr_number: int) -> PullRequestRef:
     data = gh_json(["api", f"repos/{repo}/pulls/{pr_number}"], env=config.gh_env)
     return PullRequestRef.from_github(repo, data)
+
+
+def _has_skip_review_label(config: GitHubReviewerConfig, pr: PullRequestRef) -> bool:
+    labels = gh_json(["api", f"repos/{pr.repo}/issues/{pr.number}", "--jq", "[.labels[].name]"], env=config.gh_env)
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        raise ValueError(f"GitHub returned invalid labels for {pr.key}")
+    return "nyanpasu: skip-review" in labels
 
 
 def plugin() -> GitHubReviewerPlugin:
