@@ -79,8 +79,13 @@ backend = "codex"
 model = "gpt-6-luna"
 reasoning = "high"
 
-# Experimental Codenip workers use a dedicated lightweight model.
+# Experimental Codenip uses a Sol coordinator and one Luna worker per selected rule and scope.
 [tasks.kinds."github_reviewer.codenip".execution]
+backend = "codex"
+model = "gpt-6.2-sol"
+reasoning = "medium"
+
+[tasks.kinds."github_reviewer.codenip-rule".execution]
 backend = "codex"
 model = "gpt-6-luna"
 reasoning = "low"

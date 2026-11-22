@@ -323,7 +323,12 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
 async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path)
-    config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(execution={"model": "gpt-6-luna", "reasoning": "low"})
+    config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(
+        execution={"model": "gpt-6.2-sol", "reasoning": "medium"}
+    )
+    config.tasks.kinds["github_reviewer.codenip-rule"] = TaskPolicy(
+        execution={"model": "gpt-6-luna", "reasoning": "low"}
+    )
     skill = tmp_path / "skills" / "codenip" / "SKILL.md"
     rule = skill.parent / "rules/reuse-existing-operation/rule.md"
     rule.parent.mkdir(parents=True)
@@ -390,19 +395,39 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert saved.workspace is not None
         assert saved.workspace.revision == inventory["head_sha"]
         assert child["inputs"]["review_scope"]["files"] == ["author-only.txt"]
+        coordinator = await agent.create_subtask(
+            task.task_id,
+            SubtaskRequest(
+                request_key="codenip",
+                purpose="codenip",
+                prompt="Coordinate a rule review of the admitted helper.",
+                inputs={"review_files": ["helper.py"]},
+            ),
+        )
+        assert coordinator.kind == "github_reviewer.codenip"
+        assert coordinator.execution is not None and coordinator.execution.model == "gpt-6.2-sol"
         codenip = SubtaskRequest(
             request_key="codenip-ref001",
-            purpose="codenip",
+            purpose="codenip-rule",
             prompt="Check for a reusable operation in the admitted helper.",
             execution={"model": "other-model"},
             inputs={"review_files": ["helper.py"], "rule": str(rule.relative_to(skill.parent))},
         )
+        with pytest.raises(ValueError, match="requested by the Codenip coordinator"):
+            await agent.create_subtask(task.task_id, codenip)
+        with pytest.raises(ValueError, match="only dispatches Codenip rule workers"):
+            await agent.create_subtask(coordinator.task_id, request)
+        with pytest.raises(ValueError, match="accepted files"):
+            await agent.create_subtask(
+                coordinator.task_id,
+                codenip.model_copy(update={"inputs": {**codenip.inputs, "review_files": ["author-only.txt"]}}),
+            )
         with pytest.raises(ValueError, match="relative rule page"):
             await agent.create_subtask(
-                task.task_id, codenip.model_copy(update={"inputs": {**codenip.inputs, "rule": "../rule.md"}})
+                coordinator.task_id, codenip.model_copy(update={"inputs": {**codenip.inputs, "rule": "../rule.md"}})
             )
-        audit = await agent.create_subtask(task.task_id, codenip)
-        assert audit.kind == "github_reviewer.codenip"
+        audit = await agent.create_subtask(coordinator.task_id, codenip)
+        assert audit.kind == "github_reviewer.codenip-rule" and audit.spawned_by_task_id == coordinator.task_id
         assert audit.execution is not None and (audit.execution.model, audit.execution.reasoning) == (
             "gpt-6-luna",
             "low",
@@ -411,6 +436,8 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert audit.metadata["inputs"]["rule_id"] == "REF001"
         assert audit.metadata["inputs"]["review_scope"]["files"] == ["helper.py"]
         assert "[experimental · REF001]" in audit.developer_instructions
+        with pytest.raises(ValueError, match="workers cannot dispatch"):
+            await agent.create_subtask(audit.task_id, codenip)
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]

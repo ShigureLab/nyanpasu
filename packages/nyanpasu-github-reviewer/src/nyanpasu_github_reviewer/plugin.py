@@ -25,7 +25,7 @@ from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.ci_dashboard import apply_ci_patch, read_review_dashboard, reuse_ci_section
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
-from nyanpasu_github_reviewer.codenip import prepare_codenip
+from nyanpasu_github_reviewer.codenip import CODENIP_PURPOSES, prepare_codenip
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.memory_evidence import fetch_review_feedback
 from nyanpasu_github_reviewer.models import (
@@ -223,6 +223,11 @@ class GitHubReviewerPlugin:
         )
 
     async def prepare_subtask(self, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
+        parent_purpose = parent.metadata.get("purpose")
+        if parent_purpose == "codenip-rule":
+            raise ValueError("Codenip rule workers cannot dispatch subtasks")
+        if parent_purpose == "codenip" and request.purpose != "codenip-rule":
+            raise ValueError("the Codenip coordinator only dispatches Codenip rule workers")
         if request.developer_instructions.strip():
             destination = "inputs.constraints" if request.purpose == "independent-design" else "prompt"
             raise ValueError(
@@ -246,7 +251,7 @@ class GitHubReviewerPlugin:
         if request.purpose != "independent-design":
             fields = {
                 "ci-analysis": ("fingerprint",),
-                "codenip": ("review_files", "rule"),
+                "codenip-rule": ("review_files", "rule"),
             }.get(request.purpose, ("review_files",))
             if extra := request.inputs.keys() - set(fields):
                 raise ValueError(
@@ -349,11 +354,9 @@ class GitHubReviewerPlugin:
         if request.purpose != "independent-design" and request.revision not in {None, inventory["head_sha"]}:
             raise ValueError("deep review must use the inventory head")
         assignment_request = request.model_copy(update={"inputs": inputs})
-        if request.purpose == "codenip":
+        if request.purpose in CODENIP_PURPOSES:
             assert self.config is not None
-            if parent.spawned_by_task_id is not None:
-                raise ValueError("Codenip reviews must be requested by the root reviewer")
-            prepared = prepare_codenip(self.runtime.config, self.config.codenip_skill, assignment_request)
+            prepared = prepare_codenip(self.runtime.config, self.config.codenip_skill, parent, assignment_request)
         else:
             prepared = prepare_reference(self.runtime.config, parent, assignment_request)
         if request.purpose != "independent-design":
