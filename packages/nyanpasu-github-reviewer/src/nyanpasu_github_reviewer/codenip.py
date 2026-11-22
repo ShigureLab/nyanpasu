@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from nyanpasu.models import AgentTask
 
 CODENIP_PURPOSES = {"codenip", "codenip-rule"}
-CODENIP_BATCH_SIZE = 12
+CODENIP_RULE_CONCURRENCY = 32
 
 
 def _rule_index(skill: Path) -> dict[str, dict[str, str]]:
@@ -65,10 +65,9 @@ def prepare_codenip(
             raise ValueError("inputs.pr_body must be the PR description as text")
         inputs = {"codenip_rules": _rule_index(skill), "pr_body": pr_body}
         instructions = (
-            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to admit workers for every rule "
-            "in the frozen index. Workers decide applicability. Await all returned active_task_ids, then call "
-            "`codenip-dispatch` again until remaining is zero and active_task_ids is empty. Reconcile delivered "
-            "results, use inspect for missing evidence, and report verdict counts and rule IDs for gaps and findings. "
+            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to queue every rule in the frozen "
+            "index. Await all returned active_task_ids. Workers decide applicability. Reconcile delivered results, "
+            "use inspect for missing evidence, and report verdict counts and rule IDs for gaps and findings. "
             "Mark each supported suggestion `[experimental · RULE_ID]` with its actual ID. Freeze the aggregate "
             "with task-control `complete`, then end the turn. The root reviewer owns publication."
         )

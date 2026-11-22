@@ -320,7 +320,7 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path, monkeypatch):
+async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path)
     config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(
@@ -329,7 +329,6 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
     config.tasks.kinds["github_reviewer.codenip-rule"] = TaskPolicy(
         execution={"model": "gpt-6-luna", "reasoning": "xhigh"}
     )
-    monkeypatch.setattr(importlib.import_module("nyanpasu_github_reviewer.plugin"), "CODENIP_BATCH_SIZE", 1)
     skill = tmp_path / "skills" / "codenip" / "SKILL.md"
     rule = skill.parent / "rules/reuse-existing-operation/rule.md"
     pr_rule = skill.parent / "rules/check-pr-description/rule.md"
@@ -429,16 +428,16 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             await agent.create_subtask(coordinator.task_id, codenip)
         with pytest.raises(ValueError, match="not available"):
             await agent.control.dispatch(task.task_id, "codenip-dispatch", {})
-        batch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
-        assert batch["total"] == 2 and batch["remaining"] == 1
-        (first_id,) = batch["active_task_ids"]
-        assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == batch
+        dispatch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
+        assert dispatch["total"] == 2 and dispatch["remaining"] == 0
+        first_id, second_id = dispatch["active_task_ids"]
+        assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == dispatch
         assert "PR description + diff" in agent.store.task_request(first_id).prompt
         assert "Behavior is preserved." in agent.store.task_request(first_id).prompt
         await agent.cancel_subtask(first_id)
-        batch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
-        assert batch["total"] == 2 and batch["remaining"] == 0
-        (second_id,) = batch["active_task_ids"]
+        assert (await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}))["active_task_ids"] == [
+            second_id
+        ]
         audit = agent.store.task_request(second_id)
         assert audit.kind == "github_reviewer.codenip-rule" and audit.spawned_by_task_id == coordinator.task_id
         assert audit.execution is not None and (audit.execution.model, audit.execution.reasoning) == (

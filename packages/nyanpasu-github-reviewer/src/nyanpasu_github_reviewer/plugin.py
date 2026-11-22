@@ -25,7 +25,12 @@ from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.ci_dashboard import apply_ci_patch, read_review_dashboard, reuse_ci_section
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
-from nyanpasu_github_reviewer.codenip import CODENIP_BATCH_SIZE, CODENIP_PURPOSES, codenip_rule_request, prepare_codenip
+from nyanpasu_github_reviewer.codenip import (
+    CODENIP_PURPOSES,
+    CODENIP_RULE_CONCURRENCY,
+    codenip_rule_request,
+    prepare_codenip,
+)
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.memory_evidence import fetch_review_feedback
 from nyanpasu_github_reviewer.models import (
@@ -133,6 +138,7 @@ class GitHubReviewerPlugin:
         runtime.add_task_preparer(self.id, self.prepare_task)
         runtime.add_subtask_preparer(self.id, self.prepare_subtask)
         runtime.add_task_control_tools(self.id, self.task_control_tools())
+        runtime.limit_subtask_concurrency("github_reviewer.codenip-rule", CODENIP_RULE_CONCURRENCY)
         # Plugin setup precedes task recovery and polling; reject old unscoped work
         # before any stored child can resume or be returned as an active retry.
         await asyncio.to_thread(self._validate_recovered_subtasks)
@@ -431,8 +437,8 @@ class GitHubReviewerPlugin:
             ),
             ToolSpec(
                 "codenip-dispatch",
-                "Codenip coordinator: admit the next batch of the frozen rule index. "
-                "Await active_task_ids and repeat until remaining is zero and no workers are active.",
+                "Codenip coordinator: queue every rule in the frozen index. Await all returned active_task_ids. "
+                "Repeated calls reuse previously queued workers.",
                 EmptyInput,
                 self.codenip_dispatch_control,
                 lambda task: (
@@ -452,22 +458,21 @@ class GitHubReviewerPlugin:
         store = self.state_store
         rules = task.metadata["inputs"]["codenip_rules"]
 
-        def progress() -> tuple[list[str], list[str]]:
-            workers = store.subtasks(task.task_id)
-            started = {store.task_request(child.task_id).metadata["inputs"]["rule_id"] for child in workers}
-            active = [
-                child.task_id
-                for child in workers
-                if child.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING}
-            ]
-            return sorted(rules.keys() - started), active
+        def queued_rules() -> set[str]:
+            return {
+                store.task_request(child.task_id).metadata["inputs"]["rule_id"]
+                for child in store.subtasks(task.task_id)
+            }
 
-        remaining, active = await asyncio.to_thread(progress)
-        if remaining and not active:
-            for identity in remaining[:CODENIP_BATCH_SIZE]:
-                await self.runtime.create_subtask(task.task_id, codenip_rule_request(task, identity))
-            remaining, active = await asyncio.to_thread(progress)
-        return {"total": len(rules), "remaining": len(remaining), "active_task_ids": active}
+        for identity in sorted(rules.keys() - await asyncio.to_thread(queued_rules)):
+            await self.runtime.create_subtask(task.task_id, codenip_rule_request(task, identity))
+        workers = await asyncio.to_thread(store.subtasks, task.task_id)
+        active = [
+            child.task_id
+            for child in workers
+            if child.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING}
+        ]
+        return {"total": len(rules), "remaining": 0, "active_task_ids": active}
 
     async def review_scope_control(self, task: AgentTask, request: ReviewScopeInput) -> dict:
         return await asyncio.to_thread(self._scope_control, task, request.root.model_dump())

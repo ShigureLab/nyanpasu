@@ -45,6 +45,9 @@ class FakeAgent:
     def add_subtask_preparer(self, plugin_id, preparer) -> None:
         pass
 
+    def limit_subtask_concurrency(self, kind, limit) -> None:
+        pass
+
     def add_task_preparer(self, plugin_id, preparer) -> None:
         self.preparer = preparer
 

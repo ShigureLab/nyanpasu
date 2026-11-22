@@ -65,6 +65,52 @@ async def test_children_run_while_parent_runs_and_waits_without_admitting_anothe
 
 
 @pytest.mark.anyio
+async def test_limited_subtask_kind_refills_a_slot_across_roots(tmp_path):
+    config = _config(tmp_path, concurrency=2)
+    parents = {name: asyncio.Event() for name in ("parent-one", "parent-two")}
+    started = {name: asyncio.Event() for name in ("fast", "slow", "next")}
+    release = {name: asyncio.Event() for name in started}
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            prompt = kwargs["prompt"]
+            if prompt in parents:
+                parents[prompt].set()
+                await asyncio.Event().wait()
+            else:
+                started[prompt].set()
+                await release[prompt].wait()
+            return result
+
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
+    )
+    kind = "limited-worker"
+    agent.limit_subtask_concurrency(kind, 2)
+    try:
+        for name in parents:
+            await agent.submit(_task(name, context_key=name).model_copy(update={"prompt": name}))
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in parents.values())), 15)
+        fast = await agent.create_subtask("parent-one", SubtaskRequest(request_key="fast", prompt="fast", kind=kind))
+        slow = await agent.create_subtask("parent-two", SubtaskRequest(request_key="slow", prompt="slow", kind=kind))
+        await asyncio.wait_for(asyncio.gather(started["fast"].wait(), started["slow"].wait()), 15)
+        refill = await agent.create_subtask("parent-two", SubtaskRequest(request_key="next", prompt="next", kind=kind))
+        assert agent.store.task_status(refill.task_id) == "queued"
+        assert not started["next"].is_set()
+
+        release["fast"].set()
+        await asyncio.wait_for(started["next"].wait(), 15)
+        assert agent.store.task_status(slow.task_id) == "running"
+        release["slow"].set()
+        release["next"].set()
+        for child in (fast, slow, refill):
+            await wait_status(agent, child.task_id, "completed")
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("cancel_first", [False, True])
 async def test_cleanup_stops_child_before_removing_its_workspace(tmp_path, cancel_first):
     from nyanpasu.models import TaskAction

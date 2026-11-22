@@ -106,6 +106,7 @@ class AgentService:
         self.memory = MemoryService(config.state_dir / "memory")
         self.control = TaskControl(self)
         self._semaphore = asyncio.Semaphore(config.runtime.concurrency)
+        self._subtask_limits: dict[str, asyncio.Semaphore] = {}
         self._context_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._runners: dict[str, asyncio.Task[None]] = {}
@@ -297,6 +298,11 @@ class AgentService:
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
         self._subtask_preparers[plugin_id] = preparer
 
+    def limit_subtask_concurrency(self, kind: str, limit: int) -> None:
+        if limit < 1 or kind in self._subtask_limits:
+            raise ValueError(f"subtask concurrency for {kind} must be positive and registered once")
+        self._subtask_limits[kind] = asyncio.Semaphore(limit)
+
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
         self.control.register(plugin_id, tools)
 
@@ -400,11 +406,11 @@ class AgentService:
                     await to_thread.run_sync(self.store.resume_subtasks, task.task_id)
                     record = await to_thread.run_sync(self.store.task_run, task.task_id)
                 task = await to_thread.run_sync(self.store.task_request, task.task_id)
-                result = (
-                    await self._complete_ignored_task(task)
-                    if task.action is TaskAction.IGNORED
-                    else await self._run_context_task(task, record)
-                )
+                if task.action is TaskAction.IGNORED:
+                    return await self._complete_ignored_task(task)
+                limit = self._subtask_limits.get(task.kind) if task.spawned_by_task_id is not None else None
+                async with limit or contextlib.nullcontext():
+                    result = await self._run_context_task(task, record)
                 if result is None or result.status is not TaskStatus.WAITING:
                     return result
         except (asyncio.CancelledError, Exception) as exc:

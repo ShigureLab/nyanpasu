@@ -49,6 +49,8 @@ class AgentBackend(Protocol):
 
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None: ...
 
+    def limit_subtask_concurrency(self, kind: str, limit: int) -> None: ...
+
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None: ...
 
     def add_memory_policy(self, plugin_id: str, task_kind: str, policy: MemoryPolicy) -> None: ...
@@ -87,6 +89,9 @@ class WebPluginRuntime:
 
     def add_subtask_preparer(self, plugin_id: str, preparer: SubtaskPreparer) -> None:
         self.agent.add_subtask_preparer(plugin_id, preparer)
+
+    def limit_subtask_concurrency(self, kind: str, limit: int) -> None:
+        self.agent.limit_subtask_concurrency(kind, limit)
 
     def add_task_control_tools(self, plugin_id: str, tools: tuple[ToolSpec[Any], ...]) -> None:
         self.agent.add_task_control_tools(plugin_id, tools)
