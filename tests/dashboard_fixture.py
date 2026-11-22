@@ -27,12 +27,21 @@ def fixture_app():
     from nyanpasu.web import create_app
 
     token = os.getenv("NYANPASU_TEST_TOKEN")
+    state_dir = Path(os.environ["NYANPASU_HOME"])
     config = NyanpasuConfig(
-        state_dir=Path(os.environ["NYANPASU_HOME"]),
+        state_dir=state_dir,
         server=ServerConfig(token=SecretStr(token) if token else None),
         backends={
-            "codex": {"driver": "codex", "defaults": {"model": "configured-review-model", "reasoning": "high"}},
-            "claude": {"driver": "claude-code", "defaults": {"model": "configured-small-model", "reasoning": "low"}},
+            "codex": {
+                "driver": "codex",
+                "defaults": {"model": "configured-review-model", "reasoning": "high"},
+                "process": {"env": {"CODEX_HOME": str(state_dir / "codex")}},
+            },
+            "claude": {
+                "driver": "claude-code",
+                "defaults": {"model": "configured-small-model", "reasoning": "low"},
+                "process": {"env": {"CLAUDE_CONFIG_DIR": str(state_dir / "claude")}},
+            },
         },
         tasks={
             "kinds": {

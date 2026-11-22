@@ -1127,6 +1127,141 @@ dd code {
 .runtime-section > .subtle {
   font-size: 12px;
 }
+.runtime-usage {
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.runtime-usage-heading,
+.runtime-usage-toolbar,
+.runtime-usage-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 16px;
+}
+.runtime-usage-heading h2 {
+  margin: 0;
+}
+.runtime-usage-toolbar,
+.runtime-usage-footer {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.runtime-usage-footer:empty {
+  display: none;
+}
+.runtime-usage-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--subtle-surface);
+}
+.runtime-usage-switch button {
+  min-width: 44px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.runtime-usage-switch button:hover {
+  color: var(--accent);
+}
+.runtime-usage-switch button[aria-pressed='true'] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 650;
+}
+.runtime-usage-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+  overflow: hidden;
+}
+.runtime-usage-metrics > div {
+  min-width: 0;
+  padding: 12px 16px;
+  background: var(--surface);
+}
+.runtime-usage-metrics dt,
+.runtime-usage-metrics dd {
+  color: var(--muted);
+  font-size: 12px;
+}
+.runtime-usage-metrics dd {
+  margin: 0;
+}
+.runtime-usage-metrics .runtime-usage-value {
+  color: var(--text);
+  font-size: 25px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.runtime-usage-metrics meter {
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin-top: 7px;
+  accent-color: var(--accent);
+}
+.runtime-usage-table {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+.runtime-usage-details h3 {
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+.runtime-usage-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 8px 0 12px;
+}
+.runtime-usage-tokens dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.runtime-usage-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.runtime-usage-table th,
+.runtime-usage-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+.runtime-usage-table tbody th {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.runtime-usage-table th:first-child {
+  text-align: left;
+}
+.runtime-usage-table th small {
+  margin-left: 8px;
+  color: var(--muted);
+}
 .runtime-backend-list {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1273,31 +1408,6 @@ dd code {
   margin: 8px 0 0;
   max-width: 90ch;
 }
-.runtime-workload {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 28px;
-}
-.runtime-workload .execution-summary {
-  overflow-wrap: anywhere;
-}
-.runtime-workload .execution-activity button {
-  flex-wrap: wrap;
-  text-align: left;
-  overflow-wrap: anywhere;
-  max-width: 100%;
-}
-.runtime-leases-heading {
-  margin: 24px 0 8px;
-  font-size: 13px;
-}
-.runtime-workload .task-row {
-  flex-wrap: wrap;
-}
-.runtime-workload .task-row > code {
-  flex: 1 1 100%;
-  overflow-wrap: anywhere;
-}
 .runtime-view .diagnostics-heading {
   margin-top: 0;
   gap: 12px;
@@ -1313,13 +1423,16 @@ dd code {
   max-width: 100%;
   font-size: 12px;
 }
-@media (max-width: 900px) {
-  .runtime-workload {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-}
 @media (max-width: 780px) {
+  .runtime-usage {
+    padding-inline: 12px;
+  }
+  .runtime-usage-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .runtime-usage-metrics > div:first-child {
+    grid-column: 1 / -1;
+  }
   .runtime-overview > div {
     padding-inline: 12px;
   }
@@ -1703,18 +1816,6 @@ dd code {
 }
 .execution-policies .execution-summary {
   display: inline;
-}
-.execution-activity {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 16px 0;
-}
-.execution-activity button {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 12px;
 }
 .memory-view {
   max-width: 1560px;

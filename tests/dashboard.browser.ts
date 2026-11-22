@@ -663,6 +663,124 @@ test('session metadata, task dates and structured backend diagnostics are visibl
   await expect(page.locator('.diagnostic pre')).toHaveCount(0);
 });
 
+test.describe('model usage with a Chinese browser locale', () => {
+  test.use({ locale: 'zh-CN' });
+  test('runtime switches usage periods and grouping independently', async ({ page }) => {
+    const usage = {
+      calls: 5,
+      cached_calls: 2,
+      input_tokens: 800,
+      cached_input_tokens: 600,
+      cache_write_tokens: 40,
+      output_tokens: 50,
+      cost_usd: 0.0012,
+      priced_calls: 4,
+    };
+    const session = {
+      ...usage,
+      backend: 'codex',
+      context_key: 'demo:transcript',
+      thread_id: 'fixture-thread',
+      session_id: 'fixture-thread',
+    };
+    const day = {
+      ...usage,
+      by_agent: [{ ...usage, agent: 'today-agent' }],
+      by_model: [
+        { ...usage, model: 'today-model', backend: 'codex' },
+        { ...usage, model: 'unpriced-model', backend: 'claude', cost_usd: null, priced_calls: 0 },
+      ],
+      top_sessions: [{ ...session, context_key: 'demo:today' }],
+    };
+    const week = {
+      ...usage,
+      calls: 10,
+      by_agent: [{ ...usage, agent: 'week-agent' }],
+      by_model: [{ ...usage, model: 'week-model', backend: 'codex' }],
+      top_sessions: [{ ...session, context_key: 'demo:week' }],
+    };
+    const month = {
+      ...usage,
+      calls: 20,
+      input_tokens: 12000,
+      cached_input_tokens: 6000,
+      cost_usd: 12.34,
+      priced_calls: 18,
+      by_agent: [{ ...usage, agent: 'month-agent' }],
+      by_model: [{ ...usage, model: 'month-model', backend: 'codex' }],
+      top_sessions: [session],
+    };
+    let requests = 0;
+    await page.route('**/api/model-usage', (route) => {
+      requests++;
+      return route.fulfill({
+        json: {
+          periods: { last_24h: day, last_7d: week, last_30d: month, all_time: usage },
+          latest_at: 1789344200,
+          unavailable_sessions: 0,
+        },
+      });
+    });
+    await page.goto('/dashboard?view=runtime');
+    const panel = page.getByRole('region', { name: 'Model usage' });
+    const range = panel.getByRole('group', { name: 'Usage time range' });
+    const group = panel.getByRole('group', { name: 'Group usage by' });
+    const metrics = panel.locator('.runtime-usage-metrics');
+    const calls = metrics.locator('div').filter({ hasText: 'Model calls' });
+    const table = (dimension: string) =>
+      panel.getByRole('table', { name: `Usage by ${dimension}`, exact: true });
+    await expect(range.getByRole('button', { name: '24h' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(group.getByRole('button', { name: 'Agents' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(table('agent')).toContainText('today-agent');
+    await expect(table('agent')).toContainText('$0.0012');
+    await expect(metrics.getByTitle('4 of 5 calls priced')).toHaveText('$0.0012*');
+    await expect(panel.getByLabel('Token cache hit rate')).toHaveAttribute('value', '0.75');
+    await expect(metrics).toContainText('160 uncached');
+    await panel.getByText('Token details').click();
+    await expect(table('period')).toContainText('All recorded time');
+    await expect(panel.locator('.runtime-usage-tokens')).toContainText('40%');
+    await panel.getByText('Token details').click();
+
+    await group.getByRole('button', { name: 'Models' }).click();
+    await expect(table('model')).toContainText('today-model');
+    await expect(
+      table('model')
+        .getByRole('row')
+        .filter({ hasText: 'unpriced-model' })
+        .getByTitle('No matching API rates'),
+    ).toHaveText('—');
+    await range.getByRole('button', { name: '7d' }).click();
+    await expect(table('model')).toContainText('week-model');
+    await expect(calls.getByTitle('10', { exact: true })).toBeVisible();
+    await group.getByRole('button', { name: 'Sessions' }).click();
+    await expect(range.getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(table('session')).toContainText('demo:week');
+    await range.getByRole('button', { name: '30d' }).click();
+    await expect(range.getByRole('button', { name: '30d' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(calls.getByTitle('20', { exact: true })).toBeVisible();
+    await expect(metrics.getByText('12K', { exact: true })).toBeVisible();
+    await expect(metrics.getByTitle('18 of 20 calls priced')).toHaveText('$12.34*');
+    await expect(panel.getByLabel('Token cache hit rate')).toHaveAttribute('value', '0.5');
+    await expect(table('session')).toContainText('demo:transcript');
+    await group.getByRole('button', { name: 'Agents' }).click();
+    await expect(table('agent')).toContainText('month-agent');
+    await group.getByRole('button', { name: 'Sessions' }).click();
+    expect(requests).toBe(1);
+    await panel.getByRole('link', { name: 'demo:transcript' }).click();
+    await expect(page).toHaveURL(/view=sessions&session=fixture-thread/);
+    await expect(page.getByRole('tab', { name: 'Conversation', exact: true })).toBeVisible();
+  });
+});
+
 test('runtime shows all backend process resources and refreshes sampled CPU', async ({ page }) => {
   let sampled = false;
   await page.route('**/api/runtime', async (route) => {
@@ -975,11 +1093,10 @@ test('mixed execution targets are inspectable without inventing native model met
   await page.getByRole('button', { name: 'Runtime', exact: true }).click();
   await expect(page.getByRole('article', { name: 'Backend codex' })).toBeVisible();
   await expect(page.getByRole('article', { name: 'Backend claude' })).toBeVisible();
-  await page
-    .locator('.execution-activity button')
-    .filter({ hasText: 'memory_consolidation' })
-    .click();
-  await expect(page.getByLabel('Task backend')).toHaveValue('claude');
-  await expect(page.getByLabel('Task kind')).toHaveValue('memory_consolidation');
+  await expect(page.getByRole('heading', { name: 'Task activity' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Execution policies' })).toBeVisible();
+  await page.getByRole('button', { name: 'Tasks', exact: true }).click();
+  await page.getByLabel('Task backend').selectOption('claude');
+  await page.getByLabel('Task kind').selectOption('memory_consolidation');
   await expect(page.locator('.task-list .task-row')).toHaveCount(1);
 });

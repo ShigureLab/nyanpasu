@@ -18,6 +18,7 @@ export interface TranscriptContract {
   memory: MemoryPage;
   memory_source: MemorySource;
   memory_injections: MemoryInjectionPage;
+  model_usage: ModelUsageSnapshot;
   [k: string]: unknown;
 }
 export interface SessionPage {
@@ -411,5 +412,85 @@ export interface MemoryInjectionSelection {
   id: string;
   revision: string;
   reason: string;
+  [k: string]: unknown;
+}
+export interface ModelUsageSnapshot {
+  periods: ModelUsagePeriods;
+  latest_at: number | null;
+  unavailable_sessions: number;
+  by_model: ModelUsageByModel[];
+  top_sessions: ModelUsageBySession[];
+  [k: string]: unknown;
+}
+export interface ModelUsagePeriods {
+  last_24h: ModelUsageWindow;
+  last_7d: ModelUsageWindow;
+  last_30d: ModelUsageWindow;
+  all_time: ModelUsageTotals;
+  [k: string]: unknown;
+}
+export interface ModelUsageWindow {
+  calls: number;
+  cached_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  priced_calls: number;
+  by_agent: ModelUsageByAgent[];
+  by_model: ModelUsageByModel[];
+  top_sessions: ModelUsageBySession[];
+  [k: string]: unknown;
+}
+export interface ModelUsageByAgent {
+  calls: number;
+  cached_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  priced_calls: number;
+  agent: string | null;
+  [k: string]: unknown;
+}
+export interface ModelUsageByModel {
+  calls: number;
+  cached_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  priced_calls: number;
+  backend: string;
+  model: string | null;
+  [k: string]: unknown;
+}
+export interface ModelUsageBySession {
+  calls: number;
+  cached_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  priced_calls: number;
+  backend: string;
+  context_key: string;
+  thread_id: string;
+  session_id: string | null;
+  [k: string]: unknown;
+}
+export interface ModelUsageTotals {
+  calls: number;
+  cached_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  priced_calls: number;
   [k: string]: unknown;
 }

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from nyanpasu.config import CodexBackendConfig
 from nyanpasu.diagnostics import diagnostic
-from nyanpasu.environment import process_env
+from nyanpasu.environment import codex_home, process_env
 from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
 from nyanpasu.safe_files import open_regular_file
@@ -54,7 +54,7 @@ class CodexAppServerBackend:
             raise ValueError(f"backend {name} is not a Codex backend")
         self.config = configured
         self._env = MappingProxyType(safe_codex_env(config, name))
-        self.native_home = Path(self._env.get("CODEX_HOME") or Path(self._env.get("HOME", str(Path.home()))) / ".codex")
+        self.native_home = codex_home(self._env)
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1

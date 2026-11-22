@@ -16,6 +16,7 @@ import { Time } from './Time';
 import { useSessions } from './useSessions';
 import { ExecutionDetails, ExecutionSummary } from './Execution';
 import { MemoryView } from './Memory';
+import { ModelUsage } from './ModelUsage';
 
 interface Overview {
   service: string;
@@ -297,14 +298,7 @@ export function App({ onSignOut }: { onSignOut?: () => void }) {
           />
         )}
         {view === 'plugins' && <Plugins navigate={navigate} live={live} refresh={refresh} />}
-        {view === 'runtime' && (
-          <RuntimeView
-            navigate={navigate}
-            live={live}
-            refresh={refresh}
-            executions={overview.data?.executions ?? []}
-          />
-        )}
+        {view === 'runtime' && <RuntimeView live={live} refresh={refresh} />}
       </main>
     </div>
   );
@@ -708,17 +702,7 @@ function RuntimeBackend({ name, backend }: { name: string; backend: Runtime['bac
   );
 }
 
-function RuntimeView({
-  navigate,
-  live,
-  refresh,
-  executions,
-}: {
-  navigate: Navigate;
-  live: boolean;
-  refresh: number;
-  executions: Overview['executions'];
-}) {
+function RuntimeView({ live, refresh }: { live: boolean; refresh: number }) {
   const data = useResource<Runtime>('/api/runtime', live, refresh);
   const [level, setLevel] = useState('');
   const [diagnosticBackend, setDiagnosticBackend] = useState('');
@@ -732,21 +716,24 @@ function RuntimeView({
       <h1>Runtime</h1>
       {data.error && <p className="notice error">{data.error}</p>}
       {data.data && (
+        <dl className="runtime-overview">
+          <div>
+            <dt>Configured backends</dt>
+            <dd>{Object.keys(data.data.backends).length}</dd>
+          </div>
+          <div>
+            <dt>Root task concurrency</dt>
+            <dd>{data.data.concurrency}</dd>
+          </div>
+          <div>
+            <dt>Context leases</dt>
+            <dd>{data.data.leases.length}</dd>
+          </div>
+        </dl>
+      )}
+      <ModelUsage live={live} refresh={refresh} />
+      {data.data && (
         <>
-          <dl className="runtime-overview">
-            <div>
-              <dt>Configured backends</dt>
-              <dd>{Object.keys(data.data.backends).length}</dd>
-            </div>
-            <div>
-              <dt>Root task concurrency</dt>
-              <dd>{data.data.concurrency}</dd>
-            </div>
-            <div>
-              <dt>Context leases</dt>
-              <dd>{data.data.leases.length}</dd>
-            </div>
-          </dl>
           <section className="runtime-section" aria-labelledby="runtime-backends-heading">
             <h2 id="runtime-backends-heading">Backends</h2>
             <div className="runtime-backend-list">
@@ -773,54 +760,23 @@ function RuntimeView({
               </p>
             </details>
           </section>
-          <div className="runtime-workload">
-            <section className="runtime-section" aria-labelledby="runtime-policies-heading">
-              <h2 id="runtime-policies-heading">Execution policies</h2>
-              <p className="subtle">Defaults for new work. Admitted tasks retain their target.</p>
-              <div className="execution-policies">
-                {Object.entries({
-                  default: data.data.default_execution,
-                  ...data.data.task_kinds,
-                }).map(([kind, target]) => (
-                  <details key={kind}>
-                    <summary>
-                      <ExecutionSummary kind={kind} backend={target.backend} execution={target} />
-                    </summary>
-                    <ExecutionDetails kind={kind} execution={target} />
-                  </details>
-                ))}
-              </div>
-            </section>
-            <section className="runtime-section" aria-labelledby="runtime-activity-heading">
-              <h2 id="runtime-activity-heading">Task activity</h2>
-              <p className="subtle">Subtasks share their root’s slot, including while it waits.</p>
-              <div className="execution-activity">
-                {executions.map((item) => (
-                  <button
-                    key={`${item.backend}:${item.kind}:${item.status}`}
-                    onClick={() =>
-                      navigate({ view: 'tasks', backend: item.backend, kind: item.kind })
-                    }
-                  >
-                    {backendLabel(item.backend)} · {item.kind} <Status state={item.status} />{' '}
-                    {item.count}
-                  </button>
-                ))}
-                {executions.length === 0 && <p className="empty">No recorded tasks.</p>}
-              </div>
-              <h3 className="runtime-leases-heading">Context leases</h3>
-              {data.data.leases.length === 0 && <p className="empty">No context leases.</p>}
-              {data.data.leases.map((lease) => (
-                <div className="task-row" key={lease.context_key}>
-                  <code>{lease.context_key}</code>
-                  <Status state={lease.expires_at * 1000 > Date.now() ? 'active' : 'expired'} />
-                  <button onClick={() => navigate({ view: 'tasks', task: lease.task_id })}>
-                    Open task →
-                  </button>
-                </div>
+          <section className="runtime-section" aria-labelledby="runtime-policies-heading">
+            <h2 id="runtime-policies-heading">Execution policies</h2>
+            <p className="subtle">Defaults for new work. Admitted tasks retain their target.</p>
+            <div className="execution-policies">
+              {Object.entries({
+                default: data.data.default_execution,
+                ...data.data.task_kinds,
+              }).map(([kind, target]) => (
+                <details key={kind}>
+                  <summary>
+                    <ExecutionSummary kind={kind} backend={target.backend} execution={target} />
+                  </summary>
+                  <ExecutionDetails kind={kind} execution={target} />
+                </details>
               ))}
-            </section>
-          </div>
+            </div>
+          </section>
           <section className="runtime-section" aria-labelledby="runtime-diagnostics-heading">
             <div className="diagnostics-heading">
               <h2 id="runtime-diagnostics-heading">Backend diagnostics</h2>

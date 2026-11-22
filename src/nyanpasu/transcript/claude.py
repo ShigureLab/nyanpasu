@@ -3,12 +3,12 @@ from __future__ import annotations
 import difflib
 import io
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import anyio.to_thread as to_thread
 
+from nyanpasu.environment import claude_projects
 from nyanpasu.redaction import redact
 from nyanpasu.safe_files import open_regular_file
 from nyanpasu.transcript.content import content
@@ -17,13 +17,12 @@ from nyanpasu.transcript.models import EntryUpdate
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
 
 class ClaudeHistorySource:
     def __init__(self, env: Mapping[str, str], *, root: Path | None = None):
-        self.projects = (
-            Path(env.get("CLAUDE_CONFIG_DIR", str(Path(env.get("HOME", str(Path.home()))) / ".claude"))) / "projects"
-        )
+        self.projects = claude_projects(env)
         self.root = root or self.projects.parent
 
     async def read_session(self, thread_id: str) -> SessionHistory:

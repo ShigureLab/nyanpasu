@@ -13,6 +13,7 @@ from nyanpasu.presentation import task_execution, task_title
 from nyanpasu.redaction import redact
 from nyanpasu.transcript.models import (
     ContentPage,
+    ModelUsageSnapshot,
     SearchResults,
     SessionDetail,
     SessionPage,
@@ -25,6 +26,7 @@ from nyanpasu.transcript.models import (
 )
 from nyanpasu.transcript.queries import TASKS, CursorError
 from nyanpasu.transcript.source import SourceUnavailable
+from nyanpasu.transcript.usage import ModelUsageReader
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,6 +43,7 @@ def dashboard_router(
     config: NyanpasuConfig, reader: TranscriptReader, runtime_info: Callable[[], dict[str, Any]]
 ) -> APIRouter:
     router = APIRouter(prefix="/api")
+    usage_reader = ModelUsageReader(config, reader)
 
     @router.get("/overview")
     def overview():
@@ -324,5 +327,9 @@ def dashboard_router(
             "leases": leases,
             "generated_at": time.time(),
         }
+
+    @router.get("/model-usage", response_model=ModelUsageSnapshot)
+    async def model_usage():
+        return await usage_reader.read()
 
     return router

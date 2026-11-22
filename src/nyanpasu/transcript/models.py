@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from nyanpasu.memory import MemorySource, MemorySummary
 from nyanpasu.targets import ExecutionTarget
@@ -357,6 +357,62 @@ class MemoryInjectionPage(ContractModel):
     has_more: bool
 
 
+class ModelUsageTotals(ContractModel):
+    calls: int = 0
+    cached_calls: int = 0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = None
+    priced_calls: int = 0
+
+
+class ModelUsageByAgent(ModelUsageTotals):
+    agent: str | None
+
+
+class ModelUsageByModel(ModelUsageTotals):
+    backend: str
+    model: str | None
+
+
+class ModelUsageBySession(ModelUsageTotals):
+    backend: str
+    context_key: str
+    thread_id: str
+    session_id: str | None
+
+
+class ModelUsageWindow(ModelUsageTotals):
+    by_agent: list[ModelUsageByAgent]
+    by_model: list[ModelUsageByModel]
+    top_sessions: list[ModelUsageBySession]
+
+
+class ModelUsagePeriods(ContractModel):
+    last_24h: ModelUsageWindow
+    last_7d: ModelUsageWindow
+    last_30d: ModelUsageWindow
+    all_time: ModelUsageTotals
+
+
+class ModelUsageSnapshot(ContractModel):
+    periods: ModelUsagePeriods
+    latest_at: float | None
+    unavailable_sessions: int
+
+    @computed_field
+    @property
+    def by_model(self) -> list[ModelUsageByModel]:
+        return self.periods.last_7d.by_model
+
+    @computed_field
+    @property
+    def top_sessions(self) -> list[ModelUsageBySession]:
+        return self.periods.last_24h.top_sessions
+
+
 class TranscriptContract(ContractModel):
     sessions: SessionPage
     session: SessionDetail
@@ -370,3 +426,4 @@ class TranscriptContract(ContractModel):
     memory: MemoryPage
     memory_source: MemorySource
     memory_injections: MemoryInjectionPage
+    model_usage: ModelUsageSnapshot

@@ -71,12 +71,15 @@ BACKEND_ENV = {
 }
 
 
-def process_env(config: ProcessConfig, *, cwd: Path, backend: str) -> dict[str, str]:
+def process_env(config: ProcessConfig, *, cwd: Path, backend: str, only: set[str] | None = None) -> dict[str, str]:
     inherited = dict(os.environ)
     allowed = COMMON_ENV | BACKEND_ENV[backend] | set(config.pass_env)
+    if only is not None:
+        allowed &= only
     env = {key: value for key in allowed if (value := inherited.get(key))}
     for key, source in config.env.items():
-        env[key] = resolve_env_value(source, name=f"{backend}.env.{key}", cwd=cwd, env=inherited)
+        if only is None or key in only:
+            env[key] = resolve_env_value(source, name=f"{backend}.env.{key}", cwd=cwd, env=inherited)
     # The CLI runs in task worktrees; history readers must use the same home.
     for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
         if key in env:
@@ -86,3 +89,11 @@ def process_env(config: ProcessConfig, *, cwd: Path, backend: str) -> dict[str, 
         for key, value in env.items()
         if key not in {"NYANPASU_HOME", "NYANPASU_TOKEN"} and not key.startswith("NYANPASU__")
     }
+
+
+def codex_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("CODEX_HOME") or Path(env.get("HOME", str(Path.home()))) / ".codex")
+
+
+def claude_projects(env: Mapping[str, str]) -> Path:
+    return Path(env.get("CLAUDE_CONFIG_DIR", str(Path(env.get("HOME", str(Path.home()))) / ".claude"))) / "projects"

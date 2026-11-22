@@ -23,13 +23,13 @@ else:
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from typing import TextIO
+    from typing import BinaryIO
 
     from nyanpasu.codex import CodexSessionSource
 
 
 @contextmanager
-def _open_rollout(path: Path, root: Path) -> Generator[TextIO]:
+def open_rollout(path: Path, root: Path) -> Generator[BinaryIO | zstd.ZstdFile]:
     with ExitStack() as stack:
         try:
             raw = stack.enter_context(open_regular_file(root, path.relative_to(root)))
@@ -37,10 +37,7 @@ def _open_rollout(path: Path, root: Path) -> Generator[TextIO]:
             # Codex keeps returning the logical .jsonl path after compressing a cold rollout.
             path = path.with_name(path.name + ".zst")
             raw = stack.enter_context(open_regular_file(root, path.relative_to(root)))
-        stream = (
-            zstd.open(raw, "rt", encoding="utf-8") if path.suffix == ".zst" else io.TextIOWrapper(raw, encoding="utf-8")
-        )
-        yield stack.enter_context(stream)
+        yield stack.enter_context(zstd.open(raw, "rb")) if path.suffix == ".zst" else raw
 
 
 def rollout_annotations(
@@ -57,7 +54,7 @@ def rollout_annotations(
     turn_id = None
     try:
         anchor = root or Path(path).parent
-        with _open_rollout(Path(path), anchor) as rollout:
+        with open_rollout(Path(path), anchor) as raw, io.TextIOWrapper(raw, encoding="utf-8") as rollout:
             for index, line in enumerate(rollout):
                 try:
                     record = json.loads(line)
