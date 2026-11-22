@@ -79,6 +79,12 @@ backend = "codex"
 model = "gpt-6-luna"
 reasoning = "high"
 
+# Experimental Codenip workers use a dedicated lightweight model.
+[tasks.kinds."github_reviewer.codenip".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "low"
+
 # CI analysis is a bounded log-reading child; the parent review model is unchanged.
 # This model alias requires a Claude-compatible provider configured to serve it.
 [tasks.kinds."github_reviewer.ci-analysis".execution]
@@ -145,6 +151,7 @@ git_author_email = "nyanpasu@example.invalid"
 
 [plugins.settings.github_reviewer]
 agent_name = "Nyanpasu"
+# codenip_skill = "/absolute/path/to/skills/codenip/SKILL.md"
 github_login = "your-github-login"
 review_language = "Chinese"
 poll_enabled = true

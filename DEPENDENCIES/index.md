@@ -26,14 +26,15 @@ Package versions and complete transitive dependencies remain authoritative in [p
 
 Skills contain instructions; their command-line tools are separate installations. Install skills in each selected backend’s native skill directory. See [skill installation and discovery](skill-management.md) for discovery and backend differences.
 
-| Skill                                                                        | Required?                                 | Tool prerequisites                       |
-| ---------------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------- |
-| [github-conversation](github-conversation.md)                                | Required by the current reviewer workflow | `gh-llm`, authenticated `gh`             |
-| [gh-slate](gh-slate-skill.md)                                                | Required by the current reviewer workflow | `gh-slate`, authenticated `gh`           |
-| [ast-grep](ast-grep-skill.md)                                                | Optional                                  | `ast-grep` CLI                           |
-| [Skill Installer, Skill Creator, and discovery helpers](skill-management.md) | Optional setup/authoring helpers          | Selected agent; installer-specific tools |
-| [gh-stack skill](gh-stack.md)                                                | Optional for authoring stacks             | `gh stack`                               |
-| [Project-specific skills and MCP integrations](agent-integrations.md)        | Optional                                  | Depends on the project or integration    |
+| Skill                                                                        | Required?                                 | Tool prerequisites                        |
+| ---------------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------- |
+| [github-conversation](github-conversation.md)                                | Required by the current reviewer workflow | `gh-llm`, authenticated `gh`              |
+| [gh-slate](gh-slate-skill.md)                                                | Required by the current reviewer workflow | `gh-slate`, authenticated `gh`            |
+| [ast-grep](ast-grep-skill.md)                                                | Optional                                  | `ast-grep` CLI                            |
+| [Codenip](codenip.md)                                                        | Optional, experimental                    | Repository access and a lightweight model |
+| [Skill Installer, Skill Creator, and discovery helpers](skill-management.md) | Optional setup/authoring helpers          | Selected agent; installer-specific tools  |
+| [gh-stack skill](gh-stack.md)                                                | Optional for authoring stacks             | `gh stack`                                |
+| [Project-specific skills and MCP integrations](agent-integrations.md)        | Optional                                  | Depends on the project or integration     |
 
 Reviewer roles, output rules, and the dashboard profile ship with [nyanpasu-github-reviewer](../packages/nyanpasu-github-reviewer/README.md). `SOUL.md`, `AGENTS.md`, and other configured `instruction_docs` are policy documents, not additional skill packages.
 

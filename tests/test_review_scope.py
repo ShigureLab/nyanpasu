@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 
 from nyanpasu.agent import AgentService
-from nyanpasu.config import PluginsConfig
+from nyanpasu.config import PluginsConfig, TaskPolicy
 from nyanpasu.control_tools import EmptyInput
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
@@ -323,6 +323,12 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
 async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path)
+    config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(execution={"model": "gpt-6-luna", "reasoning": "low"})
+    skill = tmp_path / "skills" / "codenip" / "SKILL.md"
+    rule = skill.parent / "rules/reuse-existing-operation/rule.md"
+    rule.parent.mkdir(parents=True)
+    skill.write_text("Codenip index\n")
+    rule.write_text("---\nid: REF001\n---\n\n# Reuse an existing operation\n")
     inventory = build_inventory(config, task)
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
 
@@ -334,7 +340,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
     agent = AgentService(
         config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
     )
-    plugin = GitHubReviewerPlugin()
+    plugin = GitHubReviewerPlugin(GitHubReviewerConfig(codenip_skill=skill))
     plugin.runtime = Mock(config=config)
     plugin.state_store = agent.store
     agent.add_task_control_tools(plugin.id, plugin.task_control_tools())
@@ -384,6 +390,27 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         assert saved.workspace is not None
         assert saved.workspace.revision == inventory["head_sha"]
         assert child["inputs"]["review_scope"]["files"] == ["author-only.txt"]
+        codenip = SubtaskRequest(
+            request_key="codenip-ref001",
+            purpose="codenip",
+            prompt="Check for a reusable operation in the admitted helper.",
+            execution={"model": "other-model"},
+            inputs={"review_files": ["helper.py"], "rule": str(rule.relative_to(skill.parent))},
+        )
+        with pytest.raises(ValueError, match="relative rule page"):
+            await agent.create_subtask(
+                task.task_id, codenip.model_copy(update={"inputs": {**codenip.inputs, "rule": "../rule.md"}})
+            )
+        audit = await agent.create_subtask(task.task_id, codenip)
+        assert audit.kind == "github_reviewer.codenip"
+        assert audit.execution is not None and (audit.execution.model, audit.execution.reasoning) == (
+            "gpt-6-luna",
+            "low",
+        )
+        assert audit.workspace is not None and audit.workspace.revision == inventory["head_sha"]
+        assert audit.metadata["inputs"]["rule_id"] == "REF001"
+        assert audit.metadata["inputs"]["review_scope"]["files"] == ["helper.py"]
+        assert "[experimental · REF001]" in audit.developer_instructions
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]

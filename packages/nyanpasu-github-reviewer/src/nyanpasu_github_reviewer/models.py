@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from nyanpasu_github.models import (
@@ -138,7 +139,15 @@ class GitHubReviewerConfig(BaseModel):
     dry_run: bool = False
     post_reviews: bool = True
     request_changes_on_findings: bool = True
+    codenip_skill: Path | None = None
     gh_env: dict[str, str] | None = Field(default=None, repr=False)
+
+    @field_validator("codenip_skill")
+    @classmethod
+    def _absolute_codenip_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("codenip_skill must be an absolute path to the installed SKILL.md")
+        return value
 
     @field_validator("auto_collapse_author_logins", mode="before")
     @classmethod

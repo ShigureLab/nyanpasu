@@ -80,6 +80,8 @@ def build_review_prompt(
         f"Review workflow: {INSTRUCTIONS_DIR / 'review-workflow.md'}",
         f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
     ]
+    if config.codenip_skill is not None:
+        lines.append(f"Codenip skill: {config.codenip_skill}")
     if review_delta is not None:
         lines.append(
             "Changes since the last verified review and its open findings (JSON evidence): "
