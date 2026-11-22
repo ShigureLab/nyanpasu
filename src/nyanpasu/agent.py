@@ -19,7 +19,7 @@ import anyio.to_thread as to_thread
 from loguru import logger
 
 from nyanpasu.backends import Backends
-from nyanpasu.codex import CodexTurnError
+from nyanpasu.codex import CodexAppServerBackend, CodexTaskContext, CodexTurnError
 from nyanpasu.git_ops import WorktreeManager
 from nyanpasu.memory import (
     SOURCE_BODY_MAX_CHARS,
@@ -622,25 +622,36 @@ class AgentService:
                 raise asyncio.CancelledError
 
         control_context = contextlib.nullcontext(None) if memory_job else self.control.turn(task.task_id)
-        async with control_context as control:
-            if control is not None:
+        async with control_context as control, self.backends.turn(backend_name) as backend:
+            if memory_job:
+                result = await self._run_memory_job(task, backend, context.session_worktree, on_started)
+            else:
+                assert control is not None
                 memory_context = asdict(control.memory_context)
-                developer_instructions = self._runtime_instructions(task) + control.prompt
-                if execution.driver == "codex":
-                    developer_instructions += "\n\n" + CODEX_WAIT_INSTRUCTIONS
-            async with self.backends.turn(backend_name) as backend:
-                if memory_job:
-                    result = await self._run_memory_job(task, backend, context.session_worktree, on_started)
-                else:
-                    assert control is not None
-                    result = await backend.run_turn(
-                        cwd=context.session_worktree,
-                        prompt=prompt,
-                        developer_instructions=developer_instructions,
-                        thread_id=context.thread_id,
-                        on_started=on_started,
-                        execution=execution,
+                role_instructions = self._runtime_instructions(task)
+                run_turn = backend.run_turn
+                if isinstance(backend, CodexAppServerBackend):
+                    run_turn = functools.partial(
+                        backend.run_turn,
+                        task_context=CodexTaskContext(
+                            task.task_id,
+                            role_instructions + "\n\n" + CODEX_WAIT_INSTRUCTIONS,
+                            control.memory_context.prompt,
+                        ),
                     )
+                    developer_instructions = control.control_prompt
+                else:
+                    developer_instructions = role_instructions + control.prompt
+                    if execution.driver == "codex":
+                        developer_instructions += "\n\n" + CODEX_WAIT_INSTRUCTIONS
+                result = await run_turn(
+                    cwd=context.session_worktree,
+                    prompt=prompt,
+                    developer_instructions=developer_instructions,
+                    thread_id=context.thread_id,
+                    on_started=on_started,
+                    execution=execution,
+                )
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
         context = replace_context(

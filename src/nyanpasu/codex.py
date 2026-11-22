@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
@@ -14,6 +16,7 @@ from nyanpasu.diagnostics import diagnostic
 from nyanpasu.environment import process_env
 from nyanpasu.execution import ExecutionStarted, json_lines, stop_process
 from nyanpasu.models import RunResult
+from nyanpasu.safe_files import open_regular_file
 
 if TYPE_CHECKING:
     from nyanpasu.config import NyanpasuConfig
@@ -21,6 +24,15 @@ if TYPE_CHECKING:
     from nyanpasu.targets import ExecutionTarget
 
 SUBPROCESS_BUFFER_LIMIT = 64 * 1024 * 1024
+CONTEXT_HISTORY_TAIL_BYTES = 4 * 1024 * 1024
+TASK_CONTEXT_PREFIX = "Nyanpasu task context "
+
+
+@dataclass(frozen=True)
+class CodexTaskContext:
+    task_id: str
+    instructions: str
+    memory: str = ""
 
 
 class CodexTurnError(RuntimeError):
@@ -42,6 +54,7 @@ class CodexAppServerBackend:
             raise ValueError(f"backend {name} is not a Codex backend")
         self.config = configured
         self._env = MappingProxyType(safe_codex_env(config, name))
+        self.native_home = Path(self._env.get("CODEX_HOME") or Path(self._env.get("HOME", str(Path.home()))) / ".codex")
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._next_id = 1
@@ -70,6 +83,7 @@ class CodexAppServerBackend:
         developer_instructions: str = "",
         on_started: ExecutionStarted | None = None,
         output_schema: dict[str, Any] | None = None,
+        task_context: CodexTaskContext | None = None,
     ) -> RunResult:
         key: tuple[str, str] | None = None
         try:
@@ -85,26 +99,33 @@ class CodexAppServerBackend:
                 thread_params["threadId"] = thread_id
             if execution.reasoning:
                 thread_params["config"] = {"model_reasoning_effort": execution.reasoning}
-            thread = await self._request("thread/resume" if thread_id else "thread/start", thread_params)
-            active_thread_id = str(thread["thread"]["id"])
+            thread = (await self._request("thread/resume" if thread_id else "thread/start", thread_params))["thread"]
+            active_thread_id = str(thread["id"])
             await self._request("thread/memoryMode/set", {"threadId": active_thread_id, "mode": "disabled"})
             if on_started:
                 await on_started(active_thread_id, None)
+            items = []
+            if task_context is not None:
+                task_digest = hashlib.sha256(task_context.task_id.encode()).hexdigest()
+                task_prefix = f"{TASK_CONTEXT_PREFIX}{task_digest} "
+                sections = {"instructions": f"{task_prefix}instructions\n\n{task_context.instructions}"}
+                if task_context.memory:
+                    sections["memory"] = f"{task_prefix}memory\n\n{task_context.memory}"
+                path = thread.get("path") if thread_id else None
+                retained = (
+                    await asyncio.to_thread(_retained_task_context, self.native_home, Path(path), task_prefix, sections)
+                    if path
+                    else set()
+                )
+                items.extend(_developer_message(text) for section, text in sections.items() if section not in retained)
             if developer_instructions:
-                # Resume restores historical developer messages. Append the current
-                # instructions explicitly; additionalContext truncates long blocks.
+                items.append(_developer_message(developer_instructions))
+            if items:
+                # Additional context truncates long blocks. Inject the current control
+                # and any stable context that the restored history cannot supply.
                 await self._request(
                     "thread/inject_items",
-                    {
-                        "threadId": active_thread_id,
-                        "items": [
-                            {
-                                "type": "message",
-                                "role": "developer",
-                                "content": [{"type": "input_text", "text": developer_instructions}],
-                            }
-                        ],
-                    },
+                    {"threadId": active_thread_id, "items": items},
                 )
             start = asyncio.create_task(
                 self._request(
@@ -458,6 +479,48 @@ class CodexAppServerBackend:
         if self._stderr_task is not None:
             self._stderr_task.cancel()
         self._fail_pending(RuntimeError("codex app-server closed"))
+
+
+def _developer_message(text: str) -> dict[str, Any]:
+    return {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}
+
+
+def _retained_task_context(root: Path, path: Path, task_prefix: str, sections: dict[str, str]) -> set[str]:
+    retained: set[str] = set()
+    seen: set[str] = set()
+    try:
+        with open_regular_file(root, path.relative_to(root)) as rollout:
+            start = max(0, rollout.seek(0, os.SEEK_END) - CONTEXT_HISTORY_TAIL_BYTES)
+            rollout.seek(start)
+            tail = rollout.read(CONTEXT_HISTORY_TAIL_BYTES)
+        lines = tail.splitlines()
+        # The tail can begin inside a record. Older context outside the tail is
+        # also unverified, so send the current context again if needed.
+        for line in reversed(lines[1:] if start else lines):
+            entry = json.loads(line)
+            kind, payload = entry["type"], entry["payload"]
+            if kind == "compacted" or (kind == "event_msg" and payload.get("type") == "thread_rolled_back"):
+                break
+            if kind != "response_item" or payload.get("role") != "developer":
+                continue
+            content = payload.get("content", [])
+            if len(content) != 1 or content[0].get("type") != "input_text":
+                continue
+            text = content[0]["text"]
+            if not text.startswith(TASK_CONTEXT_PREFIX):
+                continue
+            if not text.startswith(task_prefix):
+                break
+            section = text.partition("\n")[0].removeprefix(task_prefix)
+            if section in sections and section not in seen:
+                seen.add(section)
+                if text == sections[section]:
+                    retained.add(section)
+                if len(seen) == len(sections):
+                    break
+    except (OSError, ValueError):
+        return set()
+    return retained
 
 
 def safe_codex_env(config: NyanpasuConfig, name: str = "codex") -> dict[str, str]:

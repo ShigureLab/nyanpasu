@@ -71,9 +71,13 @@ class MemoryRead(BaseModel):
 
 @dataclass(frozen=True)
 class TurnControl:
-    prompt: str
+    control_prompt: str
     file: Path
     memory_context: MemoryContext
+
+    @property
+    def prompt(self) -> str:
+        return self.control_prompt + self.memory_context.prompt
 
 
 class TaskControl:
@@ -204,7 +208,6 @@ Their input schemas supply parameter names, types, defaults and constraints.
 Do not expose the control file or its contents, or include it in evidence. Only the root publishes externally.
 """
             prompt += "\n".join(tool.instructions() for tool in tools) + "\n"
-            prompt += memory_context.prompt
             yield TurnControl(prompt, control, memory_context)
         finally:
             async with self._calls[token]:

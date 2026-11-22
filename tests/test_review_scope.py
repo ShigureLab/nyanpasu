@@ -183,7 +183,8 @@ async def test_re_review_uses_published_verified_range_and_delivers_removed_path
         {**prior_review, "source": {**prior_review["source"], "head_sha": "0" * 40}},
     ):
         assert build_review_delta(repo, inventory, old_review) is None
-    assert build_review_delta(repo, previous, prior_review)["files"] == []
+    unchanged = build_review_delta(repo, previous, prior_review)
+    assert unchanged is not None and unchanged["files"] == []
 
     read.side_effect = ValueError("dashboard has visible drift")
     fallback = await plugin.prepare_task(task, (), context)

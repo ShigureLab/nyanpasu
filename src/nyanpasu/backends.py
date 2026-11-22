@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nyanpasu.claude import ClaudeBackend
@@ -40,9 +39,7 @@ class Backends:
         configured = self.config.backends[name]
         if configured.driver == "codex":
             codex = CodexAppServerBackend(self.config, name)
-            native_home = Path(
-                codex._env.get("CODEX_HOME") or Path(codex._env.get("HOME", str(Path.home()))) / ".codex"
-            )
+            native_home = codex.native_home
             return Backend(codex, CodexHistorySource(codex, native_home=native_home, root=native_home))
         claude = ClaudeBackend(self.config, name)
         return Backend(claude, ClaudeHistorySource(claude.env))
