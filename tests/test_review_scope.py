@@ -320,20 +320,27 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
 
 
 @pytest.mark.anyio
-async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
+async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path, monkeypatch):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path)
     config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(
         execution={"model": "gpt-6.2-sol", "reasoning": "medium"}
     )
     config.tasks.kinds["github_reviewer.codenip-rule"] = TaskPolicy(
-        execution={"model": "gpt-6-luna", "reasoning": "low"}
+        execution={"model": "gpt-6-luna", "reasoning": "xhigh"}
     )
+    monkeypatch.setattr(importlib.import_module("nyanpasu_github_reviewer.plugin"), "CODENIP_BATCH_SIZE", 1)
     skill = tmp_path / "skills" / "codenip" / "SKILL.md"
     rule = skill.parent / "rules/reuse-existing-operation/rule.md"
+    pr_rule = skill.parent / "rules/check-pr-description/rule.md"
     rule.parent.mkdir(parents=True)
-    skill.write_text("Codenip index\n")
+    pr_rule.parent.mkdir()
+    skill.write_text(
+        "| [REF001 · Reuse an existing operation](rules/reuse-existing-operation/rule.md) | Cross-language | ... |\n"
+        "| [PR001 · Check PR description](rules/check-pr-description/rule.md) | PR description + diff | ... |\n"
+    )
     rule.write_text("---\nid: REF001\n---\n\n# Reuse an existing operation\n")
+    pr_rule.write_text("---\nid: PR001\n---\n\n# Check PR description\n")
     inventory = build_inventory(config, task)
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
 
@@ -346,7 +353,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, Backend())
     )
     plugin = GitHubReviewerPlugin(GitHubReviewerConfig(codenip_skill=skill))
-    plugin.runtime = Mock(config=config)
+    plugin.runtime = WebPluginRuntime(config=config, app=None, agent=agent)
     plugin.state_store = agent.store
     agent.add_task_control_tools(plugin.id, plugin.task_control_tools())
     agent.add_subtask_preparer(plugin.id, plugin.prepare_subtask)
@@ -401,11 +408,12 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
                 request_key="codenip",
                 purpose="codenip",
                 prompt="Coordinate a rule review of the admitted helper.",
-                inputs={"review_files": ["helper.py"]},
+                inputs={"review_files": ["helper.py"], "pr_body": "Behavior is preserved."},
             ),
         )
         assert coordinator.kind == "github_reviewer.codenip"
         assert coordinator.execution is not None and coordinator.execution.model == "gpt-6.2-sol"
+        await wait_status(agent, coordinator.task_id, "running")
         codenip = SubtaskRequest(
             request_key="codenip-ref001",
             purpose="codenip-rule",
@@ -417,27 +425,39 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             await agent.create_subtask(task.task_id, codenip)
         with pytest.raises(ValueError, match="only dispatches Codenip rule workers"):
             await agent.create_subtask(coordinator.task_id, request)
-        with pytest.raises(ValueError, match="accepted files"):
-            await agent.create_subtask(
-                coordinator.task_id,
-                codenip.model_copy(update={"inputs": {**codenip.inputs, "review_files": ["author-only.txt"]}}),
-            )
-        with pytest.raises(ValueError, match="relative rule page"):
-            await agent.create_subtask(
-                coordinator.task_id, codenip.model_copy(update={"inputs": {**codenip.inputs, "rule": "../rule.md"}})
-            )
-        audit = await agent.create_subtask(coordinator.task_id, codenip)
+        with pytest.raises(ValueError, match="frozen Codenip rule assignments"):
+            await agent.create_subtask(coordinator.task_id, codenip)
+        with pytest.raises(ValueError, match="not available"):
+            await agent.control.dispatch(task.task_id, "codenip-dispatch", {})
+        batch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
+        assert batch["total"] == 2 and batch["remaining"] == 1
+        (first_id,) = batch["active_task_ids"]
+        assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == batch
+        assert "PR description + diff" in agent.store.task_request(first_id).prompt
+        assert "Behavior is preserved." in agent.store.task_request(first_id).prompt
+        await agent.cancel_subtask(first_id)
+        batch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
+        assert batch["total"] == 2 and batch["remaining"] == 0
+        (second_id,) = batch["active_task_ids"]
+        audit = agent.store.task_request(second_id)
         assert audit.kind == "github_reviewer.codenip-rule" and audit.spawned_by_task_id == coordinator.task_id
         assert audit.execution is not None and (audit.execution.model, audit.execution.reasoning) == (
             "gpt-6-luna",
-            "low",
+            "xhigh",
         )
         assert audit.workspace is not None and audit.workspace.revision == inventory["head_sha"]
         assert audit.metadata["inputs"]["rule_id"] == "REF001"
         assert audit.metadata["inputs"]["review_scope"]["files"] == ["helper.py"]
         assert "[experimental · REF001]" in audit.developer_instructions
+        assert "Behavior is preserved." not in audit.prompt
         with pytest.raises(ValueError, match="workers cannot dispatch"):
             await agent.create_subtask(audit.task_id, codenip)
+        await agent.cancel_subtask(second_id)
+        assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == {
+            "total": 2,
+            "remaining": 0,
+            "active_task_ids": [],
+        }
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]

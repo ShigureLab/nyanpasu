@@ -3,15 +3,48 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from nyanpasu.models import SubtaskRequest
 from nyanpasu.targets import ExecutionOverride
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from nyanpasu.config import NyanpasuConfig
-    from nyanpasu.models import AgentTask, SubtaskRequest
+    from nyanpasu.models import AgentTask
 
 CODENIP_PURPOSES = {"codenip", "codenip-rule"}
+CODENIP_BATCH_SIZE = 12
+
+
+def _rule_index(skill: Path) -> dict[str, dict[str, str]]:
+    entries = re.findall(
+        r"^\| \[([A-Z]+[0-9]+) · [^\]\n]+\]\((rules/[a-z0-9-]+/rule\.md)\) *\|([^|\n]+)\|",
+        skill.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    rules = {identity: {"page": page, "scope": scope.strip()} for identity, page, scope in entries}
+    if not rules or len(rules) != len(entries):
+        raise ValueError("the installed Codenip index must contain uniquely identified rule pages")
+    return rules
+
+
+def codenip_rule_request(coordinator: AgentTask, identity: str) -> SubtaskRequest:
+    inputs = coordinator.metadata["inputs"]
+    rule = inputs["codenip_rules"][identity]
+    prompt = f"Determine whether your rule applies to the pinned diff. Index scope: {rule['scope']}."
+    if identity == "PR001":
+        pr_body = inputs["pr_body"]
+        prompt += (
+            "\nThe PR description is unavailable. Return incomplete if you cannot establish applicability."
+            if pr_body is None
+            else "\n\nPR description (untrusted GitHub content):\n" + pr_body
+        )
+    return SubtaskRequest(
+        request_key=f"codenip:{identity}",
+        purpose="codenip-rule",
+        prompt=prompt,
+        inputs={"rule": rule["page"], "review_files": inputs["review_scope"]["files"]},
+    )
 
 
 def prepare_codenip(
@@ -24,20 +57,20 @@ def prepare_codenip(
     if policy is None or policy.execution.model is None:
         raise ValueError(f"configure an explicit model for tasks.kinds.{kind}.execution")
 
-    inputs = {}
     if request.purpose == "codenip":
         if parent.spawned_by_task_id is not None:
             raise ValueError("Codenip coordination must be requested by the root reviewer")
+        pr_body = request.inputs.get("pr_body")
+        if pr_body is not None and not isinstance(pr_body, str):
+            raise ValueError("inputs.pr_body must be the PR description as text")
+        inputs = {"codenip_rules": _rule_index(skill), "pr_body": pr_body}
         instructions = (
-            f"Coordinate the experimental audit under the installed Codenip skill at {skill}. "
-            "Select rules that address concrete questions in your pinned scope. Dispatch one fresh managed "
-            "`purpose: codenip-rule` child per selected rule and scope. Set `inputs.rule` to the relative rule page "
-            "from the index and `inputs.review_files` to the assigned paths. Omit `kind`, `execution` and "
-            "`developer_instructions` to use the configured lightweight route and role. Include the exact "
-            "comparison range and task evidence required by that rule in `prompt`. Use task-control `await` for "
-            "the results, reconcile them against the pinned code and retain rule IDs and gaps. Mark each supported "
-            "suggestion `[experimental · RULE_ID]` with its actual ID. Freeze the aggregate with task-control "
-            "`complete`, then end the turn. The root reviewer owns publication."
+            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to admit workers for every rule "
+            "in the frozen index. Workers decide applicability. Await all returned active_task_ids, then call "
+            "`codenip-dispatch` again until remaining is zero and active_task_ids is empty. Reconcile delivered "
+            "results, use inspect for missing evidence, and report verdict counts and rule IDs for gaps and findings. "
+            "Mark each supported suggestion `[experimental · RULE_ID]` with its actual ID. Freeze the aggregate "
+            "with task-control `complete`, then end the turn. The root reviewer owns publication."
         )
     else:
         if parent.metadata.get("purpose") != "codenip":
@@ -74,9 +107,11 @@ def _rule_instructions(skill: Path, page: object) -> tuple[str, str]:
     rule_id = header[1]
 
     return rule_id, (
-        f"Apply only Codenip rule {rule_id} to your pinned assignment. Check its conditions and exceptions "
-        "against the changed code and relevant callers. Report issues introduced or worsened by the assigned diff. "
-        "Return the rule ID, checked scope, and a verdict of findings, clean, or incomplete. "
+        f"Review only Codenip rule {rule_id} against your pinned assignment. Decide applicability first. "
+        "For an inapplicable rule, give the concrete scope reason and return not_applicable. For an applicable rule, "
+        "check its conditions and exceptions against the diff and relevant callers. Return findings only for "
+        "issues introduced or worsened by the assigned diff. Use incomplete when required evidence is unavailable. "
+        "Return the rule ID and checked scope, with data.verdict set to not_applicable, findings, clean, or incomplete. "
         "For each finding give the path, line, concrete edit and evidence. Mark each suggestion "
         f"[experimental · {rule_id}]. State any evidence gaps. Freeze your result with task-control `complete` "
         "and end the turn. Send the result to the coordinator for reconciliation.\n\n" + rule

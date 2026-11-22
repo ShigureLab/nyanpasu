@@ -79,7 +79,7 @@ backend = "codex"
 model = "gpt-6-luna"
 reasoning = "high"
 
-# Experimental Codenip uses a Sol coordinator and one Luna worker per selected rule and scope.
+# Experimental Codenip uses a Sol coordinator and one Luna worker per installed rule.
 [tasks.kinds."github_reviewer.codenip".execution]
 backend = "codex"
 model = "gpt-6.2-sol"

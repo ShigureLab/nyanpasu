@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from nyanpasu.config import MemoryConfig, NyanpasuConfig, ServerConfig
 from nyanpasu.memory import MemoryAccess
-from nyanpasu.models import AgentContext, AgentTask, TaskAction, TaskRunResult, TaskStatus
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
@@ -18,6 +18,9 @@ from nyanpasu.web import create_app
 class FakeAgent:
     def __init__(self) -> None:
         self.tasks: list[AgentTask] = []
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+        raise NotImplementedError
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
         self.tasks.append(task)

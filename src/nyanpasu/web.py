@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     from nyanpasu.control_tools import ToolSpec
     from nyanpasu.memory_consolidation import MemoryPolicy
-    from nyanpasu.models import TaskRunResult
+    from nyanpasu.models import SubtaskRequest, TaskRunResult
     from nyanpasu.transcript.history import SessionSource
 
 
@@ -38,6 +38,8 @@ class AgentBackend(Protocol):
     async def submit(self, task: AgentTask) -> dict[str, Any]: ...
 
     async def run_now(self, task: AgentTask) -> TaskRunResult: ...
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask: ...
 
     async def shutdown(self) -> None: ...
 
@@ -63,6 +65,9 @@ class WebPluginRuntime:
 
     async def run_now(self, task: AgentTask) -> TaskRunResult:
         return await self.agent.run_now(task)
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+        return await self.agent.create_subtask(parent_id, request)
 
     def add_router(
         self, router: APIRouter, *, prefix: str = "", tags: list[str] | None = None, require_auth: bool = True

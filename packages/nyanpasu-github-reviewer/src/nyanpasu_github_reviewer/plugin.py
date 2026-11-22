@@ -20,12 +20,12 @@ from nyanpasu.control_tools import EmptyInput, ToolSpec
 from nyanpasu.git_ops import safe_slug
 from nyanpasu.memory import MemoryAccess
 from nyanpasu.memory_consolidation import MemoryPolicy
-from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.ci_dashboard import apply_ci_patch, read_review_dashboard, reuse_ci_section
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
-from nyanpasu_github_reviewer.codenip import CODENIP_PURPOSES, prepare_codenip
+from nyanpasu_github_reviewer.codenip import CODENIP_BATCH_SIZE, CODENIP_PURPOSES, codenip_rule_request, prepare_codenip
 from nyanpasu_github_reviewer.events import event_dedupe_key, parse_github_event
 from nyanpasu_github_reviewer.memory_evidence import fetch_review_feedback
 from nyanpasu_github_reviewer.models import (
@@ -228,6 +228,10 @@ class GitHubReviewerPlugin:
             raise ValueError("Codenip rule workers cannot dispatch subtasks")
         if parent_purpose == "codenip" and request.purpose != "codenip-rule":
             raise ValueError("the Codenip coordinator only dispatches Codenip rule workers")
+        if rules := parent.metadata.get("inputs", {}).get("codenip_rules"):
+            identity = request.request_key.removeprefix("codenip:")
+            if identity not in rules or request != codenip_rule_request(parent, identity):
+                raise ValueError("use codenip-dispatch to admit the frozen Codenip rule assignments")
         if request.developer_instructions.strip():
             destination = "inputs.constraints" if request.purpose == "independent-design" else "prompt"
             raise ValueError(
@@ -251,6 +255,7 @@ class GitHubReviewerPlugin:
         if request.purpose != "independent-design":
             fields = {
                 "ci-analysis": ("fingerprint",),
+                "codenip": ("review_files", "pr_body"),
                 "codenip-rule": ("review_files", "rule"),
             }.get(request.purpose, ("review_files",))
             if extra := request.inputs.keys() - set(fields):
@@ -357,6 +362,10 @@ class GitHubReviewerPlugin:
         if request.purpose in CODENIP_PURPOSES:
             assert self.config is not None
             prepared = prepare_codenip(self.runtime.config, self.config.codenip_skill, parent, assignment_request)
+            if parent.metadata.get("inputs", {}).get("codenip_rules") and request.request_key != (
+                f"codenip:{prepared.inputs['rule_id']}"
+            ):
+                raise ValueError("the installed Codenip rule ID has changed since the index was frozen")
         else:
             prepared = prepare_reference(self.runtime.config, parent, assignment_request)
         if request.purpose != "independent-design":
@@ -420,11 +429,45 @@ class GitHubReviewerPlugin:
                 self.ci_refresh_control,
                 self._root_tool_available,
             ),
+            ToolSpec(
+                "codenip-dispatch",
+                "Codenip coordinator: admit the next batch of the frozen rule index. "
+                "Await active_task_ids and repeat until remaining is zero and no workers are active.",
+                EmptyInput,
+                self.codenip_dispatch_control,
+                lambda task: (
+                    task.kind == "github_reviewer.codenip"
+                    and bool(task.metadata.get("inputs", {}).get("codenip_rules"))
+                ),
+            ),
         )
 
     @staticmethod
     def _root_tool_available(task: AgentTask) -> bool:
         return task.spawned_by_task_id is None
+
+    async def codenip_dispatch_control(self, task: AgentTask, request: EmptyInput) -> dict:
+        assert self.runtime is not None
+        assert self.state_store is not None
+        store = self.state_store
+        rules = task.metadata["inputs"]["codenip_rules"]
+
+        def progress() -> tuple[list[str], list[str]]:
+            workers = store.subtasks(task.task_id)
+            started = {store.task_request(child.task_id).metadata["inputs"]["rule_id"] for child in workers}
+            active = [
+                child.task_id
+                for child in workers
+                if child.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING}
+            ]
+            return sorted(rules.keys() - started), active
+
+        remaining, active = await asyncio.to_thread(progress)
+        if remaining and not active:
+            for identity in remaining[:CODENIP_BATCH_SIZE]:
+                await self.runtime.create_subtask(task.task_id, codenip_rule_request(task, identity))
+            remaining, active = await asyncio.to_thread(progress)
+        return {"total": len(rules), "remaining": len(remaining), "active_task_ids": active}
 
     async def review_scope_control(self, task: AgentTask, request: ReviewScopeInput) -> dict:
         return await asyncio.to_thread(self._scope_control, task, request.root.model_dump())

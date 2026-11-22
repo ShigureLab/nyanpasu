@@ -1,6 +1,6 @@
 # Codenip
 
-[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. A Sol coordinator selects focused rules for code, tests and documentation. A separate Luna worker checks each selected rule and scope.
+[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. A Sol coordinator dispatches every rule in the installed index in batches. One Luna worker per rule decides applicability in the assigned diff and returns its verdict for the coordinator to collect.
 
 ## Install and enable
 

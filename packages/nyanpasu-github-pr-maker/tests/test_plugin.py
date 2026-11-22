@@ -11,7 +11,7 @@ from nyanpasu_github_pr_maker.models import CreatePullRequestTaskRequest
 from nyanpasu_github_pr_maker.plugin import GitHubPrMakerPlugin
 
 from nyanpasu.config import NyanpasuConfig, PluginsConfig
-from nyanpasu.models import AgentContext, AgentTask, TaskRunResult, TaskStatus
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskRunResult, TaskStatus
 from nyanpasu.plugins import PluginRegistry
 from nyanpasu.web import create_app
 
@@ -23,6 +23,9 @@ class FakeAgent:
     def __init__(self) -> None:
         self.tasks: list[AgentTask] = []
         self.hooks: dict[str, Any] = {}
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+        raise NotImplementedError
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
         self.tasks.append(task)
@@ -458,6 +461,9 @@ class FakeRuntime:
         return {"accepted": True, "task_id": task.task_id}
 
     async def run_now(self, task: AgentTask):
+        raise NotImplementedError
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
         raise NotImplementedError
 
     def add_router(self, router, *, prefix: str = "", tags=None, require_auth: bool = True) -> None:

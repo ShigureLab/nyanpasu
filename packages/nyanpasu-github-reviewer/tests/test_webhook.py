@@ -25,12 +25,15 @@ from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from nyanpasu.models import AgentTask, TaskRunResult
+    from nyanpasu.models import AgentTask, SubtaskRequest, TaskRunResult
 
 
 class FakeAgent:
     def __init__(self) -> None:
         self.tasks: list[AgentTask] = []
+
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+        raise NotImplementedError
 
     async def submit(self, task: AgentTask) -> dict[str, Any]:
         self.tasks.append(task)
