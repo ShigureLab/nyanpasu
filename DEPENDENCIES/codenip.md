@@ -32,7 +32,7 @@ reasoning = "medium"
 [tasks.kinds."github_reviewer.codenip-rule".execution]
 backend = "codex"
 model = "gpt-6-luna"
-reasoning = "low"
+reasoning = "xhigh"
 ```
 
 After restarting the service, a code review with an applicable rule can dispatch a managed `codenip` child. Its `codenip-rule` children each record a model and rule ID. The root reviewer verifies the aggregate result and prefixes supported advice with an experimental marker and the actual rule ID, for example `[experimental · REF001]`.

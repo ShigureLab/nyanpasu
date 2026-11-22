@@ -88,7 +88,7 @@ reasoning = "medium"
 [tasks.kinds."github_reviewer.codenip-rule".execution]
 backend = "codex"
 model = "gpt-6-luna"
-reasoning = "low"
+reasoning = "xhigh"
 
 # CI analysis is a bounded log-reading child; the parent review model is unchanged.
 # This model alias requires a Claude-compatible provider configured to serve it.
