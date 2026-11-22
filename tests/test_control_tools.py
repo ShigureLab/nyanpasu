@@ -147,17 +147,16 @@ async def test_reviewer_tools_are_advertised_and_callable_only_for_owning_roots(
         execution=agent.config.resolve_execution("subtask"),
     )
     agent.store.mark_task_running(child.task_id, None)
-    reviewer_actions = {"review-scope", "review-verify", "ci-refresh"}
+    reviewer_actions = {"review-inventory", "review-verify", "ci-refresh"}
     async with agent.control.turn(root.task_id) as control:
         advertised = instructions(control.prompt)
         assert reviewer_actions <= advertised.keys()
-        schema = advertised["review-scope"]["input_schema"]
-        for valid in ({}, {"inventory_id": "current", "groups": []}):
-            validate(valid, schema)
+        schema = advertised["review-inventory"]["input_schema"]
+        validate({}, schema)
         with pytest.raises(SchemaError):
             validate({"inventory_id": "partial"}, schema)
         with pytest.raises(ValidationError):
-            await agent.control.dispatch(root.task_id, "review-scope", {"inventory_id": "partial"})
+            await agent.control.dispatch(root.task_id, "review-inventory", {"inventory_id": "partial"})
     for task, error in ((child, "not available"), (record_root(agent, "unrelated"), "unknown task action")):
         async with agent.control.turn(task.task_id) as control:
             assert not reviewer_actions & instructions(control.prompt).keys()

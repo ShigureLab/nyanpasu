@@ -330,7 +330,7 @@ async def test_invalid_model_output_never_commits_a_source(tmp_path, response):
 async def test_service_preserves_all_input_references_without_model_copying(tmp_path):
     model = MemoryModel()
     long_id = "call_4600894c412c44868c8833f3"
-    paths = "/workspace/review-output.md and /workspace/scope-review.md"
+    paths = "/workspace/review-output.md and /workspace/review-workflow.md"
     records = [tool(long_id, f"Read {paths}")]
     records += [tool(f"call-{index}", f"Verified result {index}") for index in range(130)]
     agent = make_agent(

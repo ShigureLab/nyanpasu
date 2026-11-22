@@ -40,19 +40,6 @@ def scoped_parent(tmp_path):
         metadata={
             "plugin_id": "github_reviewer",
             "review_inventory": inventory,
-            "review_scope": {
-                "inventory_id": inventory["inventory_id"],
-                "groups": [
-                    {
-                        "files": PATHS,
-                        "category": "production",
-                        "decision": "accept",
-                        "reason": "Required implementation",
-                        "source": "Original requirements",
-                        "alternative": "Keep the caller contract",
-                    }
-                ],
-            },
         },
     )
     plugin = GitHubReviewerPlugin()

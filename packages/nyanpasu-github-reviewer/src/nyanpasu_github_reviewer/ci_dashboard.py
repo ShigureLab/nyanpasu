@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from nyanpasu_github.gh import GitHubCommandError
 
-from nyanpasu_github_reviewer.prompt import TEMPLATES_DIR
-
 if TYPE_CHECKING:
     from nyanpasu_github_reviewer.ci import CISnapshot
     from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef
@@ -63,10 +61,6 @@ def apply_ci_patch(
         "-",
         "--if-revision",
         str(revision),
-        "--config",
-        str(TEMPLATES_DIR / "boards.toml"),
-        "--profile",
-        "review",
     ]
     if preview:
         args.append("--dry-run")

@@ -4,11 +4,8 @@ import hashlib
 import json
 import re
 import subprocess
-from collections import Counter
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from urllib.parse import quote_from_bytes
-
-from pydantic import BaseModel, ConfigDict, Field
 
 from nyanpasu.git_ops import WorktreeManager
 
@@ -19,24 +16,8 @@ if TYPE_CHECKING:
     from nyanpasu.models import AgentTask
 
 
-class ScopeGroup(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    files: list[str] = Field(min_length=1, description="Exact changed-path tokens from the inventory, never globs.")
-    category: Literal["production", "tests", "examples", "evidence", "generated", "vendor", "other"]
-    decision: Literal["accept", "relocate", "clarify"]
-    reason: str = Field(pattern=r"\S", description="Concrete rationale for the admission decision.")
-    source: str = Field(pattern=r"\S", description="Original requirement or existing caller evidence.")
-    alternative: str = Field(pattern=r"\S", description="Alternative placement or simpler way to satisfy the contract.")
-
-
-class ScopePlan(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    inventory_id: str = Field(description="ID from the current pinned inventory.")
-    groups: list[ScopeGroup]
-
-
 def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
-    """Read only Git metadata and numstat; never feed the full patch to triage."""
+    """Pin the direct-base range and changed paths using Git metadata and numstat."""
     workspace = task.workspace
     if workspace is None:
         raise ValueError("review scope requires a repository")
@@ -114,6 +95,11 @@ def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict 
     """Compare against a completed dashboard review whose pinned range still verifies."""
     if prior_review.get("status") not in {"approved", "changes_requested", "comment"}:
         return None
+    # Earlier dashboards could finish with files deferred from review.
+    if any(
+        group["decision"] != "accept" for report in prior_review.get("scope", {}).values() for group in report["groups"]
+    ):
+        return None
     source = prior_review.get("source")
     if not isinstance(source, dict):
         return None
@@ -144,37 +130,4 @@ def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict 
             for finding_id, finding in prior_review.get("findings", {}).items()
             if finding["status"] in {"unresolved", "partial"}
         ],
-    }
-
-
-def validate_plan(inventory: dict, payload: dict) -> ScopePlan:
-    plan = ScopePlan.model_validate(payload)
-    if plan.inventory_id != inventory["inventory_id"]:
-        raise ValueError("scope plan belongs to another inventory; inspect review-scope again")
-    counts = Counter(path for group in plan.groups for path in group.files)
-    expected = {item["path"] for item in inventory["files"]}
-    missing, unknown = sorted(expected - counts.keys()), sorted(counts.keys() - expected)
-    duplicates = sorted(path for path, count in counts.items() if count != 1)
-    if missing or unknown or duplicates:
-        raise ValueError(
-            f"scope must cover each changed file once: missing={missing}, unknown={unknown}, duplicate={duplicates}"
-        )
-    return plan
-
-
-def admitted_files(plan: ScopePlan) -> set[str]:
-    return {path for group in plan.groups if group.decision == "accept" for path in group.files}
-
-
-def scope_report(inventory: dict, plan: ScopePlan) -> dict:
-    counts = Counter(dict.fromkeys(("accept", "relocate", "clarify"), 0))
-    for group in plan.groups:
-        counts[group.decision] += len(group.files)
-    return {
-        inventory["inventory_id"]: {
-            "inventory_id": plan.inventory_id,
-            "path_encoding": inventory.get("path_encoding", "utf-8"),
-            "counts": dict(counts),
-            "groups": [group.model_dump() for group in plan.groups],
-        }
     }

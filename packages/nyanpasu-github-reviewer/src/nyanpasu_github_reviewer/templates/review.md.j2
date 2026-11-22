@@ -235,38 +235,6 @@ Fork 内 PR 只用于增量审阅；上游 PR 的 base 不能指向 fork 独有�
 {% endif -%}
 {% endif -%}
 {% endif -%}
-{% if data.scope is defined -%}
-{% set scope = data.scope[data.source.inventory_id] -%}
-<details>
-<summary><strong>提交范围</strong> · 接收 {{ scope.counts.accept }} · 建议移出 {{ scope.counts.relocate }} · 待确认 {{ scope.counts.clarify }}</summary>
-
-接收 {{ scope.counts.accept }} 个文件 · 建议移出 {{ scope.counts.relocate }} 个文件 · 待确认 {{ scope.counts.clarify }} 个文件。移出与待确认部分暂停深审，不代表审查通过。
-
-{% if scope.path_encoding is defined and scope.path_encoding == "percent" -%}
-文件路径使用百分号编码，以保留非 UTF-8 文件名。
-
-{% endif -%}
-{% set scope_decisions = {"accept": "接收", "relocate": "建议移出", "clarify": "待确认"} -%}
-<table>
-<thead>
-<tr><th>文件</th><th>结论</th><th>仓库维护必要性</th><th>依据</th><th>替代去向或方案</th></tr>
-</thead>
-<tbody>
-{% for group in scope.groups -%}
-<tr>
-<td valign="top">{% for path in group.files %}{{ path | md_code }}<br>{% endfor %}</td>
-<td nowrap valign="top">{{ scope_decisions[group.decision] }}</td>
-<td valign="top">{{ group.reason | md_body }}</td>
-<td valign="top">{{ group.source | md_body }}</td>
-<td valign="top">{{ group.alternative | md_body }}</td>
-</tr>
-{% endfor -%}
-</tbody>
-</table>
-
-</details>
-
-{% endif -%}
 <div align="right">
 {% set disclosure_brand = "Powered by Nyanpasu" -%}
    <sup>Powered by {{ "Nyanpasu" | md_link("https://github.com/ShigureLab/nyanpasu") }}{{ data.disclosure[(disclosure_brand | length):] }}</sup>

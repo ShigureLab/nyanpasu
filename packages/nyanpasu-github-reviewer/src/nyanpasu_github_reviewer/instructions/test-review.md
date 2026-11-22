@@ -1,4 +1,4 @@
-Review whether the assigned tests detect a concrete production failure or impose avoidable maintenance. Only the parent publishes; a test-audit child returns frozen evidence through subtask `complete`. Honor the accepted scope and supplied local testing policy.
+Review whether the assigned tests detect a concrete production failure or impose avoidable maintenance. Only the parent publishes; a test-audit child returns frozen evidence through subtask `complete`. Honor the assigned paths and supplied local testing policy.
 
 Start with the protected observable contract and its source. Trace the production entry point actually exercised. Ask whether a plausible defect would fail for the right reason and whether a valid behavior-preserving change would still pass. Requirements, protocols, independent calculations and incidents can provide an oracle; copying implementation logic or comparing output with itself cannot.
 

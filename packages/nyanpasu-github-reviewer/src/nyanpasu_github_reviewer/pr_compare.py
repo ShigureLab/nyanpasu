@@ -34,7 +34,7 @@ def prepare_pr_compare(
         raise ValueError("PR comparison must be requested by the root reviewer")
     inventory = parent.metadata.get("review_inventory")
     if inventory is None or parent.workspace is None:
-        raise ValueError("read review-scope before requesting PR comparison")
+        raise ValueError("read review-inventory before requesting PR comparison")
     if request.revision not in {None, inventory["head_sha"]}:
         raise ValueError("PR comparison must use the inventory head")
     numbers = PRCompareInputs.model_validate(request.inputs).related_prs

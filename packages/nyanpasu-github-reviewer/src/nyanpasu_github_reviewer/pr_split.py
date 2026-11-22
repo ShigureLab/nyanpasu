@@ -19,14 +19,14 @@ def changed_line_count(inventory: dict) -> int:
 
 
 def prepare_pr_split(config: GitHubReviewerConfig, parent: AgentTask, request: SubtaskRequest) -> SubtaskRequest:
-    """Freeze the whole PR delta for packaging advice, independently of code admission."""
+    """Freeze the whole PR delta for packaging advice."""
     if parent.spawned_by_task_id is not None:
         raise ValueError("PR split analysis must be requested by the root reviewer")
     if request.inputs:
         raise ValueError("pr-split inputs must be empty; put the trigger and behavior boundaries in prompt")
     inventory = parent.metadata.get("review_inventory")
     if inventory is None:
-        raise ValueError("read review-scope before requesting PR split analysis")
+        raise ValueError("read review-inventory before requesting PR split analysis")
     if request.revision not in {None, inventory["head_sha"]}:
         raise ValueError("PR split analysis must use the inventory head")
     pr = parent.metadata["pull_request"]

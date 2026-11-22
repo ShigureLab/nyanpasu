@@ -24,8 +24,6 @@ from nyanpasu_github_reviewer.scope import (
     build_inventory,
     build_review_delta,
     review_source,
-    scope_report,
-    validate_plan,
 )
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, fake_backends
 from tests.test_review_reference import reference_request, repository
@@ -89,24 +87,6 @@ def test_inventory_includes_deleted_renamed_binary_and_unusual_paths(tmp_path):
     assert files["contract.txt"]["deletions"] == files[renamed]["additions"] == 1
     assert inventory["merge_base_sha"] == base
     assert inventory["target_base_sha"] == target
-    plan = {"inventory_id": inventory["inventory_id"], "groups": [group(list(files))]}
-    assert renamed in validate_plan(inventory, plan).groups[0].files
-    for paths in [list(files)[:-1], [*files, "unknown.py"], [*files, "helper.py"]]:
-        with pytest.raises(ValueError, match="cover each changed file once"):
-            validate_plan(inventory, {**plan, "groups": [group(paths)]})
-    with pytest.raises(ValueError, match="another inventory"):
-        validate_plan(inventory, {**plan, "inventory_id": "old-head"})
-
-
-def group(files, decision="accept"):
-    return {
-        "files": files,
-        "category": "production" if decision == "accept" else "evidence",
-        "decision": decision,
-        "reason": "Ship the implementation; archive one-off run results.",
-        "source": "Feature request and repository callers",
-        "alternative": "Fixed PR evidence archive",
-    }
 
 
 @pytest.mark.anyio
@@ -178,6 +158,7 @@ async def test_re_review_uses_published_verified_range_and_delivers_removed_path
 
     for old_review in (
         {**prior_review, "status": "preliminary"},
+        {**prior_review, "scope": {previous["inventory_id"]: {"groups": [{"decision": "relocate"}]}}},
         {**prior_review, "source": {**prior_review["source"], "merge_base_sha": "0" * 40}},
         {**prior_review, "source": {**prior_review["source"], "inventory_id": "0" * 64}},
         {**prior_review, "source": {**prior_review["source"], "head_sha": "0" * 40}},
@@ -228,7 +209,6 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     inventory = build_inventory(runtime, task)
     assert [item["path"] for item in inventory["files"]] == ["upper.txt"]
     assert changed_line_count(inventory) == 1  # The large lower layer must not trigger splitting this PR.
-    plan = validate_plan(inventory, {"inventory_id": inventory["inventory_id"], "groups": [group(["upper.txt"])]})
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
     plugin = GitHubReviewerPlugin(
         GitHubReviewerConfig(
@@ -261,9 +241,6 @@ async def test_stack_ranges_are_pinned_and_rechecked_before_publication(tmp_path
     )
     assert changed["head_sha"] == inventory["head_sha"]
     assert {item["path"] for item in changed["files"]} == {"lower.txt", "upper.txt"}
-    assert changed["inventory_id"] not in scope_report(inventory, plan)
-    with pytest.raises(ValueError, match="another inventory"):
-        validate_plan(changed, plan.model_dump())
     with pytest.raises(ValueError, match="review range changed"):
         await plugin.review_verify_control(task, EmptyInput())
 
@@ -307,20 +284,17 @@ def test_non_utf8_inventory_paths_survive_persistence_without_collisions(tmp_pat
         b"helper.py",
         b"demos/result.json",
     }
-    plan = validate_plan(inventory, {"inventory_id": inventory["inventory_id"], "groups": [group(paths)]})
-    task = task.model_copy(
-        update={"metadata": {**task.metadata, "review_inventory": inventory, "review_scope": plan.model_dump()}}
-    )
+    task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
     store = StateStore(config.db_path)
     store.record_task(task.model_copy(update={"execution": config.resolve_execution(task.kind)}))
     recovered = store.task_request(task.task_id)
     assert recovered.metadata == task.metadata
-    for path in recovered.metadata["review_scope"]["groups"][0]["files"]:
-        assert (repo / os.fsdecode(unquote_to_bytes(path))).is_file()
+    for item in recovered.metadata["review_inventory"]["files"]:
+        assert (repo / os.fsdecode(unquote_to_bytes(item["path"]))).is_file()
 
 
 @pytest.mark.anyio
-async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path):
+async def test_review_inventory_bounds_children_without_placement_decisions(tmp_path):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path)
     config.tasks.kinds["github_reviewer.codenip"] = TaskPolicy(
@@ -360,23 +334,17 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         await agent.submit(task)
         await wait_status(agent, task.task_id, "running")
         request = SubtaskRequest(
-            request_key="module", prompt="review", purpose="module-review", inputs={"review_files": ["author-only.txt"]}
+            request_key="module",
+            prompt="review",
+            purpose="module-review",
+            inputs={"review_files": ["demos/result.json"]},
         )
-        with pytest.raises(ValueError, match="complete review-scope"):
-            await agent.control.dispatch(task.task_id, "create", request.model_dump())
-        assert agent.store.subtasks(task.task_id) == []
-        observed = await agent.control.dispatch(task.task_id, "review-scope", {})
-        assert observed["inventory"] == inventory and observed["scope"] is None
-        plan = {
-            "inventory_id": inventory["inventory_id"],
-            "groups": [group(["author-only.txt", "helper.py"]), group(["demos/result.json"], "relocate")],
-        }
-        report = await agent.control.dispatch(task.task_id, "review-scope", plan)
-        assert report["scope"][inventory["inventory_id"]]["counts"] == {"accept": 2, "relocate": 1, "clarify": 0}
+        observed = await agent.control.dispatch(task.task_id, "review-inventory", {})
+        assert observed == {"inventory": inventory, "source": review_source(inventory)}
         agent.store = StateStore(config.db_path)
-        assert (await agent.control.dispatch(task.task_id, "review-scope", {}))["scope"] == report["scope"]
+        assert await agent.control.dispatch(task.task_id, "review-inventory", {}) == observed
         for paths, error in [
-            (["author-only.txt", "contract.txt"], r'accepted files: \["contract.txt"\]'),
+            (["author-only.txt", "contract.txt"], r'review files: \["contract.txt"\]'),
             (["author-only.txt", "author-only.txt"], "remove duplicate path tokens"),
         ]:
             with pytest.raises(ValueError, match=error):
@@ -384,29 +352,17 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
                     task.task_id, "create", request.model_copy(update={"inputs": {"review_files": paths}}).model_dump()
                 )
         assert agent.store.subtasks(task.task_id) == []
-        for purpose in ["independent-design", "test-audit", "module-review", "custom-expert"]:
-            rejected = request.model_copy(
-                update={"purpose": purpose, "inputs": {"review_files": ["demos/result.json"]}}
-            )
-            with pytest.raises(ValueError, match="accepted files"):
-                await agent.control.dispatch(task.task_id, "create", rejected.model_dump())
-        assert agent.store.subtasks(task.task_id) == []
-        # Pending placement also prevents dispatch, without blocking admitted work.
-        plan["groups"][1]["decision"] = "clarify"
-        await agent.control.dispatch(task.task_id, "review-scope", plan)
-        with pytest.raises(ValueError, match="accepted files"):
-            await agent.create_subtask(task.task_id, rejected)
         child = await agent.control.dispatch(task.task_id, "create", request.model_dump())
         saved = agent.store.task_request(child["task_id"])
         assert saved.workspace is not None
         assert saved.workspace.revision == inventory["head_sha"]
-        assert child["inputs"]["review_scope"]["files"] == ["author-only.txt"]
+        assert child["inputs"]["review_scope"]["files"] == ["demos/result.json"]
         coordinator = await agent.create_subtask(
             task.task_id,
             SubtaskRequest(
                 request_key="codenip",
                 purpose="codenip",
-                prompt="Coordinate a rule review of the admitted helper.",
+                prompt="Coordinate a rule review of the changed helper.",
                 inputs={"review_files": ["helper.py"], "pr_body": "Behavior is preserved."},
             ),
         )
@@ -416,7 +372,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
         codenip = SubtaskRequest(
             request_key="codenip-ref001",
             purpose="codenip-rule",
-            prompt="Check for a reusable operation in the admitted helper.",
+            prompt="Check for a reusable operation in the changed helper.",
             execution={"model": "other-model"},
             inputs={"review_files": ["helper.py"], "rule": str(rule.relative_to(skill.parent))},
         )
@@ -469,8 +425,8 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             overlapping.metadata["inputs"]["review_scope"]["files"] == saved.metadata["inputs"]["review_scope"]["files"]
         )
         with pytest.raises(ValueError, match="not available"):
-            await agent.control.dispatch(child["task_id"], "review-scope", plan)
-        with pytest.raises(ValueError, match="accepted files"):
+            await agent.control.dispatch(child["task_id"], "review-inventory", {})
+        with pytest.raises(ValueError, match="review files"):
             await agent.create_subtask(
                 child["task_id"], request.model_copy(update={"inputs": {"review_files": ["helper.py"]}})
             )
@@ -478,9 +434,6 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
             await agent.create_subtask(
                 task.task_id, request.model_copy(update={"request_key": "wrong-version", "revision": "main"})
             )
-        plan["groups"][1]["decision"] = "accept"
-        with pytest.raises(ValueError, match="frozen"):
-            await agent.control.dispatch(task.task_id, "review-scope", plan)
         independent = reference_request()
         independent = independent.model_copy(update={"inputs": {**independent.inputs, "review_files": ["helper.py"]}})
         reference = await agent.create_subtask(task.task_id, independent)
@@ -495,7 +448,7 @@ async def test_scope_gate_persists_decisions_and_limits_all_child_roles(tmp_path
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("scope_state", ["legacy", "unassigned", "stale", "accepted"])
+@pytest.mark.parametrize("scope_state", ["legacy", "unassigned", "stale", "assigned"])
 async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, scope_state):
     task, _, _, _ = scoped_task(tmp_path)
     config = _config(tmp_path).model_copy(update={"plugins": PluginsConfig(enabled=("github_reviewer",))})
@@ -506,20 +459,16 @@ async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, sc
                 "metadata": {
                     **task.metadata,
                     "review_inventory": inventory,
-                    "review_scope": {
-                        "inventory_id": inventory["inventory_id"],
-                        "groups": [group([item["path"] for item in inventory["files"]])],
-                    },
                 }
             }
         )
     request = SubtaskRequest(request_key="old-child", prompt="child")
-    if scope_state in {"accepted", "stale"}:
+    if scope_state in {"assigned", "stale"}:
         request = request.model_copy(
             update={
                 "inputs": {
                     "review_scope": {
-                        "inventory_id": inventory["inventory_id"] if scope_state == "accepted" else "old-inventory",
+                        "inventory_id": inventory["inventory_id"] if scope_state == "assigned" else "old-inventory",
                         "files": ["helper.py"],
                     }
                 }
@@ -559,7 +508,7 @@ async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, sc
                 retried.append(retry.task_id)
                 assert retry.task_id == child.task_id
                 assert second.store.task_status(retry.task_id) == (
-                    "completed" if scope_state == "accepted" else "failed"
+                    "completed" if scope_state == "assigned" else "failed"
                 )
             return await super().run_turn(**kwargs)
 
@@ -576,9 +525,9 @@ async def test_restart_validates_scope_before_recovering_child_tree(tmp_path, sc
         await second.startup()
         await wait_status(second, task.task_id, "completed")
         assert retried == [child.task_id]
-        assert len(backend.calls) == (3 if scope_state == "accepted" else 1)
+        assert len(backend.calls) == (3 if scope_state == "assigned" else 1)
         assert second.store.task_status(grandchild.task_id) == (
-            "completed" if scope_state == "accepted" else "cancelled"
+            "completed" if scope_state == "assigned" else "cancelled"
         )
         assert second.store.unfinished_tasks() == []
     finally:

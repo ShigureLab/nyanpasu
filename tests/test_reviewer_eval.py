@@ -128,7 +128,7 @@ def test_managed_replay_exposes_local_admission_and_pins_child_instructions(case
     assert task["metadata"]["plugin_id"] == "github_reviewer"
     assert task["metadata"]["pull_request"]["base_sha"] == prepared["synthetic"]["base"]
     assert task["workspace"]["remote"] == str(Path(prepared["task_path"]).parent / "input")
-    assert "Local review-scope admission" in task["developer_instructions"]
+    assert "Local review inventory" in task["developer_instructions"]
     assert "reviewer_eval_isolate.py" in prepared["command"]
     assert "reviewer_eval_managed.py" in prepared["command"]
     (roles / "investigator.md").write_text("Changed child policy.")

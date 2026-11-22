@@ -226,10 +226,10 @@ def review_guidance(step: Step, instructions: Path | None, *, managed: bool = Fa
     else:
         guidance = instructions.read_text()
     operations = (
-        "Local review-scope admission and managed code-review children use the real reviewer plugin hooks. "
-        "Use the injected task-control operations for admission, child creation and result reconciliation. "
+        "Local review inventory and managed code-review children use the real reviewer plugin hooks. "
+        "Use the injected task-control operations for the pinned inventory, child creation and result reconciliation. "
         if managed
-        else "Repository admission and reviewer-plugin task-control operations are unavailable. "
+        else "Review inventory and reviewer-plugin task-control operations are unavailable. "
     )
     return (
         guidance + "\n\nOffline evaluation environment: the PR identity is synthetic. "
@@ -367,9 +367,9 @@ def prepare(
             + "Use only the supplied historical evidence and staged repository; do not fetch current PR data, "
             "other experiment conditions or evaluator material. Return supported findings and evidence gaps. "
             + (
-                "Local reviewer admission and code-review child tools are available; remote operations are not. "
+                "Local review inventory and code-review child tools are available; remote operations are not. "
                 if managed_instructions is not None
-                else "This generic offline task does not provide the GitHub reviewer plugin's admission or publication tools. "
+                else "This generic offline task does not provide the GitHub reviewer plugin's task-control tools. "
             )
             + "Do not publish externally.\n\nHistorical input:\n"
             + json.dumps(visible, ensure_ascii=False, indent=2)
@@ -435,7 +435,7 @@ def prepare(
             ),
             "isolation": "private /tmp and /var/tmp mounts per home via command; other paths/network are not sandboxed",
             "lifecycle": (
-                "real local admission, managed reviewer roles and parent reconciliation; no live GitHub lifecycle"
+                "pinned local inventory, managed reviewer roles and parent reconciliation; no live GitHub lifecycle"
                 if managed_instructions is not None
                 else "generic run-task; not the complete GitHub reviewer plugin lifecycle"
             ),
@@ -872,7 +872,7 @@ def main() -> None:
     prepare_parser.add_argument(
         "--managed-instructions",
         type=Path,
-        help="frozen reviewer role directory; enable local managed admission/children",
+        help="frozen reviewer role directory; enable managed review children",
     )
     prepare_parser.add_argument("--arm", choices=("A", "B"), required=True)
     prepare_parser.add_argument("--step", required=True)
@@ -884,7 +884,7 @@ def main() -> None:
     case_parser.add_argument(
         "--managed-instructions",
         type=Path,
-        help="frozen reviewer role directory; enable local managed admission/children",
+        help="frozen reviewer role directory; enable managed review children",
     )
     case_parser.add_argument("--case-id", required=True)
     case_parser.add_argument("--arm", choices=("A", "B"), required=True)

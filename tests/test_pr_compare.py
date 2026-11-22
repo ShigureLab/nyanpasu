@@ -170,29 +170,6 @@ async def test_invalid_comparison_is_rejected_before_fetch_or_child_creation(com
 
 
 @pytest.mark.anyio
-async def test_comparison_does_not_own_or_freeze_correctness_admission(comparison_review):
-    plugin, parent, _, _, _ = comparison_review
-    child = await create_comparison(plugin, parent)
-    inventory = parent.metadata["review_inventory"]
-    group = {
-        "files": [item["path"] for item in inventory["files"]],
-        "category": "production",
-        "decision": "accept",
-        "reason": "Required behavior",
-        "source": "PR requirements",
-        "alternative": "Keep in repository",
-    }
-    plugin._scope_control(parent, {"inventory_id": inventory["inventory_id"], "groups": [group]})
-    parent = plugin.state_store.task_request(parent.task_id)
-    result = plugin._scope_control(
-        parent,
-        {"inventory_id": inventory["inventory_id"], "groups": [{**group, "decision": "clarify"}]},
-    )
-    assert result["scope"][inventory["inventory_id"]]["counts"]["clarify"] == len(group["files"])
-    assert "review_scope" not in child.metadata["inputs"]
-
-
-@pytest.mark.anyio
 async def test_only_root_can_request_comparison(comparison_review):
     plugin, parent, _, fetch, _ = comparison_review
     with pytest.raises(ValueError, match="root reviewer"):

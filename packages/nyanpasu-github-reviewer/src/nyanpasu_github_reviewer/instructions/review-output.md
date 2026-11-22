@@ -26,13 +26,9 @@ Use the gh-slate skill's inspect, preview, apply, and verify workflow. Create wi
 
 Verify that the dashboard exists and record its comment URL before substantive review work or any GitHub review writes. If creation or verification fails, report the blocker and inspect uncertain outcomes before retrying; do not proceed with review publication while the dashboard is missing or its creation is unconfirmed. Read-only analysis may continue.
 
-Retain stable finding IDs and published canonical thread URLs, including resolved and superseded findings. Reuse the embedded definition; select the bundled profile on the next warranted update if it differs, adding stages based on verified coverage rather than inventing past results. Use the observed revision for every update.
+Retain stable finding IDs and published canonical thread URLs, including resolved and superseded findings. Reuse the embedded definition; select the bundled profile on the next warranted update if it differs, adding stages based on verified coverage rather than inventing past results. Remove any old top-level `scope` field when adopting the current definition for code review. Use the observed revision for every update.
 
 After a gh-slate upgrade, an older saved render can fail `state verify` with `rerender_mismatch` without visible edits. Inspect the saved data and dry-run with the current bundled profile; adopt it only when an update is warranted, then verify the resulting state.
-
-### Repository admission data
-
-Copy the service-returned `scope` report into the dashboard under scope-review.md. Show accepted, relocation and clarification counts plus reasons, sources and alternatives. Scope decisions describe repository admission, not finished correctness review. Keep deferred paths visible; a final COMMENT may report their scope concern alongside the accepted-scope review. Preserve the high-severity policy for REQUEST_CHANGES rather than inventing a blocker to report a scope objection.
 
 ### Stage data
 
@@ -44,11 +40,11 @@ Final dashboard outcomes are `approved`, `changes_requested`, or `comment`. Use 
 
 ### Optional CI evidence
 
-The parent alone maintains the optional `ci` section. Read `ci-followup.md` for delegation and current-state verification. Only current failed checks belong here; omit `ci` entirely when no failures remain. Waiting, success, and recovery need no placeholder. CI is separate from review coverage: a CI update preserves the review `status`, `source`, `summary`, `stages`, `scope`, `simplification`, `pr_split`, `pr_comparison`, and `findings`, and never implies approval or a new code finding.
+The parent alone maintains the optional `ci` section. Read `ci-followup.md` for delegation and current-state verification. Only current failed checks belong here; omit `ci` entirely when no failures remain. Waiting, success, and recovery need no placeholder. CI is separate from review coverage: a CI update preserves the review `status`, `source`, `summary`, `stages`, `simplification`, `pr_split`, `pr_comparison`, and `findings`, and never implies approval or a new code finding.
 
 `ci.source.head_sha` identifies the current PR head and may differ from the last reviewed `source.head_sha`. Copy `ci.snapshot_fingerprint` from `ci-refresh`. Set `ci.status` to `analyzing`, `completed`, or `incomplete`; a failed child or unavailable evidence is incomplete, not a verified diagnosis. `ci.failures` is a nonempty object keyed by the service's stable failure IDs. Each entry includes the observed `name`, `url`, `conclusion`, `tested_sha`, and a factual `summary`; retain non-null `run_id` and `run_attempt` when supplied. Completed analysis requires public-safe `evidence` and `next_step`. If evidence is missing, use `incomplete` and explain the uncertainty or unavailable logs rather than inventing a cause. The template shows one compact table with job links, causes, evidence, and next steps; internal IDs and fingerprints remain metadata.
 
-CI-only follow-ups do not require the admission inventory or general/deep review workflow. If no dashboard exists and current failures warrant one, use `status: not_reviewed`, a `source` containing only observed `head_sha` and `base_ref`, empty `findings`, and both stages `pending` with explicit unreviewed summaries. Do not fabricate a reviewed merge-base or inventory. Removing `ci` after recovery preserves this honest review state. A substantive code review later replaces it through the normal lifecycle with a complete pinned `source`. An existing completed review must never be reset to `not_reviewed` merely to report CI.
+CI-only follow-ups do not require the review inventory or general/deep review workflow. If no dashboard exists and current failures warrant one, use `status: not_reviewed`, a `source` containing only observed `head_sha` and `base_ref`, empty `findings`, and both stages `pending` with explicit unreviewed summaries. Do not fabricate a reviewed merge-base or inventory. Removing `ci` after recovery preserves this honest review state. A substantive code review later replaces it through the normal lifecycle with a complete pinned `source`. An existing completed review must never be reset to `not_reviewed` merely to report CI.
 
 Before each CI publication, call `ci-refresh` and reconcile head, failure identities, tested SHAs, and attempts. Remove recovered/replaced entries; discard stale results. A failed observation is not success and must not erase known failures. Use the observed dashboard revision and verify the resulting comment. Do not create a missing dashboard for an empty CI snapshot or write anything for an unchanged snapshot with already recorded analysis.
 

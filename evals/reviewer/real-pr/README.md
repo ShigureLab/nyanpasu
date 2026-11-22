@@ -67,7 +67,7 @@ consolidate = false
 
 `tasks.defaults.execution` 应与 `--target` 一致；专门角色另按 `tasks.kinds` 显式固定模型、推理强度和预算。每个实验使用独立 runtime 和原生后端 home，不复用在线服务状态。临时路径挂载不限制其他目录或网络，也不保证模型沙箱允许写入 `/var/tmp`；严格输入隔离仍需额外的文件和网络限制。工具固定并校验输入、指令、runtime 和原生输出摘要，但不替你安装 reviewer 依赖或验证完整 GitHub 发布流程。
 
-要评估托管角色的选择、路由、结果冻结和父任务收敛，给 `prepare` 或 `prepare-case` 加 `--managed-instructions <冻结的 instructions 目录>`。返回命令使用 `reviewer_eval_managed.py` 注册正式插件的本地范围准入和子任务准备器；远程 PR 分析、线上事件、CI、Dashboard 和发布仍不可用。两组使用同一适配器，各自冻结完整父/子指令目录，并配置相同的角色路由。执行器等待父任务在子任务完成后续接到终态，再录制最终报告；普通 `run-task` 对照不能代替这条链路的验证。
+要评估托管角色的选择、路由、结果冻结和父任务收敛，给 `prepare` 或 `prepare-case` 加 `--managed-instructions <冻结的 instructions 目录>`。返回命令使用 `reviewer_eval_managed.py` 注册正式插件的本地变更清单和子任务准备器；远程 PR 分析、线上事件、CI、Dashboard 和发布仍不可用。两组使用同一适配器，各自冻结完整父/子指令目录，并配置相同的角色路由。执行器等待父任务在子任务完成后续接到终态，再录制最终报告；普通 `run-task` 对照不能代替这条链路的验证。
 
 A/B 对比使用相同案例、模型、预算和环境，在同一实验输出目录准备 `--arm B`。默认使用当前正式指令；只有对照另一份已渲染的指令时才显式提供 `--instructions PATH`。两组会话相互隔离。工具冻结实际使用的指令，并记录正式指令及引用文档的摘要；这些文档变更后需要新实验，不能沿用旧记录。
 

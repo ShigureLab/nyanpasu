@@ -1,4 +1,4 @@
-"""Replay local reviewer admission and children without GitHub or publication hooks."""
+"""Replay pinned local review and children without GitHub or publication hooks."""
 
 from __future__ import annotations
 
@@ -34,7 +34,9 @@ async def run(path: Path) -> None:
         return await plugin.prepare_subtask(parent, request)
 
     agent.add_subtask_preparer(plugin.id, prepare_child)
-    agent.add_task_control_tools(plugin.id, tuple(t for t in plugin.task_control_tools() if t.name == "review-scope"))
+    agent.add_task_control_tools(
+        plugin.id, tuple(t for t in plugin.task_control_tools() if t.name == "review-inventory")
+    )
     try:
         await agent.run_now(task)
         while True:

@@ -97,7 +97,7 @@ async def create_split(plugin, parent):
 
 
 @pytest.mark.anyio
-async def test_split_child_sees_whole_delta_without_admission_and_does_not_freeze_it(split_review):
+async def test_split_child_sees_whole_pinned_delta(split_review):
     plugin, parent, _ = split_review
     child = await create_split(plugin, parent)
 
@@ -114,22 +114,6 @@ async def test_split_child_sees_whole_delta_without_admission_and_does_not_freez
     assert "Separate API and evidence delivery" in child.prompt
     assert "Separate API and evidence delivery" not in child.developer_instructions
 
-    group = {
-        "files": ["api.py", "evidence/%FF.txt"],
-        "category": "production",
-        "decision": "accept",
-        "reason": "Implements the requested behavior",
-        "source": "PR requirement",
-        "alternative": "Keep in repository",
-    }
-    plugin._scope_control(parent, {"inventory_id": "c" * 64, "groups": [group]})
-    parent = plugin.state_store.task_request(parent.task_id)
-    # Packaging analysis is allowed to influence admission, without owning correctness coverage.
-    result = plugin._scope_control(
-        parent,
-        {"inventory_id": "c" * 64, "groups": [{**group, "decision": "relocate", "alternative": "PR artifacts"}]},
-    )
-    assert result["scope"]["c" * 64]["counts"]["relocate"] == 2
     plugin._validate_recovered_subtasks()
     assert plugin.state_store.task_status(child.task_id) == "queued"
 
@@ -162,7 +146,7 @@ async def test_split_recovery_rejects_stale_ranges_even_with_unchanged_head(spli
     "change,error",
     [
         ("nested", "root reviewer"),
-        ("inventory", "read review-scope"),
+        ("inventory", "read review-inventory"),
         ("revision", "inventory head"),
         ("inputs", "inputs must be empty"),
         ("instructions", "roles are supplied by the plugin"),

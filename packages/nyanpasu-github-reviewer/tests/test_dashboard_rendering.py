@@ -11,7 +11,6 @@ from jsonschema import Draft202012Validator, ValidationError
 from nyanpasu_github_reviewer.prompt import TEMPLATES_DIR
 
 REVIEW_URL = "https://github.com/redai-studio/Relax/pull/425#pullrequestreview-5466052458"
-INVENTORY_ID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 
 class Links(HTMLParser):
@@ -40,22 +39,6 @@ class Links(HTMLParser):
 def report() -> dict:
     data = json.loads((TEMPLATES_DIR / "review.example.json").read_text())
     data.pop("pr_split")
-    data["scope"] = {
-        INVENTORY_ID: {
-            "inventory_id": INVENTORY_ID,
-            "counts": {"accept": 1, "relocate": 0, "clarify": 0},
-            "groups": [
-                {
-                    "files": ["service/config.py"],
-                    "category": "production",
-                    "decision": "accept",
-                    "reason": "实现请求的配置行为。",
-                    "source": "功能需求。",
-                    "alternative": "保留当前入口。",
-                }
-            ],
-        }
-    }
     return data
 
 
@@ -82,6 +65,7 @@ def test_completed_review_needs_no_simplification_audit(report: dict) -> None:
     validator.validate(report)
     output, _ = render(report)
     assert "✅ 已通过" in output
+    assert "提交范围" not in output
     assert "改进建议" not in output
 
     # Removing that audit gate must not allow approval of unfinished coverage.
@@ -318,7 +302,6 @@ def test_simplification_marker_requires_explicit_actionable_outcome(report: dict
         ("summary",),
         *(("stages", stage, "summary") for stage in ("general", "deep")),
         *(("ci", "failures", "check:12345", field) for field in ("summary", "evidence", "next_step")),
-        *(("scope", INVENTORY_ID, "groups", 0, field) for field in ("reason", "source", "alternative")),
         *(("simplification", audit, "summary") for audit in ("production", "tests")),
         *(
             ("simplification", audit, "entries", 0, field)

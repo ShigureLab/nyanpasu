@@ -4,7 +4,7 @@ Use this workflow for current CI failures during review and for dedicated CI fol
 
 First read and apply the Review eligibility section in `review-output.md` beside this file, including its live-label check before CI analysis, child dispatch, dashboard writes, and continuation after child results.
 
-CI updates do not reopen code review, require a scope inventory, or change an existing review decision. Preserve the dashboard's review `status`, `source`, `summary`, `stages`, `scope`, `simplification`, `pr_split`, `pr_comparison`, and `findings`. Only the parent writes the optional `ci` section of the existing `nyanpasu-review` dashboard. Do not submit reviews or post inline findings, replies, or separate CI comments from this follow-up.
+CI updates do not reopen code review, require a review inventory, or change an existing review decision. Preserve the dashboard's review `status`, `source`, `summary`, `stages`, `simplification`, `pr_split`, `pr_comparison`, and `findings`. Only the parent writes the optional `ci` section of the existing `nyanpasu-review` dashboard. Do not submit reviews or post inline findings, replies, or separate CI comments from this follow-up.
 
 ## Observe and delegate
 
@@ -25,13 +25,13 @@ CI updates do not reopen code review, require a scope inventory, or change an ex
 }
 ```
 
-The service refreshes and pins the child input, including each failure's ID, tested SHA, run and attempt where available. It does not require `review_files` or the code review scope plan. The child returns evidence privately and cannot publish or repair CI. A fixed request key makes child creation idempotent within the task. In a dedicated CI follow-up, use `await` after completing the current dashboard update. In an ordinary review, continue under `review-workflow.md` before awaiting the CI child. If CI is the only remaining work, preserve the actual completed review stages rather than marking deep review as running. The resumed parent integrates CI evidence without repeating completed code review. A failed child leaves current failures visible with `ci.status: incomplete` and a concrete evidence gap, without altering review stages.
+The service refreshes and pins the child input, including each failure's ID, tested SHA, run and attempt where available. It does not require `review_files`. The child returns evidence privately and cannot publish or repair CI. A fixed request key makes child creation idempotent within the task. In a dedicated CI follow-up, use `await` after completing the current dashboard update. In an ordinary review, continue under `review-workflow.md` before awaiting the CI child. If CI is the only remaining work, preserve the actual completed review stages rather than marking deep review as running. The resumed parent integrates CI evidence without repeating completed code review. A failed child leaves current failures visible with `ci.status: incomplete` and a concrete evidence gap, without altering review stages.
 
 Immediately before publishing a result, refresh CI again. Match the PR head and failure identities, including the tested SHA and run attempt. Discard results for replaced or recovered failures; never relabel old evidence as a current failure. If a new failure appears during analysis, handle it as new work. If the PR closed, stop without a new dashboard write.
 
 ## Dashboard publication
 
-Use gh-slate inspect, preview, apply with the observed revision, and verify. Use the bundled `boards.toml`, profile `review`, supplied in the current turn; the adjacent schema is authoritative. Read the optional CI section in `review-output.md` beside this file for the data contract. Existing review fields remain unchanged during a dedicated CI follow-up, including an older reviewed head when CI concerns a newer head. CI has its own source head and must not imply that this head has been reviewed.
+Use gh-slate inspect, preview, apply with the observed revision, and verify. For an existing dashboard, use its embedded definition. When creating a dashboard, use the bundled `boards.toml`, profile `review`. Read the optional CI section in `review-output.md` beside this file for the data contract. Existing review fields remain unchanged during a dedicated CI follow-up, including an older reviewed head when CI concerns a newer head. CI has its own source head and must not imply that this head has been reviewed.
 
 If failures exist and the dashboard is missing, create a factual `status: not_reviewed` dashboard: `source` contains only the current `head_sha` and `base_ref`, `findings` is empty, both stages are `pending`, and summaries explicitly say code review has not been performed. Do not invent a merge-base, inventory ID, coverage, or review result. Copy the current disclosure as plain text. Later recovery removes only `ci`; the unreviewed status remains until a real review supplies its evidence. Normal review creation and completion follow the full review lifecycle.
 
