@@ -868,6 +868,7 @@ async def test_agent_binds_instruction_documents_on_each_resumed_turn(tmp_path: 
     assert "Stay precise." in codex.instructions[0]
     assert "--- AGENTS.md ---" in codex.instructions[0]
     assert all("Stay precise." not in prompt for prompt in codex.prompts)
+    assert all("yield_time_ms=20000" in instructions for instructions in codex.instructions)
     assert codex.calls[1][1] == "thread-1"
 
 
@@ -1075,6 +1076,7 @@ async def test_capture_only_claude_instructions_matches_the_actual_backend_call(
         assert captured == execution.instructions[0]
         assert "Keep the project rules." in captured
         assert "Nyanpasu task control" in captured
+        assert "yield_time_ms=20000" not in captured
     else:
         assert captured is None
 
