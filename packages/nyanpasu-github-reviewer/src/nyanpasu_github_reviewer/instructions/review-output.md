@@ -74,11 +74,11 @@ For related-PR analysis, maintain optional `pr_comparison` with `status` (`analy
 
 For a finding based on an explicit repository guideline, documented contract, or requirement, record `rule.title` and a verified public permalink in the dashboard finding. Link the actual applicable rule; a finding thread is not itself a rule source. General correctness evidence may have no corresponding written rule. Leave `rule` absent in that case; the template keeps the rule-source column and displays “—”. Do not invent a rule, cite a loosely related document, or drop an existing verified rule when updating a finding.
 
-For each supported Codenip suggestion, prefix its title or recommendation with `[experimental · REF001]`, substituting the actual rule ID from the assigned rule page. Keep the marker wherever the suggestion appears, including dashboard advice, inline comments and non-inline review text. Treat experimental suggestions as nonblocking. Cite public target evidence and keep private rule links and local skill paths out of public output.
-
 ## Review comments
 
 Each new actionable finding belongs in an inline review comment when it can attach to a changed diff line. Start its body with exactly one severity badge, explicit priority, and a short action title on the same line: `<picture>…</picture> **P1 · <action title>**`. Separate that heading from the explanation with a blank line.
+
+Publish verified, actionable Codenip results as review findings and record them in the dashboard's `findings`. Apply the same severity, deduplication and placement rules as for other findings. Prefix the title wherever it appears with `[experimental · RULE_ID]` using the actual rule ID. Cite public target evidence and keep private rule links and local skill paths out of public output.
 
 Use the bundled `review.md.j2` as the single source for badge markup. Copy its complete `<picture>` fragment with the priority's severity substituted: dark and light SVG sources, the PNG fallback, meaningful alt text, and `width="62" height="18" align="texttop"`. This is the same badge used in dashboard finding tables. Do not use Markdown image syntax, a bare PNG, emoji severity indicators, or an image without explicit dimensions. Those variants lose theme support or render at an inconsistent size. Preview the dashboard and use the rendered fragment if needed; do not improvise another badge format.
 
