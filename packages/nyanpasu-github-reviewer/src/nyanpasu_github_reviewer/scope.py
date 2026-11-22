@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from collections import Counter
 from typing import TYPE_CHECKING, Literal
@@ -12,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from nyanpasu.git_ops import WorktreeManager
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from nyanpasu.config import NyanpasuConfig
     from nyanpasu.models import AgentTask
 
@@ -55,11 +58,23 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
     if len(bases) != 1:
         raise ValueError("review scope requires one unambiguous merge-base")
     base = bases[0]
+    inventory = {
+        "head_sha": head,
+        "base_ref": pr["base_ref"],
+        "target_base_sha": target,
+        "merge_base_sha": base,
+        "source_tree_sha": git("rev-parse", f"{base}^{{tree}}").strip(),
+        **_range_stats(workspace.local_path, base, head),
+    }
+    return {"inventory_id": _inventory_id(inventory), **inventory}
+
+
+def _range_stats(repo: Path, base: str, head: str) -> dict:
     # Treat a rename as removal + addition: both paths remain accountable, including
     # binary files and paths containing tabs/newlines. No GitHub API file-count cap.
     numstat = subprocess.run(
         ["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", base, head, "--"],
-        cwd=workspace.local_path,
+        cwd=repo,
         capture_output=True,
         check=True,
     ).stdout
@@ -82,24 +97,54 @@ def build_inventory(config: NyanpasuConfig, task: AgentTask) -> dict:
         counts["files"] += 1
         counts["additions"] += additions
         counts["deletions"] += deletions
-    inventory = {
-        "head_sha": head,
-        "base_ref": pr["base_ref"],
-        "target_base_sha": target,
-        "merge_base_sha": base,
-        "source_tree_sha": git("rev-parse", f"{base}^{{tree}}").strip(),
-        "path_encoding": path_encoding,
-        "files": files,
-        "directories": directories,
-    }
+    return {"path_encoding": path_encoding, "files": files, "directories": directories}
+
+
+def _inventory_id(inventory: dict) -> str:
     # Advancing the target without changing the merge-base leaves this diff intact.
-    identity = {key: value for key, value in inventory.items() if key != "target_base_sha"}
-    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return {"inventory_id": digest, **inventory}
+    identity = {key: value for key, value in inventory.items() if key not in {"inventory_id", "target_base_sha"}}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
 def review_source(inventory: dict) -> dict:
     return {key: inventory[key] for key in ("head_sha", "base_ref", "merge_base_sha", "inventory_id")}
+
+
+def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict | None:
+    """Compare against a completed dashboard review whose pinned range still verifies."""
+    if prior_review.get("status") not in {"approved", "changes_requested", "comment"}:
+        return None
+    source = prior_review.get("source")
+    if not isinstance(source, dict):
+        return None
+    base = inventory["merge_base_sha"]
+    previous_head = source.get("head_sha")
+    if (
+        source.get("base_ref") != inventory["base_ref"]
+        or source.get("merge_base_sha") != base
+        or not isinstance(previous_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", previous_head)
+    ):
+        return None
+    try:
+        previous = {**inventory, "head_sha": previous_head, **_range_stats(repo, base, f"{previous_head}^{{commit}}")}
+        previous_id = _inventory_id(previous)
+        if previous_id != source.get("inventory_id"):
+            return None
+        delta = _range_stats(repo, previous_head, inventory["head_sha"])
+    except subprocess.CalledProcessError:
+        # A force-pushed or pruned commit may no longer be available locally.
+        return None
+    return {
+        "previous_source": review_source({**previous, "inventory_id": previous_id}),
+        "path_encoding": delta["path_encoding"],
+        "files": delta["files"],
+        "open_findings": [
+            {"id": finding_id, **{key: finding[key] for key in ("title", "status", "url")}}
+            for finding_id, finding in prior_review.get("findings", {}).items()
+            if finding["status"] in {"unresolved", "partial"}
+        ],
+    }
 
 
 def validate_plan(inventory: dict, payload: dict) -> ScopePlan:

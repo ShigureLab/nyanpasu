@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import subprocess
 from unittest.mock import Mock
@@ -13,13 +14,19 @@ from fastapi import FastAPI
 from nyanpasu.agent import AgentService
 from nyanpasu.config import PluginsConfig
 from nyanpasu.control_tools import EmptyInput
-from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
-from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
 from nyanpasu_github_reviewer.pr_split import changed_line_count
-from nyanpasu_github_reviewer.scope import build_inventory, review_source, scope_report, validate_plan
+from nyanpasu_github_reviewer.scope import (
+    build_inventory,
+    build_review_delta,
+    review_source,
+    scope_report,
+    validate_plan,
+)
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, fake_backends
 from tests.test_review_reference import reference_request, repository
 from tests.test_subtask_runtime import wait_status
@@ -100,6 +107,88 @@ def group(files, decision="accept"):
         "source": "Feature request and repository callers",
         "alternative": "Fixed PR evidence archive",
     }
+
+
+@pytest.mark.anyio
+async def test_re_review_uses_published_verified_range_and_delivers_removed_paths(tmp_path, monkeypatch):
+    task, git, base, target = scoped_task(tmp_path)
+    repo = task.workspace.local_path
+    runtime = _config(tmp_path)
+    previous = build_inventory(runtime, task)
+    (repo / "helper.py").write_text("def helper(): return 2\n")
+    (repo / "demos/result.json").unlink()
+    git("add", "-A")
+    git("commit", "-m", "address review")
+    head = git("rev-parse", "HEAD")
+    pr = PullRequestRef(
+        repo="ExampleOrg/ExampleRepo",
+        number=1,
+        url="https://github.com/ExampleOrg/ExampleRepo/pull/1",
+        base_ref="main",
+        head_ref="feature",
+        base_sha=target,
+        head_sha=head,
+        state="open",
+        draft=False,
+    )
+    plugin = GitHubReviewerPlugin(
+        GitHubReviewerConfig(repos={pr.repo: RepoSettings(local_path=repo, github_remote=str(repo))})
+    )
+    plugin.runtime = Mock(config=runtime)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    monkeypatch.setattr(module, "_fetch_pr", lambda *args: pr)
+    finding = {"title": "Recheck callers", "status": "partial", "url": pr.url + "#discussion_r1"}
+    prior_review = {
+        "status": "changes_requested",
+        "source": review_source(previous),
+        "findings": {"F1": finding, "F2": {**finding, "status": "resolved"}},
+    }
+    read = Mock(return_value={"data": prior_review})
+    monkeypatch.setattr(module, "read_review_dashboard", read)
+    task = task.model_copy(
+        update={
+            "kind": "github_reviewer.review",
+            "execution": runtime.resolve_execution("github_reviewer.review"),
+            "metadata": {
+                **task.metadata,
+                "pull_request": pr.model_dump(mode="json"),
+                "triggers": [ReviewTrigger(kind="pull_request_synchronize").model_dump(mode="json")],
+            },
+        }
+    )
+    context = AgentContext(
+        context_key=task.context_key,
+        thread_id="existing",
+        revision="last-unverified-turn",
+        session_worktree=repo,
+        workspace_key=pr.repo,
+    )
+    prepared = await plugin.prepare_task(task, (), context)
+
+    prompt_line = next(line for line in prepared.prompt.splitlines() if line.startswith("Changes since the last"))
+    delta = json.loads(prompt_line.partition(": ")[2])
+    assert delta["previous_source"] == review_source(previous)
+    assert delta["previous_source"]["merge_base_sha"] == base
+    assert {entry["path"] for entry in delta["files"]} == {"helper.py", "demos/result.json"}
+    assert delta["open_findings"] == [{"id": "F1", **finding}]
+    assert "last-unverified-turn" not in prepared.prompt
+    inventory = prepared.metadata["review_inventory"]
+    assert {entry["path"] for entry in inventory["files"]} == {"helper.py", "author-only.txt"}
+    read.assert_called_once_with(plugin.config, pr)
+
+    for old_review in (
+        {**prior_review, "status": "preliminary"},
+        {**prior_review, "source": {**prior_review["source"], "merge_base_sha": "0" * 40}},
+        {**prior_review, "source": {**prior_review["source"], "inventory_id": "0" * 64}},
+        {**prior_review, "source": {**prior_review["source"], "head_sha": "0" * 40}},
+    ):
+        assert build_review_delta(repo, inventory, old_review) is None
+    assert build_review_delta(repo, previous, prior_review)["files"] == []
+
+    read.side_effect = ValueError("dashboard has visible drift")
+    fallback = await plugin.prepare_task(task, (), context)
+    assert fallback.action is TaskAction.RUN and fallback.metadata["review_inventory"] == inventory
+    assert "Changes since the last verified review" not in fallback.prompt
 
 
 @pytest.mark.anyio

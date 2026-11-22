@@ -945,6 +945,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
         },
     )
     plugin.runtime = Mock(config=agent.config)
+    monkeypatch.setattr(module, "read_review_dashboard", lambda *args: None)
     agent.add_task_preparer(plugin.id, plugin.prepare_task)
     return agent, plugin, backend, head
 

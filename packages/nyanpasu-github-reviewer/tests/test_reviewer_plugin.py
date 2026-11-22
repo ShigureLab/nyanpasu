@@ -82,6 +82,7 @@ def _live_pr(**updates):
 def _stub_github(monkeypatch, *, files=(), **updates):
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
     monkeypatch.setattr(module, "gh_json", lambda *args, **kwargs: _live_pr(**updates))
+    monkeypatch.setattr(module, "read_review_dashboard", lambda *args: None)
     monkeypatch.setattr(
         module,
         "build_inventory",

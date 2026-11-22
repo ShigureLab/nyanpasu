@@ -69,6 +69,7 @@ def build_review_prompt(
     has_session: bool = False,
     previous_task_head: str | None = None,
     inventory: dict | None = None,
+    review_delta: dict | None = None,
 ) -> str:
     lines = [
         f"{'Continue reviewing' if has_session else 'Review'} {pr.repo} PR #{pr.number}: {pr.url}",
@@ -79,7 +80,12 @@ def build_review_prompt(
         f"Review workflow: {INSTRUCTIONS_DIR / 'review-workflow.md'}",
         f"Dashboard definition: {TEMPLATES_DIR / 'boards.toml'} (profile: review; name: nyanpasu-review)",
     ]
-    if previous_task_head:
+    if review_delta is not None:
+        lines.append(
+            "Changes since the last verified review and its open findings (JSON evidence): "
+            + json.dumps(review_delta, ensure_ascii=False, separators=(",", ":"))
+        )
+    elif previous_task_head:
         lines.append(f"Previous task head (not proof of completed review): {previous_task_head}")
     if inventory is not None:
         lines.append("Pinned dashboard source (JSON): " + json.dumps(review_source(inventory), ensure_ascii=False))

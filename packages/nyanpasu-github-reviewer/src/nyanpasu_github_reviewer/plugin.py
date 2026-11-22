@@ -4,6 +4,7 @@ import asyncio
 import functools
 import hashlib
 import json
+import subprocess
 import time
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -51,6 +52,7 @@ from nyanpasu_github_reviewer.scope import (
     ScopePlan,
     admitted_files,
     build_inventory,
+    build_review_delta,
     review_source,
     scope_report,
     validate_plan,
@@ -587,12 +589,22 @@ class GitHubReviewerPlugin:
                 }
             )
         metadata.pop("ci_snapshot", None)
-        metadata["review_inventory"] = build_inventory(
+        inventory = build_inventory(
             self.runtime.config, task.model_copy(update={"workspace": workspace, "metadata": metadata})
         )
-        metadata["memory_query"] += "\n" + "\n".join(item["path"] for item in metadata["review_inventory"]["files"])
-        if metadata.get("review_scope", {}).get("inventory_id") != metadata["review_inventory"]["inventory_id"]:
+        metadata["review_inventory"] = inventory
+        metadata["memory_query"] += "\n" + "\n".join(item["path"] for item in inventory["files"])
+        if metadata.get("review_scope", {}).get("inventory_id") != inventory["inventory_id"]:
             metadata.pop("review_scope", None)
+        review_delta = None
+        if workspace is not None and (context is not None or any(t.kind != "pull_request_opened" for t in triggers)):
+            try:
+                dashboard = read_review_dashboard(self.config, pr)
+            except (OSError, subprocess.TimeoutExpired, GitHubCommandError, ValueError):
+                logger.warning("Review dashboard unavailable for {}; using the full pinned diff", pr.key)
+            else:
+                if dashboard is not None:
+                    review_delta = build_review_delta(workspace.local_path, inventory, dashboard["data"])
         return task.model_copy(
             update={
                 "workspace": workspace,
@@ -610,7 +622,8 @@ class GitHubReviewerPlugin:
                     triggers=triggers,
                     has_session=bool(context and context.thread_id),
                     previous_task_head=context.revision if context else None,
-                    inventory=metadata["review_inventory"],
+                    inventory=inventory,
+                    review_delta=review_delta,
                 ),
                 "metadata": metadata,
             }
