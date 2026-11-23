@@ -119,7 +119,7 @@ backend = "codex"
 driver = "codex"
 
 [backends.memory.process]
-command = ["codex", "-c", "features.multi_agent=false"]
+command = ["codex", "-c", "agents.enabled=false", "--disable", "multi_agent_v2"]
 
 [backends.memory.defaults]
 model = "gpt-6-luna"
