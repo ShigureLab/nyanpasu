@@ -357,15 +357,23 @@ class MemoryInjectionPage(ContractModel):
     has_more: bool
 
 
-class ModelUsageTotals(ContractModel):
+class ModelUsageCost(ContractModel):
     calls: int = 0
+    cost_usd: float | None = None
+    priced_calls: int = 0
+
+
+class ModelUsageCostBucket(ModelUsageCost):
+    start_at: float
+    end_at: float
+
+
+class ModelUsageTotals(ModelUsageCost):
     cached_calls: int = 0
     input_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
     output_tokens: int = 0
-    cost_usd: float | None = None
-    priced_calls: int = 0
 
 
 class ModelUsageByAgent(ModelUsageTotals):
@@ -385,6 +393,7 @@ class ModelUsageBySession(ModelUsageTotals):
 
 
 class ModelUsageWindow(ModelUsageTotals):
+    cost_buckets: list[ModelUsageCostBucket]
     by_agent: list[ModelUsageByAgent]
     by_model: list[ModelUsageByModel]
     top_sessions: list[ModelUsageBySession]

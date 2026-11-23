@@ -683,8 +683,17 @@ test.describe('model usage with a Chinese browser locale', () => {
       thread_id: 'fixture-thread',
       session_id: 'fixture-thread',
     };
+    const buckets = (count: number, seconds: number, calls: number, priced: number, usd: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        start_at: 1789344200 - (count - i) * seconds,
+        end_at: 1789344200 - (count - i - 1) * seconds,
+        calls: i === count - 1 ? calls - 1 : Number(i === 1),
+        priced_calls: i === count - 1 ? priced : 0,
+        cost_usd: i === count - 1 ? usd : null,
+      }));
     const day = {
       ...usage,
+      cost_buckets: buckets(24, 3600, 5, 4, 0.0012),
       by_agent: [{ ...usage, agent: 'today-agent' }],
       by_model: [
         { ...usage, model: 'today-model', backend: 'codex' },
@@ -695,6 +704,7 @@ test.describe('model usage with a Chinese browser locale', () => {
     const week = {
       ...usage,
       calls: 10,
+      cost_buckets: buckets(7, 86400, 10, 4, 0.0012),
       by_agent: [{ ...usage, agent: 'week-agent' }],
       by_model: [{ ...usage, model: 'week-model', backend: 'codex' }],
       top_sessions: [{ ...session, context_key: 'demo:week' }],
@@ -706,6 +716,7 @@ test.describe('model usage with a Chinese browser locale', () => {
       cached_input_tokens: 6000,
       cost_usd: 12.34,
       priced_calls: 18,
+      cost_buckets: buckets(30, 86400, 20, 18, 12.34),
       by_agent: [{ ...usage, agent: 'month-agent' }],
       by_model: [{ ...usage, model: 'month-model', backend: 'codex' }],
       top_sessions: [session],
@@ -740,6 +751,15 @@ test.describe('model usage with a Chinese browser locale', () => {
     await expect(table('agent')).toContainText('today-agent');
     await expect(table('agent')).toContainText('$0.0012');
     await expect(metrics.getByTitle('4 of 5 calls priced')).toHaveText('$0.0012*');
+    const hourly = panel.getByRole('slider', { name: 'Hourly estimated cost' });
+    await expect(hourly).toHaveAttribute('aria-valuemax', '24');
+    await expect(hourly).toHaveAttribute('aria-valuetext', /\$0\.0012, 4 of 4 calls priced/);
+    await hourly.press('Home');
+    await expect(hourly).toHaveAttribute('aria-valuetext', /\$0\.00, No recorded calls/);
+    await hourly.press('ArrowRight');
+    await expect(hourly).toHaveAttribute('aria-valuetext', /—, No matching API rates/);
+    await expect(panel.locator('figcaption')).toContainText('No matching API rates');
+    await expect(hourly.locator('circle')).toHaveCount(23);
     await expect(panel.getByLabel('Token cache hit rate')).toHaveAttribute('value', '0.75');
     await expect(metrics).toContainText('160 uncached');
     await panel.getByText('Token details').click();
@@ -756,12 +776,19 @@ test.describe('model usage with a Chinese browser locale', () => {
         .getByTitle('No matching API rates'),
     ).toHaveText('—');
     await range.getByRole('button', { name: '7d' }).click();
+    const daily = panel.getByRole('slider', { name: 'Daily estimated cost' });
+    await expect(daily).toHaveAttribute('aria-valuemax', '7');
+    await expect(daily).toHaveAttribute('aria-valuetext', /\$0\.0012, 4 of 9 calls priced/);
     await expect(table('model')).toContainText('week-model');
     await expect(calls.getByTitle('10', { exact: true })).toBeVisible();
     await group.getByRole('button', { name: 'Sessions' }).click();
     await expect(range.getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true');
     await expect(table('session')).toContainText('demo:week');
     await range.getByRole('button', { name: '30d' }).click();
+    await expect(daily).toHaveAttribute('aria-valuemax', '30');
+    await expect(daily).toHaveAttribute('aria-valuetext', /\$12\.34, 18 of 19 calls priced/);
+    await daily.locator('rect').first().hover();
+    await expect(daily).toHaveAttribute('aria-valuetext', /\$0\.00, No recorded calls/);
     await expect(range.getByRole('button', { name: '30d' })).toHaveAttribute(
       'aria-pressed',
       'true',

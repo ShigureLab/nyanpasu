@@ -431,52 +431,61 @@ export interface ModelUsagePeriods {
 }
 export interface ModelUsageWindow {
   calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
   cached_calls: number;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
-  priced_calls: number;
+  cost_buckets: ModelUsageCostBucket[];
   by_agent: ModelUsageByAgent[];
   by_model: ModelUsageByModel[];
   top_sessions: ModelUsageBySession[];
   [k: string]: unknown;
 }
+export interface ModelUsageCostBucket {
+  calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
+  start_at: number;
+  end_at: number;
+  [k: string]: unknown;
+}
 export interface ModelUsageByAgent {
   calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
   cached_calls: number;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
-  priced_calls: number;
   agent: string | null;
   [k: string]: unknown;
 }
 export interface ModelUsageByModel {
   calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
   cached_calls: number;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
-  priced_calls: number;
   backend: string;
   model: string | null;
   [k: string]: unknown;
 }
 export interface ModelUsageBySession {
   calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
   cached_calls: number;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
-  priced_calls: number;
   backend: string;
   context_key: string;
   thread_id: string;
@@ -485,12 +494,12 @@ export interface ModelUsageBySession {
 }
 export interface ModelUsageTotals {
   calls: number;
+  cost_usd: number | null;
+  priced_calls: number;
   cached_calls: number;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-  cost_usd: number | null;
-  priced_calls: number;
   [k: string]: unknown;
 }

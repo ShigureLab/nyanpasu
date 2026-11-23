@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import re
 import stat
-import time
 from collections import defaultdict
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from heapq import nlargest
+from time import time
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread as to_thread
@@ -22,6 +22,8 @@ from nyanpasu.transcript.models import (
     ModelUsageByAgent,
     ModelUsageByModel,
     ModelUsageBySession,
+    ModelUsageCost,
+    ModelUsageCostBucket,
     ModelUsagePeriods,
     ModelUsageSnapshot,
     ModelUsageTotals,
@@ -175,16 +177,20 @@ def claude_calls(lines: Iterable[bytes], thread_id: str) -> Iterable[Call]:
     return calls.values()
 
 
-def add_usage(totals: ModelUsageTotals, addition: ModelUsageTotals) -> None:
+def add_cost(totals: ModelUsageCost, addition: ModelUsageCost) -> None:
     totals.calls += addition.calls
+    if addition.cost_usd is not None:
+        totals.cost_usd = (totals.cost_usd or 0.0) + addition.cost_usd
+        totals.priced_calls += addition.priced_calls
+
+
+def add_usage(totals: ModelUsageTotals, addition: ModelUsageTotals) -> None:
+    add_cost(totals, addition)
     totals.cached_calls += addition.cached_calls
     totals.input_tokens += addition.input_tokens
     totals.cached_input_tokens += addition.cached_input_tokens
     totals.cache_write_tokens += addition.cache_write_tokens
     totals.output_tokens += addition.output_tokens
-    if addition.cost_usd is not None:
-        totals.cost_usd = (totals.cost_usd or 0.0) + addition.cost_usd
-        totals.priced_calls += addition.priced_calls
 
 
 def total_tokens(totals: ModelUsageTotals) -> int:
@@ -208,19 +214,28 @@ class BoundSession:
     agent: str | None
 
 
-@dataclass(slots=True)
 class UsageWindow:
-    start: float
-    total: ModelUsageTotals = field(default_factory=ModelUsageTotals)
-    agents: dict[str | None, ModelUsageTotals] = field(default_factory=lambda: defaultdict(ModelUsageTotals))
-    models: dict[tuple[str, str | None], ModelUsageTotals] = field(
-        default_factory=lambda: defaultdict(ModelUsageTotals)
-    )
-    sessions: list[tuple[BoundSession, ModelUsageTotals]] = field(default_factory=list)
+    def __init__(self, end: float, count: int, bucket_seconds: int):
+        self.start = end - count * bucket_seconds
+        self.bucket_seconds = bucket_seconds
+        self.cost_buckets = [
+            ModelUsageCostBucket(start_at=self.start + i * bucket_seconds, end_at=self.start + (i + 1) * bucket_seconds)
+            for i in range(count)
+        ]
+        self.total = ModelUsageTotals()
+        self.agents: dict[str | None, ModelUsageTotals] = defaultdict(ModelUsageTotals)
+        self.models: dict[tuple[str, str | None], ModelUsageTotals] = defaultdict(ModelUsageTotals)
+        self.sessions: list[tuple[BoundSession, ModelUsageTotals]] = []
+
+    def record_cost(self, call: Call) -> None:
+        index = int((call.timestamp - self.start) / self.bucket_seconds)
+        # A call exactly at the snapshot time belongs in the last bucket.
+        add_cost(self.cost_buckets[min(index, len(self.cost_buckets) - 1)], call.tokens)
 
     def snapshot(self) -> ModelUsageWindow:
         return ModelUsageWindow(
             **self.total.model_dump(),
+            cost_buckets=self.cost_buckets,
             by_agent=[
                 ModelUsageByAgent(**usage.model_dump(), agent=agent)
                 for agent, usage in sorted(self.agents.items(), key=lambda item: -total_tokens(item[1]))
@@ -340,8 +355,8 @@ class ModelUsageReader:
         return LogUsage(signature, total, latest, tuple(recent))
 
     def _read(self) -> ModelUsageSnapshot:
-        now = time.time()
-        day, week, month = windows = tuple(UsageWindow(now - days * DAY) for days in (1, 7, 30))
+        now = time()
+        day, week, month = windows = UsageWindow(now, 24, 3600), UsageWindow(now, 7, DAY), UsageWindow(now, 30, DAY)
         unavailable = 0
         sources: dict[tuple[Path, str], dict[str, BoundSession]] = defaultdict(dict)
         for name, sessions in self._sessions().items():
@@ -390,7 +405,8 @@ class ModelUsageReader:
                 for call in recent:
                     model = (session.backend, redact(call.model))
                     for window, totals in session_totals:
-                        if call.timestamp >= window.start:
+                        if window.start <= call.timestamp <= now:
+                            window.record_cost(call)
                             add_usage(totals, call.tokens)
                             add_usage(window.models[model], call.tokens)
                 for window, totals in session_totals:

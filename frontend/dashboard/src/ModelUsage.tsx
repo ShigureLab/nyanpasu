@@ -2,16 +2,11 @@ import { useState, type ReactNode } from 'react';
 import type { ModelUsageSnapshot, ModelUsageTotals, ModelUsageWindow } from './api-types';
 import { query, useResource } from './api';
 import { Time } from './Time';
+import { Cost, UsageCostChart } from './UsageCostChart';
 
 const count = new Intl.NumberFormat('en-US');
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
 const percent = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 });
-const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
-const fractionalDollars = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 4,
-});
 const periods = [
   { key: 'last_24h', short: '24h', label: 'Last 24 hours' },
   { key: 'last_7d', short: '7d', label: 'Last 7 days' },
@@ -35,21 +30,6 @@ function rateLabel(value: number | null) {
 
 function Count({ value }: { value: number }) {
   return <span title={count.format(value)}>{compact.format(value)}</span>;
-}
-
-function Cost({ usage }: { usage: ModelUsageTotals }) {
-  const amount = usage.cost_usd;
-  if (amount == null) return <span title="No matching API rates">—</span>;
-  const formatter = amount > 0 && amount < 0.01 ? fractionalDollars : dollars;
-  const label = amount > 0 && amount < 0.0001 ? '<$0.0001' : formatter.format(amount);
-  return (
-    <span
-      title={`${count.format(usage.priced_calls)} of ${count.format(usage.calls)} calls priced`}
-    >
-      {label}
-      {usage.priced_calls < usage.calls && <sup aria-label="Partial estimate">*</sup>}
-    </span>
-  );
 }
 
 function dimensionRows(usage: ModelUsageWindow, dimension: Dimension): UsageRow[] {
@@ -193,8 +173,10 @@ export function ModelUsage({ live, refresh }: { live: boolean; refresh: number }
                     USD · <Count value={current.priced_calls} /> of <Count value={current.calls} />{' '}
                     calls priced
                   </>
-                ) : (
+                ) : current.calls ? (
                   'No matching API rates'
+                ) : (
+                  'No recorded calls'
                 )}
               </dd>
             </div>
@@ -238,6 +220,11 @@ export function ModelUsage({ live, refresh }: { live: boolean; refresh: number }
               )}
             </div>
           </dl>
+          <UsageCostChart
+            key={period.key}
+            buckets={current.cost_buckets}
+            hourly={period.key === 'last_24h'}
+          />
           <div className="runtime-usage-toolbar">
             <div className="runtime-usage-switch" role="group" aria-label="Group usage by">
               {dimensions.map((item) => (

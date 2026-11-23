@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.anyio
-async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path):
+async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     codex, claude = tmp_path / "codex", tmp_path / "claude"
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
@@ -62,7 +62,8 @@ async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path):
     store.record_task(missing)
     store.bind_task_execution(missing.task_id, "32ebdbc4-816b-4dba-a532-bb1bde0c9747", "missing-turn")
 
-    now = datetime.now(UTC)
+    now = datetime(2026, 11, 24, 5, 17, tzinfo=UTC)
+    monkeypatch.setattr("nyanpasu.transcript.usage.time", now.timestamp)
 
     def stamp(days: float) -> str:
         return (now - timedelta(days=days)).isoformat()
@@ -103,14 +104,14 @@ async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path):
         codex_record("turn_context", turn_id="older", model="codex-archive"),
         token_count(31, 3, 1, 1),
         codex_record("turn_context", turn_id="legacy", model="codex-old"),
-        token_count(29, 13, 6, 3),
-        token_count(2, 33, 11, 6),
-        token_count(2, 33, 11, 6),
+        token_count(30, 13, 6, 3),
+        token_count(7, 33, 11, 6),
+        token_count(7, 33, 11, 6),
         codex_record("event_msg", type="task_started", turn_id="modern"),
-        response("compaction", 4, 0, 1),
+        {**response("compaction", 4, 0, 1), "timestamp": stamp(1)},
         codex_record("turn_context", turn_id="modern", model="gpt-6.2-sol"),
         token_count(0.2, 33, 11, 6),
-        response("normal", 100, 60, 9),
+        {**response("normal", 100, 60, 9), "timestamp": stamp(0)},
         response("normal", 100, 60, 9),
         token_count(0.2, 133, 71, 15),
     )
@@ -173,6 +174,21 @@ async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path):
         }
         assert day["cost_usd"] == pytest.approx(0.000194)
         assert day["priced_calls"] == 2
+        for window, count, seconds in ((day, 24, 3600), (week, 7, 86400), (month, 30, 86400)):
+            buckets = window["cost_buckets"]
+            assert len(buckets) == count
+            assert [b["start_at"] for b in buckets] == [now.timestamp() - i * seconds for i in range(count, 0, -1)]
+            assert all(b["end_at"] == b["start_at"] + seconds for b in buckets)
+            assert sum(b["calls"] for b in buckets) == window["calls"]
+            assert sum(b["priced_calls"] for b in buckets) == window["priced_calls"]
+            assert sum(b["cost_usd"] or 0 for b in buckets) == pytest.approx(window["cost_usd"])
+        assert day["cost_buckets"][0]["cost_usd"] == pytest.approx(0.000018)
+        assert day["cost_buckets"][-1]["cost_usd"] == pytest.approx(0.000176)
+        assert day["cost_buckets"][1]["calls"] == 0
+        assert day["cost_buckets"][-3]["calls"] == 1
+        assert day["cost_buckets"][-3]["cost_usd"] is None
+        assert week["cost_buckets"][-1]["priced_calls"] == 2
+        assert week["cost_buckets"][-1]["calls"] == 3
         assert week["input_tokens"] == 224
         assert month["input_tokens"] == 414
         assert periods["all_time"]["input_tokens"] == 417
@@ -215,6 +231,11 @@ async def test_model_usage_reads_native_history_and_refreshes(tmp_path: Path):
         refreshed = (await client.get("/api/model-usage")).json()
         assert refreshed["periods"]["last_24h"]["calls"] == 3
         assert refreshed["periods"]["last_24h"]["output_tokens"] == 18
+        monkeypatch.setattr("nyanpasu.transcript.usage.time", (now + timedelta(hours=1)).timestamp)
+        shifted = (await client.get("/api/model-usage")).json()["periods"]["last_24h"]
+        assert shifted["calls"] == 2
+        assert shifted["cost_usd"] == pytest.approx(0.000176)
+        assert shifted["cost_buckets"][-1]["cost_usd"] == pytest.approx(shifted["cost_usd"])
 
 
 def test_estimated_api_cost_uses_provider_rates_and_openai_prompt_size():
