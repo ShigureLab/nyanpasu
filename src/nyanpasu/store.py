@@ -122,7 +122,7 @@ class StateStore:
             if (
                 row is None
                 or row["action"] != TaskAction.RUN.value
-                or row["created_at"] < coalesce_since
+                or (not task.coalesce_until_started and row["created_at"] < coalesce_since)
                 or row["backend"] != backend
             ):
                 return True, None

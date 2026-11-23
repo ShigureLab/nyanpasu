@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import AgentContext, SubtaskRequest, TaskAction
+from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu.targets import ExecutionOverride
 from nyanpasu_github_reviewer.ci import CIFailure, CISnapshot
@@ -285,10 +285,16 @@ async def test_ci_recovery_respects_read_only_publication(ci_plugin, ci_mocks, m
 
 
 @pytest.mark.anyio
-async def test_ci_signal_coalesced_with_code_change_keeps_the_normal_review_path(ci_plugin, monkeypatch):
+async def test_push_joins_older_queued_ci_task_and_keeps_the_normal_review_path(ci_plugin, monkeypatch):
     plugin, pr = ci_plugin
     ci = event_task(plugin, pr)
     code = event_task(plugin, pr, "pull_request_synchronize", "code-1")
+    store = plugin.state_store
+    assert store.record_task(ci)
+    created_at = store.task_run(ci.task_id).created_at
+    assert created_at is not None
+    assert store.enqueue_task(code, coalesce_since=created_at + 1) == (True, ci.task_id)
+    (coalesced,) = store.coalesced_tasks_for(ci.task_id)
     inventory = {
         "head_sha": HEAD,
         "base_ref": "main",
@@ -299,8 +305,12 @@ async def test_ci_signal_coalesced_with_code_change_keeps_the_normal_review_path
     build = Mock(return_value=inventory)
     monkeypatch.setattr(plugin_module, "build_inventory", build)
 
-    prepared = await plugin.prepare_task(ci, (code,), None)
+    prepared = await plugin.prepare_task(ci, (AgentTask.model_validate(coalesced.task),), None)
 
+    assert [trigger["kind"] for trigger in prepared.metadata["triggers"]] == [
+        "ci_changed",
+        "pull_request_synchronize",
+    ]
     assert prepared.metadata["review_inventory"] == inventory
     assert "ci_snapshot" not in prepared.metadata
     build.assert_called_once()

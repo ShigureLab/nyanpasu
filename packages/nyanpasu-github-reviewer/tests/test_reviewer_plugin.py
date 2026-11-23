@@ -285,6 +285,7 @@ def test_review_command_becomes_runnable_explicit_request(tmp_path: Path, monkey
     task = _plugin(tmp_path).event_to_task(event)
 
     assert task.action is TaskAction.RUN
+    assert not task.coalesce_until_started
     assert ReviewTrigger.model_validate(task.metadata["triggers"][0]).explicit_request
     assert task.metadata["triggers"][0]["kind"] == "review_command"
 

@@ -191,6 +191,7 @@ class GitHubReviewerPlugin:
             raise RuntimeError("github reviewer plugin is not initialized")
         event = self._preflight_event(event)
         task_action = _task_action(event.action)
+        trigger = review_trigger(event)
         pr = event.pr
         context_key = f"github:{pr.repo}#{pr.number}" if pr else f"github:event:{event.delivery_id}"
         workspace = self._workspace_for_pr(pr) if pr else None
@@ -207,12 +208,13 @@ class GitHubReviewerPlugin:
             context_key=context_key,
             prompt=prompt,
             coalesce_key=context_key if task_action is TaskAction.RUN else None,
+            coalesce_until_started=task_action is TaskAction.RUN and trigger.kind == "pull_request_synchronize",
             workspace=workspace,
             dedupe_key=event_dedupe_key(event),
             metadata={
                 "plugin_id": self.id,
                 "pull_request": pr.model_dump(mode="json") if pr else None,
-                "triggers": [review_trigger(event).model_dump(mode="json")],
+                "triggers": [trigger.model_dump(mode="json")],
             },
         )
 

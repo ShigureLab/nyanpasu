@@ -90,6 +90,21 @@ def test_active_task_and_coalesced_task(tmp_path: Path) -> None:
     assert coalesced[0].task["context_key"] == "demo:1"
 
 
+@pytest.mark.parametrize("coalesce_until_started", [False, True])
+def test_merging_older_queued_task_requires_opt_in(tmp_path: Path, coalesce_until_started: bool) -> None:
+    store = StateStore(tmp_path / "state.db")
+    first = _task("first").model_copy(update={"coalesce_key": "batch"})
+    second = _task("second").model_copy(
+        update={"coalesce_key": "batch", "coalesce_until_started": coalesce_until_started}
+    )
+    assert store.record_task(first)
+    created_at = store.task_run(first.task_id).created_at
+    assert created_at is not None
+
+    expected = first.task_id if coalesce_until_started else None
+    assert store.enqueue_task(second, coalesce_since=created_at + 1) == (True, expected)
+
+
 def test_active_task_can_filter_statuses(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     task = _task("task-1")
@@ -303,11 +318,11 @@ def test_claimed_tasks_and_cleanup_are_merge_boundaries(tmp_path: Path) -> None:
     first = _task("first").model_copy(update={"coalesce_key": "batch"})
     store.record_task(first)
     store.mark_task_running(first.task_id, None)
-    second = _task("second").model_copy(update={"coalesce_key": "batch"})
+    second = _task("second").model_copy(update={"coalesce_key": "batch", "coalesce_until_started": True})
     assert store.enqueue_task(second, coalesce_since=0) == (True, None)
     cleanup = _task("cleanup").model_copy(update={"action": TaskAction.CLEANUP})
     store.record_task(cleanup)
-    third = _task("third").model_copy(update={"coalesce_key": "batch"})
+    third = _task("third").model_copy(update={"coalesce_key": "batch", "coalesce_until_started": True})
     assert store.enqueue_task(third, coalesce_since=0) == (True, None)
     assert store.coalesced_tasks_for("first") == []
     assert store.coalesced_tasks_for("second") == []

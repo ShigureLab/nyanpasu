@@ -305,7 +305,7 @@ pending -> skipped
 
 `dedupe_key` prevents replaying the same logical event. The Nyanpasu core still owns per-context serialization, so events for the same PR cannot run concurrently in the same worktree.
 
-Reviewer tasks opt into core coalescing. When several events are still queued for the same PR, the plugin prepares one task from their trigger summaries and the current GitHub PR state. A PR creation event and a synchronize event can therefore become one initial turn at the current head, regardless of arrival order. Coalescing never embeds complete task prompts and does not force an initial task into follow-up mode merely because another task is queued.
+Reviewer tasks opt into core coalescing. An incoming synchronize event can join a compatible review for the same PR for as long as that review is still queued. Other incoming events use the configured coalescing window. The plugin prepares the merged task using all its triggers and the current GitHub PR state. A PR creation event and a synchronize event can therefore become one initial turn at the current head. Coalescing never embeds complete task prompts and does not force an initial task into follow-up mode merely because another task is queued.
 
 Automatic follow-up events should not post noise. If an existing unresolved thread already covers the issue and the new event adds no new evidence or decision, the review turn may be skipped or summarized internally. Explicit user mentions and review-thread replies still deserve a GitHub-visible response when relevant.
 
