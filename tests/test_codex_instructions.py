@@ -104,6 +104,33 @@ def _developer_text(request):
 
 
 @pytest.mark.anyio
+async def test_followup_restores_archived_native_history(tmp_path, codex_responses):
+    config, execution, requests = codex_responses
+    first = CodexAppServerBackend(config)
+    try:
+        original = await first.run_turn(
+            cwd=tmp_path, thread_id=None, prompt="Investigate the first case.", execution=execution
+        )
+        await first.archive(original.thread_id)
+        assert list(first.native_home.glob(f"archived_sessions/*{original.thread_id}*"))
+    finally:
+        await first.close()
+    second = CodexAppServerBackend(config)
+    try:
+        await second.ensure_unarchived(original.thread_id)
+        await second.ensure_unarchived(original.thread_id)  # Retry after restoring, before binding the turn.
+        resumed = await second.run_turn(
+            cwd=tmp_path, thread_id=original.thread_id, prompt="What about the second case?", execution=execution
+        )
+        assert resumed.thread_id == original.thread_id and resumed.turn_id != original.turn_id
+        text = json.dumps(requests[-1]["input"])
+        assert "Investigate the first case." in text and "What about the second case?" in text
+        await second.archive(resumed.thread_id)
+    finally:
+        await second.close()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("legacy_session", [False, True])
 async def test_resumed_turn_delivers_current_instructions_to_model(tmp_path, codex_responses, legacy_session):
     config, execution, requests = codex_responses

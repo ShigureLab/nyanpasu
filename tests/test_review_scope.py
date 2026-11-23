@@ -360,7 +360,11 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         saved = agent.store.task_request(child["task_id"])
         assert saved.workspace is not None
         assert saved.workspace.revision == inventory["head_sha"]
-        assert child["inputs"]["review_scope"]["files"] == ["demos/result.json"]
+        assert "inputs" not in child
+        detail = await agent.control.dispatch(
+            task.task_id, "inspect", {"task_id": child["task_id"], "input_keys": ["review_scope"]}
+        )
+        assert detail["inputs"]["review_scope"]["files"] == ["demos/result.json"]
         coordinator = await agent.create_subtask(
             task.task_id,
             SubtaskRequest(
@@ -373,6 +377,13 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         assert coordinator.kind == "github_reviewer.codenip"
         assert coordinator.execution is not None and coordinator.execution.model == "gpt-6.2-sol"
         assert set(coordinator.metadata["inputs"]["codenip_rules"]) == {"PR001", "REF001", "REF006"}
+        scope = await agent.control.dispatch(
+            task.task_id, "inspect", {"task_id": coordinator.task_id, "input_keys": ["review_scope"]}
+        )
+        assert scope == {
+            "task_id": coordinator.task_id,
+            "inputs": {"review_scope": coordinator.metadata["inputs"]["review_scope"]},
+        }
         assert (
             "REF001 · Reuse an existing operation (Cross-language): What existing operation does this repeat?"
             in coordinator.prompt

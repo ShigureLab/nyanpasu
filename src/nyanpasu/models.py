@@ -92,6 +92,14 @@ class SubtaskRequest(NyanpasuModel):
     inputs: dict[str, Any] = Field(default_factory=dict, description="Plugin-specific structured child inputs.")
 
 
+class SubtaskFollowup(NyanpasuModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task_id: str = Field(min_length=1, description="An earlier run of this task's direct child.")
+    request_key: str = Field(min_length=1, max_length=200, description="Unique key for this follow-up; reuse on retry.")
+    message: str = Field(min_length=1, description="Next question or instruction for the same assignment.")
+
+
 class ContextScope(NyanpasuModel):
     context_key: str
     generation: int = 1

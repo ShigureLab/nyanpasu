@@ -110,13 +110,15 @@ async def test_root_child_and_memory_visibility_match_call_admission(agent):
         assert {"memory.search", "memory.read", "memory.describe"} <= instructions(control.prompt).keys()
         with pytest.raises(ValueError, match="not available"):
             await asyncio.to_thread(call_control, control.file, {"action": "complete", "input": {"summary": "done"}})
-        # No-argument tools also enforce their generated schema.
-        with pytest.raises(ValueError, match="Extra inputs"):
-            await asyncio.to_thread(
-                call_control, control.file, {"action": "inspect", "input": {"task_id": child.task_id}}
-            )
+        assert await asyncio.to_thread(call_control, control.file, {"action": "inspect"}) == [
+            {"task_id": child.task_id, "spawned_by_task_id": root.task_id, "kind": child.kind, "status": "running"}
+        ]
     async with agent.control.turn(child.task_id) as control:
         assert "complete" in instructions(control.prompt)
+        with pytest.raises(ValueError, match="descendants"):
+            await asyncio.to_thread(
+                call_control, control.file, {"action": "inspect", "input": {"task_id": root.task_id}}
+            )
 
     no_memory = record_root(agent, "no-memory")
     async with agent.control.turn(no_memory.task_id) as control:

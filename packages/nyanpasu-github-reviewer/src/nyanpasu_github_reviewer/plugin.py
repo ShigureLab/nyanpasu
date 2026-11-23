@@ -461,7 +461,7 @@ class GitHubReviewerPlugin:
         def queued_rules() -> set[str]:
             return {
                 store.task_request(child.task_id).metadata["inputs"]["rule_id"]
-                for child in store.subtasks(task.task_id)
+                for child in store.subtasks(task.task_id, previous_rounds=True)
             }
 
         for identity in sorted(set(selection) - await asyncio.to_thread(queued_rules)):

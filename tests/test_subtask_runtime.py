@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from nyanpasu.agent import AgentService
-from nyanpasu.models import SubtaskRequest
+from nyanpasu.models import SubtaskFollowup, SubtaskRequest
 from tests.test_agent import FakeCodex, FakeWorktrees, _config, _task, fake_backends
 from tests.test_git_ops import _git
 
@@ -173,6 +173,150 @@ async def wait_closed(agent: AgentService, context_key: str):
 
 
 @pytest.mark.anyio
+async def test_parent_follows_up_after_delivery_on_the_original_commit_and_thread(tmp_path):
+    from nyanpasu.config import TaskPolicy
+    from nyanpasu.models import WorkspaceRef
+    from nyanpasu.targets import ExecutionOverride
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "user.name", "Test"], repo)
+    _git(["config", "user.email", "test@example.com"], repo)
+    (repo / "source").write_text("original")
+    _git(["add", "source"], repo)
+    _git(["commit", "-m", "initial"], repo)
+    revision = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    config = _config(tmp_path)
+    config.tasks.kinds["subtask"] = TaskPolicy(execution=ExecutionOverride(reasoning="xhigh"))
+    delivered = []
+    children = []
+
+    class Backend(FakeCodex):
+        async def run_turn(self, **kwargs):
+            result = await super().run_turn(**kwargs)
+            prompt = kwargs["prompt"]
+            if prompt == "parent":
+                await agent.control.dispatch(
+                    "parent",
+                    "create",
+                    {
+                        "request_key": "inspect",
+                        "prompt": "Inspect source",
+                        "execution": {"model": "worker-model"},
+                    },
+                )
+            elif prompt in {"Inspect source", "Check that assumption"}:
+                cwd = kwargs["cwd"]
+                children.append((cwd, result.thread_id, kwargs["thread_id"]))
+                assert (cwd / "source").read_text() == "original"
+                assert not (cwd / "temporary").exists()
+                (cwd / "temporary").touch()
+                return result.model_copy(update={"final_message": prompt + " done"})
+            else:
+                (report,) = json.loads(prompt.split("Subtask results (verify evidence before using):\n")[1])
+                delivered.append(report)
+                if len(delivered) == 1:
+                    config.tasks.kinds["subtask"] = TaskPolicy(execution=ExecutionOverride(reasoning="high"))
+                    (repo / "source").write_text("changed on branch")
+                    _git(["commit", "-am", "advance"], repo)
+                    request = {"task_id": report["task_id"], "request_key": "check", "message": "Check that assumption"}
+                    receipt = await agent.control.dispatch("parent", "followup", request)
+                    await agent.control.dispatch("parent", "await", {"task_ids": [receipt["task_id"]]})
+            return result
+
+    backend = Backend()
+    agent = AgentService(config, backends=fake_backends(config, backend))
+    try:
+        await agent.submit(
+            _task("parent").model_copy(
+                update={
+                    "prompt": "parent",
+                    "workspace": WorkspaceRef(key="repo", local_path=repo),
+                }
+            )
+        )
+        await wait_status(agent, "parent", "completed")
+        original, followup = delivered
+        assert followup["followup_of"] == original["task_id"] != followup["task_id"]
+        assert original["revision"] == followup["revision"] == revision
+        targets = [execution for execution in backend.executions if execution.model == "worker-model"]
+        assert [execution.reasoning for execution in targets] == ["xhigh", "high"]
+        assert [r["result"]["summary"] for r in delivered] == ["Inspect source done", "Check that assumption done"]
+        (cwd, thread, initial), (restored_cwd, restored_thread, resumed) = children
+        assert initial is None and thread == resumed == restored_thread and cwd == restored_cwd
+        await wait_closed(agent, agent.store.task_request(followup["task_id"]).context_key)
+        assert not cwd.exists()
+        assert agent.store.subtask_result(original["task_id"]) == original["result"]
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["admitted", "checkout", "running"])
+async def test_restart_of_followup_resumes_saved_child(tmp_path, stage):
+    from nyanpasu.models import TaskRunResult, TaskStatus
+
+    config = _config(tmp_path)
+    backend = FakeCodex()
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=fake_backends(config, backend))
+    store = agent.store
+    execution = config.resolve_execution()
+    store.record_task(_task("parent").model_copy(update={"execution": execution}))
+    store.mark_task_running("parent", None)
+    first = store.create_subtask("parent", SubtaskRequest(request_key="one", prompt="Original"), execution=execution)
+    store.mark_task_done(
+        TaskRunResult(
+            task_id=first.task_id,
+            status=TaskStatus.COMPLETED,
+            thread_id="saved-child",
+            turn_id="original-turn",
+            final_message="Original report",
+        )
+    )
+    store.close_context_scope(first.context_key, first.context_generation)
+    second = store.followup_subtask(
+        "parent", SubtaskFollowup(task_id=first.task_id, request_key="two", message="Clarify"), execution=execution
+    )
+    if stage == "checkout":
+        # Simulate shutdown after the checkout was registered, before the native turn started.
+        await agent._prepare_workspace(second, None)
+    store.wait_for_subtasks("parent", [second.task_id])
+    store.mark_task_waiting("parent")
+    if stage == "running":
+        started = asyncio.Event()
+
+        class Interrupted(FakeCodex):
+            async def run_turn(self, **kwargs):
+                result = await super().run_turn(**kwargs)
+                if kwargs["prompt"] == "Clarify":
+                    assert kwargs["thread_id"] == "saved-child"
+                    (kwargs["cwd"] / "in-progress").write_text("saved")
+                    started.set()
+                    await asyncio.Event().wait()
+                return result
+
+        interrupted = AgentService(config, worktrees=worktrees, backends=fake_backends(config, Interrupted()))
+        try:
+            await interrupted.startup()
+            await asyncio.wait_for(started.wait(), 5)
+        finally:
+            await interrupted.shutdown()
+    try:
+        await agent.startup()
+        await wait_status(agent, "parent", "completed")
+        assert store.task_status(second.task_id) == "completed"
+        ((cwd, _),) = [call for call in backend.calls if call[1] == "saved-child"]
+        if stage == "running":
+            assert (cwd / "in-progress").read_text() == "saved"
+        assert store.subtask_report(first.task_id)["result"]["summary"] == "Original report"
+        assert store.subtask_report(second.task_id)["result"]["summary"] == "done"
+    finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 async def test_fast_child_is_delivered_even_without_explicit_wait(tmp_path):
     config = _config(tmp_path, concurrency=1)
     parent_started, parent_release = asyncio.Event(), asyncio.Event()
@@ -228,7 +372,7 @@ async def test_any_resumes_with_one_child_while_other_keeps_running(tmp_path):
                 await slow_release.wait()
             elif "Subtask results" in prompt:
                 evidence = json.loads(prompt.split("Subtask results (verify evidence before using):\n")[1])
-                deliveries.append([item["task"]["task_id"] for item in evidence])
+                deliveries.append([item["task_id"] for item in evidence])
                 if len(deliveries) == 1:
                     assert agent.store.task_status(slow.task_id) == "running"
                     slow_release.set()
@@ -430,15 +574,13 @@ async def test_control_cli_scopes_calls_freezes_evidence_and_revokes_capability(
                     child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
                 )
         assert list(destination.glob("*")) == []
-        result = await agent.control.dispatch(
-            child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
-        )
-        assert (
-            await agent.control.dispatch(
-                child_id, "complete", {"summary": "reproduced", "artifacts": ["evidence.json"]}
-            )
-            == result
-        )
+        completion = {"summary": "reproduced", "artifacts": ["evidence.json"], "data": {"line": 42}}
+        receipt = await agent.control.dispatch(child_id, "complete", completion)
+        result = agent.store.subtask_result(child_id)
+        assert result is not None
+        assert result["data"] == completion["data"]
+        assert receipt == {"frozen": True, "artifacts": result["artifacts"]}
+        assert await agent.control.dispatch(child_id, "complete", completion) == receipt
         evidence.write_text("changed later")
         assert Path(result["artifacts"][0]["path"]).read_text() == '{"observed":"failure reproduced"}'
         with pytest.raises(ValueError, match="frozen"):
@@ -630,11 +772,10 @@ async def test_terminal_child_releases_real_worktree_and_preserves_evidence(tmp_
                 child_started.set()
                 await child_release.wait()
                 (directory / "evidence.json").write_text('{"verified":true}')
-                evidence.update(
-                    await agent.control.dispatch(
-                        child.task_id, "complete", {"summary": "verified", "artifacts": ["evidence.json"]}
-                    )
+                receipt = await agent.control.dispatch(
+                    child.task_id, "complete", {"summary": "verified", "artifacts": ["evidence.json"]}
                 )
+                evidence.update(summary="verified", artifacts=receipt["artifacts"], data={})
                 frozen.set()
                 if outcome == "failed":
                     raise RuntimeError("child failed after saving evidence")
@@ -651,7 +792,8 @@ async def test_terminal_child_releases_real_worktree_and_preserves_evidence(tmp_
             )
         )
         await asyncio.wait_for(parent_started.wait(), 3)
-        child = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
+        assignment = SubtaskRequest(request_key="child", prompt="child", inputs={"catalog": "dispatch-only"})
+        child = await agent.create_subtask("parent", assignment)
         await asyncio.wait_for(child_started.wait(), 3)
         for directory in directories.values():
             assert (directory / ".git").is_file()
@@ -672,12 +814,21 @@ async def test_terminal_child_releases_real_worktree_and_preserves_evidence(tmp_
         assert agent.store.subtask_result(child.task_id) == evidence
         assert Path(evidence["artifacts"][0]["path"]).read_text() == '{"verified":true}'
         assert agent.store.task_turns(child.task_id)
-        replay = await agent.create_subtask("parent", SubtaskRequest(request_key="child", prompt="child"))
-        assert replay.task_id == child.task_id
+        replay = await agent.control.dispatch("parent", "create", assignment.model_dump())
+        assert replay["task_id"] == child.task_id and replay["result"] == evidence
+        assert replay["request_key"] == assignment.request_key and replay["revision"] == revision
+        assert "inputs" not in replay and replay["status"] == outcome
+        assert (await agent.control.dispatch("parent", "inspect", {"task_id": child.task_id})) == {
+            **replay,
+            "input_keys": ["catalog"],
+        }
         assert not directories["child"].exists()
         parent_release.set()
         await wait_status(agent, "parent", "completed")
-        assert "verified" in backend.prompts[-1]
+        reports = json.loads(backend.prompts[-1].split("Subtask results (verify evidence before using):\n")[1])
+        assert reports == [replay]
+        if outcome == "failed":
+            assert "child failed after saving evidence" in replay["error"]
         assert agent.store.unconsumed_subtasks("parent") == []
     finally:
         await agent.shutdown()

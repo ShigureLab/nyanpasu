@@ -53,6 +53,7 @@ from nyanpasu.models import (
     AgentContext,
     AgentTask,
     RunResult,
+    SubtaskFollowup,
     SubtaskRequest,
     TaskAction,
     TaskRunResult,
@@ -431,15 +432,29 @@ class AgentService:
             raise
         return None
 
-    async def create_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask:
+    async def create_subtask(self, parent_id: str, request: SubtaskRequest | SubtaskFollowup) -> AgentTask:
         root = await to_thread.run_sync(self.store.root_task_id, parent_id)
         if root not in self._admitted_roots:
             raise ValueError("parent root is not executing on this service")
         parent = await to_thread.run_sync(self.store.task_request, parent_id)
-        if parent.kind in MEMORY_TASK_KINDS or request.kind in MEMORY_TASK_KINDS:
+        if parent.kind in MEMORY_TASK_KINDS or (
+            isinstance(request, SubtaskRequest) and request.kind in MEMORY_TASK_KINDS
+        ):
             raise MemoryDenied("background memory jobs cannot be created or delegated by a model")
         child = await to_thread.run_sync(self.store.existing_subtask, parent_id, request)
-        if child is None:
+        if child is None and isinstance(request, SubtaskFollowup):
+            # A result can reach the parent while the old runner is still archiving the session.
+            source = await to_thread.run_sync(self.store.latest_child_round, parent_id, request.task_id)
+            runner = self._runners.get(source.task_id)
+            if runner is not None and source.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+                await asyncio.wait({runner})
+            original = await to_thread.run_sync(self.store.task_request, source.task_id)
+            execution = self.config.resolve_execution(original.kind, original.execution_override)
+            child = await to_thread.run_sync(
+                functools.partial(self.store.followup_subtask, parent_id, request, execution=execution)
+            )
+        elif child is None:
+            assert isinstance(request, SubtaskRequest)
             plugin_id = parent.metadata.get("plugin_id", parent.metadata.get("source_plugin_id"))
             preparer = self._subtask_preparers.get(plugin_id)
             prepared = await preparer(parent, request) if preparer else request
@@ -501,7 +516,11 @@ class AgentService:
     async def _run_context_task(self, task: AgentTask, record: TaskRunSummary) -> TaskRunResult | None:
         started_at = time.monotonic()
         existing = await to_thread.run_sync(self.store.get_context, task.context_key)
-        recovering = record.thread_id is not None
+        first_followup_turn = bool(
+            task.spawned_by_task_id and task.metadata.get("followup_of") and record.turn_id is None
+        )
+        # A follow-up inherits the native ID at admission, before it owns a bound workspace.
+        recovering = record.thread_id is not None and (not first_followup_turn or bool(existing and existing.thread_id))
         assert task.execution is not None
         execution = task.execution
         backend_name = execution.backend
@@ -556,6 +575,18 @@ class AgentService:
                 raise RuntimeError("Cannot resume task: its event workspace is unavailable")
         else:
             context, event_worktree = await self._prepare_workspace(task, existing)
+            if first_followup_turn:
+                context = replace_context(context, thread_id=record.thread_id)
+            if (
+                task.spawned_by_task_id
+                and task.workspace
+                and context.revision
+                and context.revision != task.workspace.revision
+            ):
+                task = task.model_copy(
+                    update={"workspace": task.workspace.model_copy(update={"revision": context.revision})}
+                )
+                await to_thread.run_sync(self.store.update_task_input, task)
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
         context = replace_context(context, backend=backend_name, memory_key=memory_key)
@@ -578,14 +609,7 @@ class AgentService:
             prompt += await self._backend_handoff(handoff_from)
         delivered = tuple(await to_thread.run_sync(self.store.pending_subtask_deliveries, task.task_id))
         if delivered:
-            evidence = [
-                {
-                    "task": (await to_thread.run_sync(self.store.task_run, identity)).model_dump(mode="json"),
-                    "result": await to_thread.run_sync(self.store.subtask_result, identity),
-                    "inputs": (await to_thread.run_sync(self.store.task_request, identity)).metadata.get("inputs"),
-                }
-                for identity in delivered
-            ]
+            evidence = [await to_thread.run_sync(self.store.subtask_report, identity) for identity in delivered]
             prompt += (
                 "\nContinue the parent task with these completed investigations. Reconcile their evidence and "
                 "finish the remaining work; failed or cancelled children are unresolved, not successful checks. "
@@ -637,10 +661,13 @@ class AgentService:
                 role_instructions = self._runtime_instructions(task)
                 run_turn = backend.run_turn
                 if isinstance(backend, CodexAppServerBackend):
+                    if first_followup_turn:
+                        assert context.thread_id is not None
+                        await backend.ensure_unarchived(context.thread_id)
                     run_turn = functools.partial(
                         backend.run_turn,
                         task_context=CodexTaskContext(
-                            task.task_id,
+                            task.context_key if task.spawned_by_task_id else task.task_id,
                             role_instructions + "\n\n" + CODEX_WAIT_INSTRUCTIONS,
                             control.memory_context.prompt,
                         ),

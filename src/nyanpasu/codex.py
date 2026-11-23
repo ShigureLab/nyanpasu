@@ -470,6 +470,11 @@ class CodexAppServerBackend:
             if path is None or Path(path).parent.name != "archived_sessions":
                 raise
 
+    async def ensure_unarchived(self, thread_id: str) -> None:
+        thread = await self.read_thread(thread_id)
+        if (path := thread.get("path")) and Path(path).parent.name == "archived_sessions":
+            await self._request("thread/unarchive", {"threadId": thread_id})
+
     async def close(self) -> None:
         if self._proc is None:
             return

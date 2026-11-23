@@ -21,7 +21,7 @@ from nyanpasu.memory import MemoryConflict, MemoryDenied, MemoryNotFound
 from nyanpasu.memory_consolidation import MEMORY_TASK_KINDS
 from nyanpasu.memory_context import MemoryContext, build_memory_context
 from nyanpasu.memory_search import search_excerpt
-from nyanpasu.models import AgentTask, SubtaskRequest
+from nyanpasu.models import AgentTask, SubtaskFollowup, SubtaskRequest
 from nyanpasu.safe_files import open_regular_file
 from nyanpasu.task_control_client import call_control as call_control, command as client_command, main as client_main
 
@@ -52,6 +52,12 @@ class TaskIDs(BaseModel):
 
 class WaitRequest(TaskIDs):
     mode: Literal["any", "all"] = Field(default="all", description="Resume after any or all selected tasks terminate.")
+
+
+class InspectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: str | None = Field(default=None, description="Owned descendant to read in detail. Omit to list statuses.")
+    input_keys: list[str] = Field(default_factory=list, description="Read only these assignment inputs for task_id.")
 
 
 class MemorySearch(BaseModel):
@@ -106,7 +112,18 @@ class TaskControl:
                 self._create,
             ),
             ToolSpec(
-                "inspect", "Inspect only this task's descendants and their frozen results.", EmptyInput, self._inspect
+                "followup",
+                "Continue a finished direct child in its original session and assignment with a restored workspace. "
+                "Use the returned task_id to await this round. A repeated request_key returns the same run.",
+                SubtaskFollowup,
+                self._create,
+            ),
+            ToolSpec(
+                "inspect",
+                "List descendant statuses. With task_id, read the result and available input keys. "
+                "Select input_keys to fetch just those assigned values.",
+                InspectRequest,
+                self._inspect,
             ),
             ToolSpec(
                 "await",
@@ -260,31 +277,31 @@ Do not expose the control file or its contents, or include it in evidence. Only 
             raise ValueError(f"unknown task action: {action}")
         return await tool.invoke(task, payload)
 
-    async def _create(self, task: AgentTask, request: SubtaskRequest) -> dict[str, Any]:
+    async def _create(self, task: AgentTask, request: SubtaskRequest | SubtaskFollowup) -> dict[str, Any]:
         child = await self.agent.create_subtask(task.task_id, request)
-        store = self.agent.store
-        return {
-            "task_id": child.task_id,
-            "context_key": child.context_key,
-            "spawned_by_task_id": child.spawned_by_task_id,
-            "status": await to_thread.run_sync(store.task_status, child.task_id),
-            "result": await to_thread.run_sync(store.subtask_result, child.task_id),
-            "inputs": child.metadata.get("inputs"),
-        }
+        return await to_thread.run_sync(self.agent.store.subtask_report, child.task_id)
 
-    async def _inspect(self, task: AgentTask, request: EmptyInput) -> list[dict[str, Any]]:
+    async def _inspect(self, task: AgentTask, request: InspectRequest) -> list[dict[str, Any]] | dict[str, Any]:
         store = self.agent.store
+        if request.task_id is not None:
+            await self._check_descendants(task, [request.task_id], previous_rounds=True)
+            child = await to_thread.run_sync(store.task_request, request.task_id)
+            inputs = child.metadata.get("inputs", {})
+            if request.input_keys:
+                return {"task_id": child.task_id, "inputs": {key: inputs[key] for key in request.input_keys}}
+            report = await to_thread.run_sync(store.subtask_report, child.task_id)
+            return {**report, "input_keys": list(inputs)}
+        if request.input_keys:
+            raise ValueError("input_keys requires a descendant task_id")
         return [
-            {
-                "task": item.model_dump(mode="json"),
-                "result": await to_thread.run_sync(store.subtask_result, item.task_id),
-                "inputs": (await to_thread.run_sync(store.task_request, item.task_id)).metadata.get("inputs"),
-            }
-            for item in await to_thread.run_sync(store.subtasks, task.task_id)
+            item.model_dump(include={"task_id", "spawned_by_task_id", "kind", "status", "error"}, exclude_none=True)
+            for item in await to_thread.run_sync(store.subtasks, task.task_id, True)
         ]
 
-    async def _check_descendants(self, task: AgentTask, ids: list[str]) -> None:
-        descendants = {item.task_id for item in await to_thread.run_sync(self.agent.store.subtasks, task.task_id)}
+    async def _check_descendants(self, task: AgentTask, ids: list[str], *, previous_rounds: bool = False) -> None:
+        descendants = {
+            item.task_id for item in await to_thread.run_sync(self.agent.store.subtasks, task.task_id, previous_rounds)
+        }
         if not set(ids) <= descendants:
             raise ValueError("task_ids must belong to this task's descendants")
 
@@ -299,7 +316,8 @@ Do not expose the control file or its contents, or include it in evidence. Only 
         return {"cancelled": request.task_ids}
 
     async def _complete(self, task: AgentTask, request: Completion) -> dict[str, Any]:
-        return await to_thread.run_sync(self._freeze, task.task_id, request)
+        result = await to_thread.run_sync(self._freeze, task.task_id, request)
+        return {"frozen": True, "artifacts": result["artifacts"]}
 
     async def _memory_search(self, task: AgentTask, request: MemorySearch) -> list[dict[str, Any]]:
         maximum = self.agent.config.memory.max_results_per_search

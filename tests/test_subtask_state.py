@@ -6,7 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from nyanpasu.config import NyanpasuConfig
-from nyanpasu.models import AgentTask, SubtaskRequest, TaskAction, TaskRunResult, TaskStatus, WorkspaceRef
+from nyanpasu.models import (
+    AgentTask,
+    SubtaskFollowup,
+    SubtaskRequest,
+    TaskAction,
+    TaskRunResult,
+    TaskStatus,
+    WorkspaceRef,
+)
 from nyanpasu.store import StateStore
 
 CONFIG = NyanpasuConfig()
@@ -31,6 +39,78 @@ def finish(store: StateStore, task: AgentTask) -> None:
             task_id=task.task_id, status=TaskStatus.COMPLETED, thread_id="child", turn_id="turn", final_message=""
         )
     )
+
+
+def test_followups_serialize_per_session_and_keys_survive_restart(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    parent = root(store)
+    execution = CONFIG.resolve_execution("subtask")
+    child = store.create_subtask(parent.task_id, request(), execution=execution)
+    follow = SubtaskFollowup(task_id=child.task_id, request_key="check", message="Verify the original assumption")
+    with pytest.raises(ValueError, match="still active"):
+        store.followup_subtask(parent.task_id, follow, execution=execution)
+    finish(store, child)
+    with pytest.raises(ValueError, match="cleanup"):
+        store.followup_subtask(parent.task_id, follow, execution=execution)
+    store.close_context_scope(child.context_key, child.context_generation)
+    with pytest.raises(ValueError, match="direct child"):
+        store.followup_subtask(root(store, "other").task_id, follow, execution=execution)
+    with pytest.raises(ValueError, match="backend has changed"):
+        store.followup_subtask(parent.task_id, follow, execution=execution.model_copy(update={"backend": "claude"}))
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        rounds = list(
+            workers.map(lambda _: store.followup_subtask(parent.task_id, follow, execution=execution), range(8))
+        )
+    second = rounds[0]
+    assert all(item == second for item in rounds)
+    assert second.task_id != child.task_id and second.context_key == child.context_key
+    assert second.context_generation == child.context_generation + 1
+    assert second.execution == child.execution and second.developer_instructions == child.developer_instructions
+    restarted = StateStore(store.db_path)
+    assert restarted.followup_subtask(parent.task_id, follow, execution=execution) == second
+    assert restarted.task_run(second.task_id).thread_id == restarted.task_run(child.task_id).thread_id
+    with pytest.raises(ValueError, match="different input"):
+        restarted.followup_subtask(
+            parent.task_id, follow.model_copy(update={"message": "Changed question"}), execution=execution
+        )
+    with pytest.raises(ValueError, match="different input"):
+        restarted.create_subtask(parent.task_id, request("check"), execution=CONFIG.resolve_execution())
+    another = follow.model_copy(update={"request_key": "again"})
+    with pytest.raises(ValueError, match="still active"):
+        restarted.followup_subtask(parent.task_id, another, execution=execution)
+    assert restarted.begin_context_cleanup(child.context_key, child.context_generation) == []
+    finish(restarted, second)
+    restarted.close_context_scope(second.context_key, second.context_generation)
+    third = restarted.followup_subtask(parent.task_id, another, execution=execution)
+    assert third.metadata["followup_of"] == second.task_id
+
+
+def test_continued_coordinator_can_follow_its_original_worker(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    parent = root(store)
+    execution = CONFIG.resolve_execution("subtask")
+    coordinator = store.create_subtask(parent.task_id, request("coordinator"), execution=execution)
+    store.mark_task_running(coordinator.task_id, None)
+    worker = store.create_subtask(coordinator.task_id, request("worker"), execution=execution)
+    for task in (worker, coordinator):
+        finish(store, task)
+        store.close_context_scope(task.context_key, task.context_generation)
+    continued = store.followup_subtask(
+        parent.task_id,
+        SubtaskFollowup(task_id=coordinator.task_id, request_key="clarify", message="Recheck the worker's evidence"),
+        execution=execution,
+    )
+    store.mark_task_running(continued.task_id, None)
+    assert [r.task_id for r in store.subtasks(continued.task_id, previous_rounds=True)] == [worker.task_id]
+    recheck = SubtaskFollowup(task_id=worker.task_id, request_key="recheck", message="Which condition applies?")
+    with pytest.raises(ValueError, match="direct child"):
+        store.followup_subtask(parent.task_id, recheck, execution=execution)
+    latest = store.followup_subtask(continued.task_id, recheck, execution=execution)
+    assert latest.spawned_by_task_id == continued.task_id and latest.context_key == worker.context_key
+    assert store.context_scope(latest.context_key).parent_generation == continued.context_generation
+    assert store.unconsumed_subtasks(continued.task_id) == [latest.task_id]
+    closed = store.begin_context_cleanup(continued.context_key, continued.context_generation)
+    assert {c.context_key for c in closed} == {continued.context_key, worker.context_key}
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])

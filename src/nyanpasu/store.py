@@ -17,6 +17,7 @@ from nyanpasu.models import (
     DashboardSnapshot,
     DashboardTaskItem,
     DashboardTotals,
+    SubtaskFollowup,
     SubtaskRequest,
     TaskAction,
     TaskRunResult,
@@ -37,6 +38,17 @@ TASK_RUNS = """
            r.spawned_by_task_id, r.context_generation, r.retry_count, r.retry_at,
            coalesce(parent.backend, r.backend) AS backend
     FROM task_runs r LEFT JOIN task_runs parent ON parent.task_id=r.coalesced_into
+"""
+
+# A continued child can refer to workers from its own earlier rounds. Root jobs
+# sharing a PR context do not inherit each other's children.
+SUBTASK_OWNER_ROUNDS = """
+    WITH RECURSIVE rounds(task_id, previous_id) AS (
+        SELECT task_id, CASE WHEN spawned_by_task_id IS NOT NULL THEN json_extract(task_json, '$.metadata.followup_of') END
+        FROM task_runs WHERE task_id=?
+        UNION ALL SELECT r.task_id, json_extract(r.task_json, '$.metadata.followup_of')
+        FROM task_runs r JOIN rounds ON r.task_id=rounds.previous_id
+    ) SELECT task_id FROM rounds
 """
 
 
@@ -202,13 +214,15 @@ class StateStore:
                 return False
         return True
 
-    def existing_subtask(self, parent_id: str, request: SubtaskRequest) -> AgentTask | None:
+    def existing_subtask(self, parent_id: str, request: SubtaskRequest | SubtaskFollowup) -> AgentTask | None:
         with self._connect() as conn:
             self._active_task(conn, parent_id)
             return self._existing_subtask(conn, parent_id, request)
 
     @staticmethod
-    def _existing_subtask(conn: sqlite3.Connection, parent_id: str, request: SubtaskRequest) -> AgentTask | None:
+    def _existing_subtask(
+        conn: sqlite3.Connection, parent_id: str, request: SubtaskRequest | SubtaskFollowup
+    ) -> AgentTask | None:
         previous = conn.execute(
             """SELECT r.task_json,s.request_json FROM subtask_requests s
             JOIN task_runs r ON r.task_id=s.task_id WHERE s.parent_task_id=? AND s.request_key=?""",
@@ -216,7 +230,9 @@ class StateStore:
         ).fetchone()
         if previous is None:
             return None
-        if SubtaskRequest.model_validate_json(previous["request_json"]) != request:
+        saved = json.loads(previous["request_json"])
+        model = SubtaskFollowup if "task_id" in saved else SubtaskRequest
+        if model.model_validate(saved) != request:
             raise ValueError("subtask request key was used with different input")
         return AgentTask.model_validate(json.loads(previous["task_json"]))
 
@@ -237,8 +253,7 @@ class StateStore:
             if parent["status"] != "running":
                 raise ValueError("only a running task may create a subtask")
             original = AgentTask.model_validate(json.loads(parent["task_json"]))
-            identity = (parent_id, request.request_key)
-            serialized = request.model_dump_json()
+            original_request = request
             request = prepared or request
             workspace = original.workspace
             if request.revision is not None:
@@ -273,24 +288,98 @@ class StateStore:
                 (context_key,generation,parent_context_key,parent_generation) VALUES (?,1,?,?)""",
                 (child.context_key, parent["context_key"], parent["context_generation"]),
             )
-            now = time.time()
+            return self._insert_subtask(conn, child, original_request)
+
+    @staticmethod
+    def _insert_subtask(
+        conn: sqlite3.Connection,
+        child: AgentTask,
+        request: SubtaskRequest | SubtaskFollowup,
+        thread_id: str | None = None,
+    ) -> AgentTask:
+        assert child.execution is not None
+        now = time.time()
+        conn.execute(
+            """INSERT INTO task_runs
+            (task_id,context_key,action,status,task_json,created_at,updated_at,backend,spawned_by_task_id,
+             context_generation,thread_id) VALUES (?,?,?,'queued',?,?,?,?,?,?,?)""",
+            (
+                child.task_id,
+                child.context_key,
+                child.action.value,
+                child.model_dump_json(),
+                now,
+                now,
+                child.execution.backend,
+                child.spawned_by_task_id,
+                child.context_generation,
+                thread_id,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO subtask_requests VALUES (?,?,?,?)",
+            (child.spawned_by_task_id, request.request_key, request.model_dump_json(), child.task_id),
+        )
+        return child
+
+    @staticmethod
+    def _latest_child_round(conn: sqlite3.Connection, parent_id: str, target: str) -> sqlite3.Row:
+        row = conn.execute(
+            f"""SELECT r.*, c.lifecycle FROM task_runs target JOIN context_scopes c USING(context_key)
+            JOIN task_runs r ON r.context_key=c.context_key AND r.context_generation=c.generation
+            WHERE target.task_id=? AND target.spawned_by_task_id IN ({SUBTASK_OWNER_ROUNDS})
+            AND r.spawned_by_task_id IS NOT NULL AND r.action='run'""",
+            (target, parent_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("followup requires a direct child of this parent task")
+        return row
+
+    def latest_child_round(self, parent_id: str, target: str) -> TaskRunSummary:
+        with self._connect() as conn:
+            return _task_summary_from_row(self._latest_child_round(conn, parent_id, target))
+
+    def followup_subtask(self, parent_id: str, request: SubtaskFollowup, *, execution: ExecutionTarget) -> AgentTask:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent = self._active_task(conn, parent_id)
+            if previous := self._existing_subtask(conn, parent_id, request):
+                return previous
+            if parent["status"] != "running":
+                raise ValueError("only a running parent may follow up")
+            source = self._latest_child_round(conn, parent_id, request.task_id)
+            if source["status"] in {"queued", "running", "waiting"}:
+                raise ValueError("child is still active; await its current run before following up")
+            if source["lifecycle"] != "closed":
+                raise ValueError("child workspace cleanup has not finished")
+            if not source["thread_id"]:
+                raise ValueError("child has no saved native session to continue")
+            previous = AgentTask.model_validate_json(source["task_json"])
+            assert previous.execution is not None
+            if execution.backend != source["backend"] or execution.driver != previous.execution.driver:
+                raise ValueError("the configured backend has changed; create a new child to use the new backend")
+            if previous.workspace is not None and not previous.workspace.revision:
+                raise ValueError("child has no recorded repository revision to restore")
+            generation = previous.context_generation + 1
             conn.execute(
-                """INSERT INTO task_runs
-                (task_id,context_key,action,status,task_json,created_at,updated_at,backend,spawned_by_task_id)
-                VALUES (?,?,?,'queued',?,?,?,?,?)""",
+                "UPDATE context_scopes SET lifecycle='active', generation=?, parent_generation=? WHERE context_key=?",
                 (
-                    task_id,
-                    child.context_key,
-                    child.action.value,
-                    child.model_dump_json(),
-                    now,
-                    now,
-                    execution.backend,
-                    parent_id,
+                    generation,
+                    parent["context_generation"],
+                    previous.context_key,
                 ),
             )
-            conn.execute("INSERT INTO subtask_requests VALUES (?,?,?,?)", (*identity, serialized, task_id))
-            return child
+            child = previous.model_copy(
+                update={
+                    "task_id": str(uuid4()),
+                    "prompt": request.message,
+                    "execution": execution,
+                    "context_generation": generation,
+                    "spawned_by_task_id": parent_id,
+                    "metadata": {**previous.metadata, "followup_of": source["task_id"]},
+                }
+            )
+            return self._insert_subtask(conn, child, request, source["thread_id"])
 
     def root_task_id(self, task_id: str) -> str:
         with self._connect() as conn:
@@ -303,18 +392,19 @@ class StateStore:
                 task_id = row["spawned_by_task_id"]
 
     @staticmethod
-    def _descendants(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+    def _descendants(conn: sqlite3.Connection, task_id: str, previous_rounds: bool = False) -> list[sqlite3.Row]:
+        owners = SUBTASK_OWNER_ROUNDS if previous_rounds else "SELECT ?"
         return conn.execute(
-            """WITH RECURSIVE children AS (
-            SELECT * FROM task_runs WHERE spawned_by_task_id=?
+            f"""WITH RECURSIVE children AS (
+            SELECT * FROM task_runs WHERE spawned_by_task_id IN ({owners})
             UNION ALL SELECT r.* FROM task_runs r JOIN children c ON r.spawned_by_task_id=c.task_id
         ) SELECT * FROM children ORDER BY created_at,task_id""",
             (task_id,),
         ).fetchall()
 
-    def subtasks(self, task_id: str) -> list[TaskRunSummary]:
+    def subtasks(self, task_id: str, previous_rounds: bool = False) -> list[TaskRunSummary]:
         with self._connect() as conn:
-            return [_task_summary_from_row(row) for row in self._descendants(conn, task_id)]
+            return [_task_summary_from_row(row) for row in self._descendants(conn, task_id, previous_rounds)]
 
     def unfinished_roots(self) -> list[AgentTask]:
         return [
@@ -418,6 +508,24 @@ class StateStore:
         with self._connect() as conn:
             row = conn.execute("SELECT subtask_result FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
         return json.loads(row["subtask_result"]) if row and row["subtask_result"] else None
+
+    def subtask_report(self, task_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT r.task_id, s.request_key, json_extract(r.task_json, '$.kind') AS kind,
+                    json_extract(r.task_json, '$.workspace.revision') AS revision,
+                    json_extract(r.task_json, '$.metadata.followup_of') AS followup_of, r.status, r.error,
+                    r.subtask_result
+                FROM task_runs r LEFT JOIN subtask_requests s ON s.task_id=r.task_id
+                WHERE r.task_id=?""",
+                (task_id,),
+            ).fetchone()
+        report = dict(row)
+        result = report.pop("subtask_result")
+        report = {key: value for key, value in report.items() if value is not None}
+        if row["status"] in {"completed", "failed", "cancelled"} and result is not None:
+            report["result"] = json.loads(result)
+        return report
 
     def begin_context_cleanup(self, key: str, generation: int | None = None) -> list[ContextScope]:
         with self._connect() as conn:

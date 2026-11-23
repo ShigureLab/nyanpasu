@@ -53,9 +53,11 @@ class WorktreeManager:
             created = not session_path.exists()
             try:
                 if task.workspace_mode == "snapshot":
-                    self._snapshot(workspace, session_path)
+                    revision = self._snapshot(workspace, session_path)
                 else:
-                    self._reset_worktree(workspace, session_path, workspace.revision or workspace.ref or "HEAD")
+                    revision = self._reset_worktree(
+                        workspace, session_path, workspace.revision or workspace.ref or "HEAD"
+                    )
             except Exception:
                 if created and session_path.exists():
                     self._remove_worktree_unlocked(workspace, session_path, snapshot=task.workspace_mode == "snapshot")
@@ -65,10 +67,10 @@ class WorktreeManager:
             thread_id=existing.thread_id if existing else None,
             session_worktree=session_path,
             workspace_key=workspace.key,
-            revision=workspace.revision,
+            revision=revision,
         )
 
-    def _snapshot(self, workspace: WorkspaceRef, path: Path) -> None:
+    def _snapshot(self, workspace: WorkspaceRef, path: Path) -> str:
         if not workspace.revision:
             raise ValueError("snapshot requires a pinned revision")
         revision = self._run(
@@ -132,6 +134,8 @@ class WorktreeManager:
             path,
         )
 
+        return revision
+
     def prepare_event_snapshot(self, task: AgentTask) -> Path | None:
         if task.workspace is None:
             return None
@@ -192,7 +196,7 @@ class WorktreeManager:
             / f"{context_directory(task.task_id)}{suffix}"
         )
 
-    def _reset_worktree(self, workspace: WorkspaceRef, path: Path, ref: str) -> None:
+    def _reset_worktree(self, workspace: WorkspaceRef, path: Path, ref: str) -> str:
         source = workspace.revision or ("FETCH_HEAD" if workspace.ref else ref)
         target = self._run(
             ["git", "rev-parse", "--verify", f"{source}^{{commit}}"], workspace.local_path
@@ -206,6 +210,7 @@ class WorktreeManager:
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._run(["git", "worktree", "add", "--detach", str(path), target], workspace.local_path)
+        return target
 
     def _materialize_tree(self, workspace: WorkspaceRef, revision: str) -> tuple[str, str]:
         tree = self._run(["git", "rev-parse", f"{revision}^{{tree}}"], workspace.local_path).stdout.strip()
