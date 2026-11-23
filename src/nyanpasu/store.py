@@ -704,6 +704,19 @@ class StateStore:
             row = conn.execute("SELECT task_json FROM task_runs WHERE task_id=?", (task_id,)).fetchone()
         return AgentTask.model_validate(json.loads(row["task_json"]))
 
+    def freeze_task_input(self, task_id: str, name: str, value: Any) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._active_task(conn, task_id)
+            task = json.loads(row["task_json"])
+            inputs = task["metadata"]["inputs"]
+            if inputs[name] is not None:
+                if inputs[name] != value:
+                    raise ValueError(f"task input {name} is already frozen")
+                return
+            inputs[name] = value
+            conn.execute("UPDATE task_runs SET task_json=? WHERE task_id=?", (json_dumps(task), task_id))
+
     def task_status(self, task_id: str) -> str | None:
         with self._connect() as conn:
             row = conn.execute("SELECT status FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()

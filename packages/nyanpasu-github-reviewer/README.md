@@ -96,7 +96,7 @@ One root task and all descendants consume one concurrency slot, including while 
 
 ### Improvement suggestions
 
-[Codenip](../../DEPENDENCIES/codenip.md) is enabled by the installed `codenip_skill` path and explicit model routes. One Sol coordinator uses `codenip-dispatch` to queue the selected rules. The service refills up to 32 shared worker slots as they become available. One Luna child per rule decides applicability against the assigned diff. The reviewer publishes verified, actionable results as review findings under the usual severity and placement rules, with a rule marker such as `[experimental · TST002]`.
+[Codenip](../../DEPENDENCIES/codenip.md) is enabled by the installed `codenip_skill` path and explicit model routes. For each pinned diff, Sol selects up to eight rules from the installed catalog and calls `codenip-dispatch` to freeze and queue them. One Luna child per selected rule decides applicability. The reviewer publishes verified, actionable results as review findings under the usual severity and placement rules, with a rule marker such as `[experimental · TST002]`.
 
 The dashboard groups implementation simplification, PR splitting and related-PR comparison under **改进建议（非阻塞）**, with **精简**, **拆分** and **相关 PR** subsections. Confirmed, still-applicable `recommended` results get a 💡 marker and expanded details: simplification shows the actual number of remove/merge/replace proposals in each scope; splitting shows one plan, not one suggestion per proposed PR. Pending/incomplete analysis appears as a short status without the marker or a suggestion count. Retain-only, keep-together and no-action conclusions stay in data but are hidden; empty subsections and an entirely empty improvement section disappear.
 

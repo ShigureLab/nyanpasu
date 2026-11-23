@@ -27,6 +27,7 @@ from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analy
 from nyanpasu_github_reviewer.codenip import (
     CODENIP_PURPOSES,
     CODENIP_RULE_CONCURRENCY,
+    CodenipDispatchInput,
     codenip_rule_request,
     prepare_codenip,
 )
@@ -219,11 +220,13 @@ class GitHubReviewerPlugin:
         parent_purpose = parent.metadata.get("purpose")
         if parent_purpose == "codenip-rule":
             raise ValueError("Codenip rule workers cannot dispatch subtasks")
-        if parent_purpose == "codenip" and request.purpose != "codenip-rule":
-            raise ValueError("the Codenip coordinator only dispatches Codenip rule workers")
-        if rules := parent.metadata.get("inputs", {}).get("codenip_rules"):
+        if parent_purpose == "codenip":
+            if request.purpose != "codenip-rule":
+                raise ValueError("the Codenip coordinator only dispatches Codenip rule workers")
+            inputs = parent.metadata["inputs"]
+            selection = inputs.get("codenip_selection", inputs["codenip_rules"])
             identity = request.request_key.removeprefix("codenip:")
-            if identity not in rules or request != codenip_rule_request(parent, identity):
+            if selection is None or identity not in selection or request != codenip_rule_request(parent, identity):
                 raise ValueError("use codenip-dispatch to admit the frozen Codenip rule assignments")
         if request.developer_instructions.strip():
             destination = "inputs.constraints" if request.purpose == "independent-design" else "prompt"
@@ -416,9 +419,9 @@ class GitHubReviewerPlugin:
             ),
             ToolSpec(
                 "codenip-dispatch",
-                "Codenip coordinator: queue every rule in the frozen index. Await all returned active_task_ids. "
-                "Repeated calls reuse previously queued workers.",
-                EmptyInput,
+                "Codenip coordinator: freeze and queue the selected rule_ids. Omit rule_ids to retry a frozen "
+                "selection. Await the returned active_task_ids when present.",
+                CodenipDispatchInput,
                 self.codenip_dispatch_control,
                 lambda task: (
                     task.kind == "github_reviewer.codenip"
@@ -431,11 +434,27 @@ class GitHubReviewerPlugin:
     def _root_tool_available(task: AgentTask) -> bool:
         return task.spawned_by_task_id is None
 
-    async def codenip_dispatch_control(self, task: AgentTask, request: EmptyInput) -> dict:
+    async def codenip_dispatch_control(self, task: AgentTask, request: CodenipDispatchInput) -> dict:
         assert self.runtime is not None
         assert self.state_store is not None
         store = self.state_store
-        rules = task.metadata["inputs"]["codenip_rules"]
+        inputs = task.metadata["inputs"]
+        catalog = inputs["codenip_rules"]
+        # Coordinators admitted before routing stored their fixed selection as the index.
+        selection = inputs.get("codenip_selection", sorted(catalog))
+        if request.rule_ids is not None:
+            requested = sorted(set(request.rule_ids))
+            if len(requested) != len(request.rule_ids):
+                raise ValueError("rule_ids must be distinct")
+            if unknown := sorted(set(requested) - catalog.keys()):
+                raise ValueError(f"rule_ids are outside the frozen Codenip catalog: {', '.join(unknown)}")
+            if selection is None:
+                await asyncio.to_thread(store.freeze_task_input, task.task_id, "codenip_selection", requested)
+                selection = requested
+            elif selection != requested:
+                raise ValueError("the Codenip rule selection is already frozen")
+        if selection is None:
+            raise ValueError("rule_ids are required to select Codenip rules")
 
         def queued_rules() -> set[str]:
             return {
@@ -443,7 +462,7 @@ class GitHubReviewerPlugin:
                 for child in store.subtasks(task.task_id)
             }
 
-        for identity in sorted(rules.keys() - await asyncio.to_thread(queued_rules)):
+        for identity in sorted(set(selection) - await asyncio.to_thread(queued_rules)):
             await self.runtime.create_subtask(task.task_id, codenip_rule_request(task, identity))
         workers = await asyncio.to_thread(store.subtasks, task.task_id)
         active = [
@@ -451,7 +470,7 @@ class GitHubReviewerPlugin:
             for child in workers
             if child.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAITING}
         ]
-        return {"total": len(rules), "remaining": 0, "active_task_ids": active}
+        return {"rule_ids": selection, "total": len(selection), "remaining": 0, "active_task_ids": active}
 
     async def review_inventory_control(self, task: AgentTask, request: EmptyInput) -> dict:
         return await asyncio.to_thread(self._review_inventory, task)

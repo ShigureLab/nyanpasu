@@ -1,6 +1,6 @@
 # Codenip
 
-[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. A Sol coordinator queues the eight rule pages selected in [codenip.py](../packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/codenip.py). One Luna worker per rule decides applicability in the assigned diff and returns its verdict for the coordinator to collect. The service runs up to 32 rule workers across all reviews and starts the next queued worker as soon as a slot opens.
+[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. For each pinned diff, a Sol coordinator selects up to eight relevant rules from the installed catalog. One Luna worker per selected rule decides applicability and returns its verdict. The service freezes each selection and runs up to 32 rule workers across all reviews, starting the next queued worker as soon as a slot opens.
 
 ## Install and enable
 

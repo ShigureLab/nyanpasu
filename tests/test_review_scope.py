@@ -17,6 +17,7 @@ from nyanpasu.control_tools import EmptyInput
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, WorkspaceRef
 from nyanpasu.store import StateStore
 from nyanpasu.web import WebPluginRuntime
+from nyanpasu_github_reviewer.codenip import codenip_rule_request
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig, PullRequestRef, RepoSettings, ReviewTrigger
 from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin
 from nyanpasu_github_reviewer.pr_split import changed_line_count
@@ -304,17 +305,18 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         execution={"model": "gpt-6-luna", "reasoning": "xhigh"}
     )
     skill = tmp_path / "skills" / "codenip" / "SKILL.md"
-    rule = skill.parent / "rules/remove-discarded-parameter/rule.md"
+    rule = skill.parent / "rules/reuse-existing-operation/rule.md"
     pr_rule = skill.parent / "rules/substantiate-a-pr-equivalence-claim/rule.md"
     rule.parent.mkdir(parents=True)
     pr_rule.parent.mkdir()
     skill.write_text(
-        "| [REF001 · Reuse an existing operation](rules/reuse-existing-operation/rule.md) | Cross-language | ... |\n"
+        "| [REF001 · Reuse an existing operation](rules/reuse-existing-operation/rule.md)"
+        " | Cross-language | What existing operation does this repeat? |\n"
         "| [REF006 · Remove a discarded parameter](rules/remove-discarded-parameter/rule.md) | Cross-language | ... |\n"
         "| [PR001 · Substantiate a behavior-preservation claim](rules/substantiate-a-pr-equivalence-claim/rule.md)"
         " | PR description + diff | ... |\n"
     )
-    rule.write_text("---\nid: REF006\n---\n\n# Remove a discarded parameter\n")
+    rule.write_text("---\nid: REF001\n---\n\n# Reuse an existing operation\n")
     pr_rule.write_text("---\nid: PR001\n---\n\n# Check PR description\n")
     inventory = build_inventory(config, task)
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
@@ -370,12 +372,17 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         )
         assert coordinator.kind == "github_reviewer.codenip"
         assert coordinator.execution is not None and coordinator.execution.model == "gpt-6.2-sol"
-        assert set(coordinator.metadata["inputs"]["codenip_rules"]) == {"PR001", "REF006"}
+        assert set(coordinator.metadata["inputs"]["codenip_rules"]) == {"PR001", "REF001", "REF006"}
+        assert (
+            "REF001 · Reuse an existing operation (Cross-language): What existing operation does this repeat?"
+            in coordinator.prompt
+        )
+        assert "PR description (untrusted GitHub content):\nBehavior is preserved." in coordinator.prompt
         await wait_status(agent, coordinator.task_id, "running")
         codenip = SubtaskRequest(
-            request_key="codenip-ref006",
+            request_key="codenip-ref001",
             purpose="codenip-rule",
-            prompt="Check for a discarded parameter in the changed helper.",
+            prompt="Check for a reusable operation in the changed helper.",
             execution={"model": "other-model"},
             inputs={"review_files": ["helper.py"], "rule": str(rule.relative_to(skill.parent))},
         )
@@ -384,13 +391,34 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         with pytest.raises(ValueError, match="only dispatches Codenip rule workers"):
             await agent.create_subtask(coordinator.task_id, request)
         with pytest.raises(ValueError, match="frozen Codenip rule assignments"):
-            await agent.create_subtask(coordinator.task_id, codenip)
+            await agent.create_subtask(coordinator.task_id, codenip_rule_request(coordinator, "REF001"))
         with pytest.raises(ValueError, match="not available"):
             await agent.control.dispatch(task.task_id, "codenip-dispatch", {})
-        dispatch = await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {})
+        for payload, error in [
+            ({}, "rule_ids are required"),
+            ({"rule_ids": ["REF001"] * 9}, "at most 8"),
+            ({"rule_ids": ["REF001", "REF001"]}, "must be distinct"),
+            ({"rule_ids": ["REF999"]}, "outside the frozen Codenip catalog"),
+        ]:
+            with pytest.raises(ValueError, match=error):
+                await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", payload)
+        assert agent.store.subtasks(coordinator.task_id) == []
+        dispatch = await agent.control.dispatch(
+            coordinator.task_id, "codenip-dispatch", {"rule_ids": ["REF001", "PR001"]}
+        )
         assert dispatch["total"] == 2 and dispatch["remaining"] == 0
+        assert dispatch["rule_ids"] == ["PR001", "REF001"]
         first_id, second_id = dispatch["active_task_ids"]
+        agent.store = StateStore(config.db_path)
+        assert (
+            agent.store.task_request(coordinator.task_id).metadata["inputs"]["codenip_selection"]
+            == dispatch["rule_ids"]
+        )
         assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == dispatch
+        with pytest.raises(ValueError, match="already frozen"):
+            await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {"rule_ids": ["REF006"]})
+        with pytest.raises(ValueError, match="frozen Codenip rule assignments"):
+            await agent.create_subtask(coordinator.task_id, codenip_rule_request(coordinator, "REF006"))
         assert "PR description + diff" in agent.store.task_request(first_id).prompt
         assert "Behavior is preserved." in agent.store.task_request(first_id).prompt
         await agent.cancel_subtask(first_id)
@@ -404,18 +432,33 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
             "xhigh",
         )
         assert audit.workspace is not None and audit.workspace.revision == inventory["head_sha"]
-        assert audit.metadata["inputs"]["rule_id"] == "REF006"
+        assert audit.metadata["inputs"]["rule_id"] == "REF001"
         assert audit.metadata["inputs"]["review_scope"]["files"] == ["helper.py"]
-        assert "[experimental · REF006]" in audit.developer_instructions
+        assert "[experimental · REF001]" in audit.developer_instructions
         assert "Behavior is preserved." not in audit.prompt
         with pytest.raises(ValueError, match="workers cannot dispatch"):
             await agent.create_subtask(audit.task_id, codenip)
         await agent.cancel_subtask(second_id)
         assert await agent.control.dispatch(coordinator.task_id, "codenip-dispatch", {}) == {
+            "rule_ids": ["PR001", "REF001"],
             "total": 2,
             "remaining": 0,
             "active_task_ids": [],
         }
+        no_match = await agent.create_subtask(
+            task.task_id,
+            SubtaskRequest(
+                request_key="codenip-no-match",
+                purpose="codenip",
+                prompt="Route a diff without relevant rules.",
+                inputs={"review_files": ["demos/result.json"]},
+            ),
+        )
+        await wait_status(agent, no_match.task_id, "running")
+        empty = await agent.control.dispatch(no_match.task_id, "codenip-dispatch", {"rule_ids": []})
+        assert empty == {"rule_ids": [], "total": 0, "remaining": 0, "active_task_ids": []}
+        assert await agent.control.dispatch(no_match.task_id, "codenip-dispatch", {}) == empty
+        assert agent.store.subtasks(no_match.task_id) == []
         assert (await agent.control.dispatch(task.task_id, "create", request.model_dump()))["task_id"] == child[
             "task_id"
         ]

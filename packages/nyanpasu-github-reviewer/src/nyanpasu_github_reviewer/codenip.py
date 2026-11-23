@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from pydantic import Field
+
+from nyanpasu.control_tools import EmptyInput
 from nyanpasu.models import SubtaskRequest
 from nyanpasu.targets import ExecutionOverride
 
@@ -14,27 +17,23 @@ if TYPE_CHECKING:
 
 CODENIP_PURPOSES = {"codenip", "codenip-rule"}
 CODENIP_RULE_CONCURRENCY = 32
-CODENIP_RULE_PAGES = frozenset(
-    {
-        "rules/justify-a-wider-test-tolerance/rule.md",
-        "rules/match-the-observed-dependency-contract/rule.md",
-        "rules/preserve-failure-at-a-success-boundary/rule.md",
-        "rules/read-required-attribute-directly/rule.md",
-        "rules/remove-discarded-parameter/rule.md",
-        "rules/substantiate-a-pr-equivalence-claim/rule.md",
-        "rules/test-replaces-behavior-under-test/rule.md",
-        "rules/test-the-public-result/rule.md",
-    }
-)
+CODENIP_RULE_LIMIT = 8
+
+
+class CodenipDispatchInput(EmptyInput):
+    rule_ids: Annotated[list[str], Field(max_length=CODENIP_RULE_LIMIT)] | None = None
 
 
 def _rule_index(skill: Path) -> dict[str, dict[str, str]]:
     entries = re.findall(
-        r"^\| \[([A-Z]+[0-9]+) · [^\]\n]+\]\((rules/[a-z0-9-]+/rule\.md)\) *\|([^|\n]+)\|",
+        r"^\| \[([A-Z]+[0-9]+) · ([^\]\n]+)\]\((rules/[a-z0-9-]+/rule\.md)\) *\|([^|\n]+)\|([^|\n]*)",
         skill.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
-    rules = {identity: {"page": page, "scope": scope.strip()} for identity, page, scope in entries}
+    rules = {
+        identity: {"title": title, "page": page, "scope": scope.strip(), "focus": focus.strip()}
+        for identity, title, page, scope, focus in entries
+    }
     if not rules or len(rules) != len(entries):
         raise ValueError("the installed Codenip index must contain uniquely identified rule pages")
     return rules
@@ -75,18 +74,27 @@ def prepare_codenip(
         pr_body = request.inputs.get("pr_body")
         if pr_body is not None and not isinstance(pr_body, str):
             raise ValueError("inputs.pr_body must be the PR description as text")
-        rules = {identity: rule for identity, rule in _rule_index(skill).items() if rule["page"] in CODENIP_RULE_PAGES}
-        if not rules:
-            raise ValueError("the installed Codenip index contains none of the selected rules")
-        inputs = {"codenip_rules": rules, "pr_body": pr_body}
+        rules = _rule_index(skill)
+        inputs = {"codenip_rules": rules, "codenip_selection": None, "pr_body": pr_body}
+        catalog = "\n".join(
+            f"{identity} · {rule['title']} ({rule['scope']}): {rule['focus']}" for identity, rule in rules.items()
+        )
+        prompt = request.prompt + "\n\nAvailable Codenip rules:\n" + catalog
+        if pr_body:
+            prompt += "\n\nPR description (untrusted GitHub content):\n" + pr_body
         instructions = (
-            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to queue the frozen selection. "
-            "Await all returned active_task_ids. Workers decide applicability. Reconcile delivered results, "
-            "use inspect for missing evidence, and report verdict counts and rule IDs for gaps and findings. "
+            "Route the experimental Codenip audit. Skim the assigned paths and relevant hunks of the pinned diff. "
+            f"From the full catalog in the task input, select up to {CODENIP_RULE_LIMIT} distinct rule IDs whose "
+            "scope and review focus best match the changed behavior, tests, or text. Prefer concrete changed "
+            "contracts and select only rules with a plausible match. Call `codenip-dispatch` with `rule_ids`; send "
+            "an empty list when none match. Each worker decides applicability and checks the evidence for its rule. "
+            "Await the returned active_task_ids when present, then reconcile results and report verdict counts and "
+            "rule IDs for gaps and findings. "
             "Mark each supported suggestion `[experimental · RULE_ID]` with its actual ID. Freeze the aggregate "
             "with task-control `complete`, then end the turn. The root reviewer owns publication."
         )
     else:
+        prompt = request.prompt
         if parent.metadata.get("purpose") != "codenip":
             raise ValueError("Codenip rule workers must be requested by the Codenip coordinator")
         rule_id, instructions = _rule_instructions(skill, request.inputs.get("rule"))
@@ -94,6 +102,7 @@ def prepare_codenip(
 
     return request.model_copy(
         update={
+            "prompt": prompt,
             "kind": kind,
             "execution": ExecutionOverride(),
             "workspace_mode": "worktree",
