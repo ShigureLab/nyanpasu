@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from nyanpasu.claude import ClaudeBackend
-from nyanpasu.codex import CodexAppServerBackend
+from nyanpasu.codex import CodexAppServerBackend, EmptyThreadMissingRollout
 from nyanpasu.resources import ProcessResources
 from nyanpasu.transcript.claude import ClaudeHistorySource
 from nyanpasu.transcript.codex import CodexHistorySource
@@ -79,16 +79,17 @@ class Backends:
                 self._latest[name] = backend.execution.runtime_info()
             self._active.pop(id(backend), None)
 
-    async def archive_sessions(self, sessions: set[tuple[str, str]]) -> None:
+    async def archive_sessions(self, sessions: dict[tuple[str, str], bool]) -> None:
         for name in sorted({name for name, _ in sessions}):
             thread_ids = sorted(thread_id for backend, thread_id in sessions if backend == name)
-            if name in self._provided:
+            history = nullcontext(self.get(name)) if name in self._provided else self.history(name)
+            async with history as backend:
                 for thread_id in thread_ids:
-                    await self.get(name).execution.archive(thread_id)
-            else:
-                async with self.history(name) as backend:
-                    for thread_id in thread_ids:
+                    try:
                         await backend.execution.archive(thread_id)
+                    except EmptyThreadMissingRollout:
+                        if sessions[name, thread_id]:
+                            raise
 
     def _runtime_info(self, name: str, active: list[tuple[str, Backend, str]]) -> dict:
         backends = [backend for backend_name, backend, _ in active if backend_name == name]

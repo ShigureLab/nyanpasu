@@ -568,17 +568,21 @@ class StateStore:
             ).fetchall()
         return [_task_summary_from_row(row) for row in rows]
 
-    def sessions_for_scope(self, key: str, generation: int) -> set[tuple[str, str]]:
+    def sessions_for_scope(self, key: str, generation: int) -> dict[tuple[str, str], bool]:
+        """Map each bound session to whether cleanup must account for a persisted rollout."""
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT backend,thread_id FROM task_runs
-                WHERE context_key=? AND context_generation=? AND thread_id IS NOT NULL
-                UNION
-                SELECT t.backend,t.thread_id FROM task_turns t JOIN task_runs r ON r.task_id=t.task_id
-                WHERE r.context_key=? AND r.context_generation=?""",
+                """SELECT backend,thread_id,max(requires_rollout) AS requires_rollout FROM (
+                    SELECT backend,thread_id,
+                           (turn_id IS NOT NULL OR action<>'run' OR status NOT IN ('failed','cancelled')) AS requires_rollout
+                    FROM task_runs WHERE context_key=? AND context_generation=? AND thread_id IS NOT NULL
+                    UNION ALL
+                    SELECT t.backend,t.thread_id,1 FROM task_turns t JOIN task_runs r ON r.task_id=t.task_id
+                    WHERE r.context_key=? AND r.context_generation=?
+                ) GROUP BY backend,thread_id""",
                 (key, generation, key, generation),
             ).fetchall()
-        return {(row["backend"], row["thread_id"]) for row in rows}
+        return {(row["backend"], row["thread_id"]): bool(row["requires_rollout"]) for row in rows}
 
     def close_context_scope(self, key: str, generation: int) -> None:
         with self._connect() as conn:

@@ -799,10 +799,10 @@ class AgentService:
 
     async def _archive_memory_sessions(self, task: AgentTask) -> None:
         turns = await to_thread.run_sync(self.store.task_turns, task.task_id)
-        sessions = {(turn["backend"], turn["thread_id"]) for turn in turns}
+        sessions = {(turn["backend"], turn["thread_id"]): True for turn in turns}
         record = await to_thread.run_sync(self.store.task_run, task.task_id)
         if record.thread_id:
-            sessions.add((record.backend, record.thread_id))
+            sessions.setdefault((record.backend, record.thread_id), record.turn_id is not None)
         try:
             await self.backends.archive_sessions(sessions)
         except Exception:
@@ -918,7 +918,7 @@ class AgentService:
         context = await to_thread.run_sync(self.store.get_context, key)
         sessions = await to_thread.run_sync(self.store.sessions_for_scope, key, generation)
         if context is not None and context.thread_id:
-            sessions.add((context.backend, context.thread_id))
+            sessions.setdefault((context.backend, context.thread_id), True)
         await self.backends.archive_sessions(sessions)
         if context is not None:
             await to_thread.run_sync(self.worktrees.remove_worktree, workspace, context.session_worktree)

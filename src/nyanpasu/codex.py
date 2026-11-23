@@ -41,6 +41,17 @@ class CodexTurnError(RuntimeError):
         self.code = error.get("codexErrorInfo") if error else None
 
 
+class CodexRequestError(RuntimeError):
+    def __init__(self, error: dict[str, Any]) -> None:
+        super().__init__(str(error))
+        self.code = error.get("code")
+        self.message = error.get("message")
+
+
+class EmptyThreadMissingRollout(RuntimeError):
+    """Codex has metadata for an unloaded, empty thread but no rollout to archive."""
+
+
 class CodexSessionSource(Protocol):
     async def read_thread(self, thread_id: str) -> dict[str, Any]: ...
 
@@ -327,7 +338,7 @@ class CodexAppServerBackend:
             future = self._pending.pop(request_id, None)
             if future is not None and not future.done():
                 if "error" in message:
-                    future.set_exception(RuntimeError(str(message["error"])))
+                    future.set_exception(CodexRequestError(message["error"]))
                 else:
                     future.set_result(message.get("result", {}))
             return
@@ -473,13 +484,20 @@ class CodexAppServerBackend:
         await self._ensure_started()
         try:
             await self._request("thread/archive", {"threadId": thread_id})
-        except RuntimeError:
-            # Repeated cleanup returns "no rollout found" for an already archived thread.
-            # Read its authoritative path before treating the archive as complete.
+        except RuntimeError as exc:
             thread = await self.read_thread(thread_id)
             path = thread.get("path")
-            if path is None or Path(path).parent.name != "archived_sessions":
-                raise
+            if path and Path(path).parent.name == "archived_sessions":
+                return
+            if (
+                isinstance(exc, CodexRequestError)
+                and exc.code == -32600
+                and exc.message == f"no rollout found for thread id {thread_id}"
+                and thread.get("preview") == ""
+                and thread.get("status", {}).get("type") == "notLoaded"
+            ):
+                raise EmptyThreadMissingRollout(str(exc)) from exc
+            raise
 
     async def ensure_unarchived(self, thread_id: str) -> None:
         thread = await self.read_thread(thread_id)

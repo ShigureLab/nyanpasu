@@ -11,6 +11,7 @@ import pytest
 
 from nyanpasu.agent import AgentService
 from nyanpasu.backends import Backend, Backends
+from nyanpasu.codex import CodexAppServerBackend
 from nyanpasu.config import (
     ClaudeBackendConfig,
     MemoryConfig,
@@ -278,6 +279,60 @@ async def test_agent_cleanup_archives_thread_and_deletes_context(tmp_path: Path)
 
     assert codex.archived == ["thread-1"]
     assert store.get_context("demo:1") is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("turn_id", "preview", "code", "closed"),
+    [
+        (None, "", -32600, True),
+        ("turn-1", "", -32600, False),
+        (None, "prior message", -32600, False),
+        (None, "", -32603, False),
+    ],
+)
+async def test_startup_cleans_missing_rollout_only_before_first_turn(
+    tmp_path, monkeypatch, turn_id, preview, code, closed
+):
+    config = _config(tmp_path)
+    codex = CodexAppServerBackend(config)
+    monkeypatch.setattr(codex, "_ensure_started", AsyncMock())
+
+    async def reply(request):
+        assert request["params"]["threadId"] == "session"
+        if request["method"] == "thread/archive":
+            response = {"error": {"code": code, "message": "no rollout found for thread id session"}}
+        else:
+            assert request["method"] == "thread/read"
+            response = {
+                "result": {
+                    "thread": {
+                        "id": "session",
+                        "path": "/sessions/rollout.jsonl",
+                        "preview": preview,
+                        "status": {"type": "notLoaded"},
+                    }
+                }
+            }
+        codex._handle_message({"id": request["id"], **response})
+
+    monkeypatch.setattr(codex, "_write", reply)
+    worktrees = FakeWorktrees(tmp_path / "worktrees")
+    agent = AgentService(config, worktrees=worktrees, backends=Backends(config, {"codex": Backend(codex, Mock())}))
+    task = agent._admit(_task("review"))
+    agent.store.record_task(task)
+    context = worktrees.prepare_context(task, None)
+    agent.store.bind_task_execution(task.task_id, "session", turn_id, context=context)
+    agent.store.mark_task_failed(task.task_id, "execution failed")
+    agent.store.begin_context_cleanup(task.context_key)
+    try:
+        await agent.startup()
+        assert agent.store.context_scope(task.context_key).lifecycle == ("closed" if closed else "closing")
+        assert worktrees.removed == ([context.session_worktree] if closed else [])
+        assert agent.store.task_status(task.task_id) == "failed"
+        assert [row["turn_id"] for row in agent.store.task_turns(task.task_id)] == ([turn_id] if turn_id else [])
+    finally:
+        await agent.shutdown()
 
 
 @pytest.mark.anyio
