@@ -42,6 +42,7 @@ from nyanpasu.memory_consolidation import (
     evidence_chunks,
     extraction_batches,
     extraction_prompt,
+    extraction_windows,
     input_digest,
     retained_account_chunks,
     source_chunks,
@@ -176,7 +177,6 @@ class AgentService:
                 logger.info("task recovery scheduled task_id={} context={}", task.task_id, task.context_key)
 
         self._start_memory_producer()
-        await self.sweep_memory()
 
     def _schedule(self, task: AgentTask) -> None:
         if task.task_id in self._runners:
@@ -727,7 +727,6 @@ class AgentService:
             self._schedule(await to_thread.run_sync(self.store.task_request, followup.task_id))
         if task.kind not in MEMORY_TASK_KINDS and task.spawned_by_task_id is None and task.memory.write_domain:
             self._start_memory_producer()
-            await self.sweep_memory()
         return True
 
     async def _archive_memory_sessions(self, task: AgentTask) -> None:
@@ -974,11 +973,11 @@ class AgentService:
 
     async def _produce_memory(self) -> None:
         while True:
-            await asyncio.sleep(self.config.memory.sweep_interval_seconds)
             try:
                 await self.sweep_memory()
             except Exception:
                 logger.exception("background memory sweep failed")
+            await asyncio.sleep(self.config.memory.sweep_interval_seconds)
 
     async def sweep_memory(self) -> list[AgentTask]:
         """Batch completed contributions after their context is idle, including after a restart."""
@@ -1342,7 +1341,7 @@ class AgentService:
         processed_sources.update(
             item["reference"] for chunk in chunks[:cursor] for item in chunk if item["kind"] != "retained_memory"
         )
-        for index in range(cursor, len(chunks)):
+        for end, window in extraction_windows(chunks, cursor):
             result = await self._run_memory_turn(
                 task,
                 backend,
@@ -1350,8 +1349,8 @@ class AgentService:
                 prompt=extraction_prompt(
                     source.task_id,
                     previous,
-                    chunks[index],
-                    final=index + 1 == len(chunks),
+                    window,
+                    final=end == len(chunks),
                     context_key=source.context_key,
                     context_generation=source.context_generation,
                     source_order=last.source_order,
@@ -1363,7 +1362,9 @@ class AgentService:
             if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 raise asyncio.CancelledError
             output = SourceSummaryOutput.model_validate_json(result.final_message)
-            processed_sources.update(item["reference"] for item in chunks[index] if item["kind"] != "retained_memory")
+            processed_sources.update(
+                item["reference"] for chunk in chunks[cursor:end] for item in chunk if item["kind"] != "retained_memory"
+            )
             checkpoint = await to_thread.run_sync(
                 functools.partial(
                     self._memory_service(task).checkpoint_source,
@@ -1373,8 +1374,8 @@ class AgentService:
                     context_generation=source.context_generation,
                     source_order=last.source_order,
                     input_digest=digest,
-                    cursor=index + 1,
-                    complete=index + 1 == len(chunks),
+                    cursor=end,
+                    complete=end == len(chunks),
                     completed_task_digests=digests,
                     sources=sorted(processed_sources),
                     expected_revision=checkpoint.revision if checkpoint is not None else None,
@@ -1382,6 +1383,7 @@ class AgentService:
                 )
             )
             previous = checkpoint
+            cursor = end
         return result, checkpoint
 
     async def _run_memory_job(self, task: AgentTask, backend, cwd: Path, on_started):

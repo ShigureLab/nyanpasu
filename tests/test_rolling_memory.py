@@ -60,11 +60,13 @@ async def test_successive_tasks_update_one_account_with_only_their_bound_evidenc
     )
     try:
         await agent.run_now(continuing_task("first"))
+        await agent.sweep_memory()
         await complete_memory(agent, "first")
         initial = agent.memory.list_sources(ALICE)[0]
         initial_summary = agent.memory.list_summaries(ALICE)[0]
 
         await agent.run_now(continuing_task("second"))
+        await agent.sweep_memory()
         await complete_memory(agent, "second")
 
         sources = agent.memory.list_sources(ALICE)
@@ -123,11 +125,13 @@ async def test_new_task_recovers_earlier_failed_extraction_in_order(tmp_path, fa
         previous = None
         if has_previous_account:
             await agent.run_now(continuing_task("seed"))
+            await agent.sweep_memory()
             await complete_memory(agent, "seed")
             previous = agent.memory.list_sources(ALICE)[0]
         failure_number = len(model.events) + failed_chunk
         model.fail_at.add(failure_number)
         await agent.run_now(continuing_task("earlier"))
+        await agent.sweep_memory()
         failed_id = f"memory:{hashlib.sha256(b'earlier').hexdigest()}"
         failed = await asyncio.wait_for(agent.wait_for_memory(failed_id), 5)
         assert failed.status is TaskStatus.FAILED
@@ -138,6 +142,7 @@ async def test_new_task_recovers_earlier_failed_extraction_in_order(tmp_path, fa
         event_count = len(model.events)
 
         await agent.run_now(continuing_task("later"))
+        await agent.sweep_memory()
         await complete_memory(agent, "later")
 
         assert len(agent.memory.list_sources(ALICE)) == 1
@@ -188,6 +193,7 @@ async def test_retrying_absorbed_old_task_uses_receipts_without_reading_native_h
     try:
         for name in ("first", "second"):
             await agent.run_now(continuing_task(name))
+            await agent.sweep_memory()
             await complete_memory(agent, name)
         published = agent.memory.list_sources(ALICE)
         summary = agent.memory.list_summaries(ALICE)
@@ -219,6 +225,7 @@ async def test_changed_task_draft_revokes_old_receipt_and_rebuilds_new_evidence(
     )
     try:
         await agent.run_now(continuing_task("source"))
+        await agent.sweep_memory()
         await complete_memory(agent, "source")
         published = agent.memory.list_sources(ALICE)[0]
         original = agent.memory.source_state(ALICE, CONTEXT)
@@ -320,6 +327,7 @@ async def test_overlapping_maintenance_for_one_context_retains_both_tasks(tmp_pa
     )
     try:
         await agent.run_now(continuing_task("first"))
+        await agent.sweep_memory()
         await asyncio.wait_for(entered.wait(), 5)
         await agent.run_now(continuing_task("second"))
         release.set()

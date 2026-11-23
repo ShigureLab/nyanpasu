@@ -20,6 +20,12 @@ def extraction_id(name):
     return f"memory:{hashlib.sha256(name.encode()).hexdigest()}"
 
 
+async def wait_for_admission(agent, task_id):
+    async with asyncio.timeout(5):
+        while agent.store.task_status(task_id) is None:
+            await asyncio.sleep(0.01)
+
+
 def producer_clock(monkeypatch):
     clock = [time.time()]
     monkeypatch.setattr(
@@ -96,6 +102,7 @@ async def test_restart_discovers_unscheduled_completed_contributions(tmp_path, m
     try:
         clock[0] = finished + 301
         await recovered.startup()
+        await wait_for_admission(recovered, extraction_id("second"))
         await complete_memory(recovered, "second")
         assert [kind for kind, _ in model.events] == ["extraction", "summary"]
         assert await recovered.sweep_memory() == []
@@ -186,14 +193,33 @@ async def test_periodic_producer_runs_when_idle_window_expires_without_another_t
         await agent.run_now(continuing_task("first"))
         assert model.events == []
 
-        async def await_admission():
-            while agent.store.task_status(extraction_id("first")) is None:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(await_admission(), 5)
+        await wait_for_admission(agent, extraction_id("first"))
         await complete_memory(agent, "first")
         assert [kind for kind, _ in model.events] == ["extraction", "summary"]
     finally:
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
+async def test_same_context_can_continue_while_background_sweep_is_blocked(tmp_path, monkeypatch):
+    agent = batched_agent(tmp_path, MemoryModel(), count=2)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_sweep():
+        entered.set()
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(agent, "sweep_memory", blocked_sweep)
+    try:
+        async with asyncio.timeout(5):
+            await agent.startup()
+            await entered.wait()
+            for name in ("first", "second"):
+                result = await agent.run_now(continuing_task(name))
+                assert result.status is TaskStatus.COMPLETED
+    finally:
+        release.set()
         await agent.shutdown()
 
 

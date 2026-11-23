@@ -9,7 +9,14 @@ from dataclasses import asdict
 import pytest
 
 from nyanpasu.memory import SUMMARY_MAX_BYTES, MemoryAccess, MemoryDenied, MemoryNotFound, MemoryService, summary_block
-from nyanpasu.memory_consolidation import BLOCK_LIMIT, EVIDENCE_BUDGET, MEMORY_TASK_KINDS, input_digest
+from nyanpasu.memory_consolidation import (
+    BLOCK_LIMIT,
+    EVIDENCE_BUDGET,
+    EXTRACTION_WINDOW_BYTES,
+    MEMORY_TASK_KINDS,
+    extraction_windows,
+    input_digest,
+)
 from nyanpasu.memory_context import MEMORY_CONTEXT_MAX_BYTES, build_memory_context
 from nyanpasu.models import TaskRunResult, TaskStatus
 from nyanpasu.task_control import call_control
@@ -20,6 +27,19 @@ from tests.test_memory import legacy_sources
 
 ROOT_EXTRACTION_ID = f"memory:{hashlib.sha256(b'root').hexdigest()}"
 SOURCE_EXTRACTION_ID = f"memory:{hashlib.sha256(b'source').hexdigest()}"
+
+
+def test_multibyte_evidence_keeps_checkpoint_boundaries_when_packing_calls():
+    small = {"text": "短"}
+    medium = {"text": "证" * 12_000}
+    large = {"text": "据" * 24_000}
+    chunks = [[small], [medium], [medium], [large], [small]]
+    assert list(extraction_windows(chunks, 0)) == [
+        (2, [small, medium]),
+        (3, [medium]),
+        (4, [large]),
+        (5, [small]),
+    ]
 
 
 class MemoryModel(FakeCodex):
@@ -90,6 +110,7 @@ async def test_memory_sessions_are_archived_before_the_next_chunk_or_summary_att
     agent = make_agent(config, cheap=model, source=source)
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         summary = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert summary.status is TaskStatus.COMPLETED
         sessions = {
@@ -118,6 +139,7 @@ async def test_archive_failure_does_not_lose_published_memory_or_summary(tmp_pat
     )
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert result.status is TaskStatus.COMPLETED
         assert agent.memory.list_sources(ALICE) and agent.memory.list_summaries(ALICE)
@@ -141,6 +163,7 @@ async def test_interrupted_memory_session_is_kept_for_recovery(tmp_path):
     )
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         async with asyncio.timeout(3):
             await started.wait()
     finally:
@@ -221,6 +244,7 @@ async def test_completed_root_runs_read_only_background_pipeline(tmp_path, monke
     publish_source(agent.memory, PUBLIC, "shared-unrelated", body="PUBLIC NAV MUST NOT ENTER PRIVATE MAINTENANCE")
     try:
         completed = await agent.run_now(task("root", kind="review", memory=access))
+        await agent.sweep_memory()
         assert completed.status is TaskStatus.COMPLETED
         if maintained:
             last = await agent.wait_for_memory(ROOT_EXTRACTION_ID)
@@ -272,11 +296,12 @@ async def test_extraction_retains_ordered_bound_evidence_and_resumes_committed_c
     agent = make_agent(config, cheap=model, source=source)
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         failed = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert failed.status is TaskStatus.FAILED
         checkpoint = agent.memory.source_state(ALICE, "source")
         assert checkpoint is not None
-        assert checkpoint.cursor == 1 and not checkpoint.complete
+        assert checkpoint.cursor > 1 and not checkpoint.complete
         assert agent.memory.list_sources(ALICE) == []
         with pytest.raises(MemoryNotFound):
             agent.memory.read(ALICE, checkpoint.id)
@@ -290,7 +315,8 @@ async def test_extraction_retains_ordered_bound_evidence_and_resumes_committed_c
         chunks = [material["evidence"] for kind, material in model.events if kind == "extraction"]
         assert sum(chunk == first_chunk for chunk in chunks) == 1
         assert all(
-            sum(len(json.dumps(item, ensure_ascii=False)) for item in chunk) <= EVIDENCE_BUDGET for chunk in chunks
+            len(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")).encode()) <= EXTRACTION_WINDOW_BYTES
+            for chunk in chunks
         )
         assert "PRIVATE UNBOUND HISTORY" not in json.dumps(model.events)
         # The last verified evidence survives even after processing many earlier chunks.
@@ -317,6 +343,7 @@ async def test_invalid_model_output_never_commits_a_source(tmp_path, response):
     )
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert result.status is TaskStatus.FAILED
         assert agent.store.task_status("source") == "completed"
@@ -344,6 +371,7 @@ async def test_service_preserves_all_input_references_without_model_copying(tmp_
     model.responses[1] = json.dumps({"title": "Review history", "body": prose, "topics": ["review"]})
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         saved = agent.memory.source_state(ALICE, "source")
         assert saved is not None and saved.complete
@@ -406,7 +434,10 @@ async def test_resume_reconstructs_provenance_missing_from_prior_checkpoint(tmp_
         retry = await agent.rebuild_memory(request.task_id)
         assert (await agent.wait_for_memory(retry.task_id)).status is TaskStatus.COMPLETED
         extraction = [material for kind, material in model.events if kind == "extraction"]
-        assert len(extraction) == len(chunks) - 5
+        assert len(extraction) < len(chunks) - 5
+        assert [item["text"] for call in extraction for item in call["evidence"]] == [
+            item["text"] for chunk in chunks[5:] for item in chunk
+        ]
         assert extraction[0]["previous_account"]["body"] == checkpoint.body
         assert extraction[0]["evidence"][0]["text"] == chunks[5][0]["text"]
         saved = agent.memory.source_state(ALICE, request.task_id)
@@ -431,6 +462,7 @@ async def test_summary_failure_retries_only_summary_and_preserves_prior_summary(
     prior = publish_summary(agent.memory, PUBLIC, f"[Older task](memory:{old.id})")
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         failed = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert failed.kind == "memory_consolidation" and failed.status is TaskStatus.FAILED
         unchanged = agent.memory.list_summaries(PUBLIC)[0]
@@ -467,6 +499,7 @@ async def test_restart_after_source_commit_recovers_without_regeneration(tmp_pat
     monkeypatch.setattr(agent.store, "mark_task_done", stop_after_commit)
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         for _ in range(200):
             checkpoint = agent.memory.source_state(PUBLIC, "source")
             if checkpoint is not None and checkpoint.complete and agent.store.task_status(extraction_id) == "queued":
@@ -634,6 +667,7 @@ async def test_source_names_cannot_collide_with_another_sources_summary(tmp_path
     try:
         for source_id in ("source", "source:summary"):
             await agent.run_now(task(source_id))
+            await agent.sweep_memory()
             extractions = [
                 item
                 for item in agent.store.recent_tasks()
@@ -793,6 +827,7 @@ async def test_migrated_account_is_compacted_in_bounded_chunks_before_new_eviden
     next_generation = publish_source(agent.memory, ALICE, "new-generation", context_key="source", context_generation=2)
     try:
         await agent.run_now(task("source", memory=ALICE))
+        await agent.sweep_memory()
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         extractions = [material for kind, material in model.events if kind == "extraction"]
         retained = [
@@ -801,7 +836,9 @@ async def test_migrated_account_is_compacted_in_bounded_chunks_before_new_eviden
         assert len(retained) > 1
         assert "".join(item["text"] for item in retained) == merged.body
         assert all(
-            len(json.dumps(material["evidence"], ensure_ascii=False)) <= EVIDENCE_BUDGET for material in extractions
+            len(json.dumps(material["evidence"], ensure_ascii=False, separators=(",", ":")).encode())
+            <= EXTRACTION_WINDOW_BYTES
+            for material in extractions
         )
         assert extractions[0]["previous_account"] is None
         assert "Lesson 0" in extractions[-1]["previous_account"]["body"]
@@ -889,6 +926,7 @@ async def test_summary_refreshes_from_the_updated_rolling_account(tmp_path):
     unrelated_summary = publish_summary(agent.memory, PUBLIC, "Unrelated summary", context_key="unrelated")
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         current = agent.memory.source_state(PUBLIC, "source")
         assert current is not None
@@ -924,6 +962,7 @@ async def test_corrected_or_withdrawn_account_refreshes_only_its_context(tmp_pat
     other = publish_summary(agent.memory, PUBLIC, "Untouched other context", context_key="unrelated")
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         current = agent.memory.source_state(PUBLIC, "source")
         assert current is not None
@@ -978,6 +1017,7 @@ async def test_noop_followup_can_preserve_prior_useful_summary_while_advancing_c
     model.responses[1] = json.dumps({"title": old.title, "body": old.body, "topics": list(old.topics)})
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         assert (await agent.wait_for_memory(SOURCE_EXTRACTION_ID)).status is TaskStatus.COMPLETED
         assert [kind for kind, _ in model.events] == ["extraction"]
         assert model.events[0][1]["previous_account"]["body"] == old.body
@@ -1016,6 +1056,7 @@ async def test_oversized_summary_gets_one_compression_attempt_and_preserves_atom
     model.responses[3] = json.dumps({"body": replacement if compresses else "🙂" * 300, "source_ids": [old.id]})
     try:
         await agent.run_now(task("source"))
+        await agent.sweep_memory()
         result = await agent.wait_for_memory(SOURCE_EXTRACTION_ID)
         assert result.status is (TaskStatus.COMPLETED if compresses else TaskStatus.FAILED)
         assert [kind for kind, _ in model.events] == ["extraction", "summary", "summary"]
