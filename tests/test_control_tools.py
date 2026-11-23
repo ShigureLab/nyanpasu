@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 from jsonschema import ValidationError as SchemaError, validate
@@ -37,12 +36,10 @@ def record_root(agent, name, **updates):
     return task
 
 
-def instructions(prompt):
-    return {
-        item["action"]: item
-        for line in prompt.splitlines()
-        if line.startswith('{"action":') and "input_schema" in (item := json.loads(line))
-    }
+def action_names(prompt):
+    return set(
+        next(line for line in prompt.splitlines() if line.startswith("Actions: ")).removeprefix("Actions: ").split(", ")
+    )
 
 
 class EchoInput(BaseModel):
@@ -64,7 +61,11 @@ async def test_registration_drives_instructions_validation_execution_and_live_vi
     task = record_root(agent, "root", metadata={"plugin_id": "example", "allow_echo": True})
     try:
         async with agent.control.turn(task.task_id) as control:
-            advertised = instructions(control.prompt)["echo"]
+            assert "echo" in action_names(control.prompt)
+            assert "input_schema" not in control.prompt
+            advertised = await asyncio.to_thread(
+                call_control, control.file, {"action": "help", "input": {"name": "echo"}}
+            )
             assert advertised["description"] == "Echo a message."
             assert advertised["input_schema"]["properties"]["message"]["description"] == "Text to echo to the caller."
             valid = {"message": "hello"}
@@ -86,10 +87,12 @@ async def test_registration_drives_instructions_validation_execution_and_live_vi
             assert calls == [(task.task_id, "hello")]
 
         async with agent.control.turn(task.task_id) as control:
-            assert "echo" not in instructions(control.prompt)
+            assert "echo" not in action_names(control.prompt)
+            with pytest.raises(ValueError, match="not available"):
+                await asyncio.to_thread(call_control, control.file, {"action": "help", "input": {"name": "echo"}})
         other = record_root(agent, "other", metadata={"plugin_id": "another", "allow_echo": True})
         async with agent.control.turn(other.task_id) as control:
-            assert "echo" not in instructions(control.prompt)
+            assert "echo" not in action_names(control.prompt)
             with pytest.raises(ValueError, match="unknown task action"):
                 await asyncio.to_thread(call_control, control.file, {"action": "echo", "input": valid})
     finally:
@@ -106,15 +109,15 @@ async def test_root_child_and_memory_visibility_match_call_admission(agent):
     )
     agent.store.mark_task_running(child.task_id, None)
     async with agent.control.turn(root.task_id) as control:
-        assert "complete" not in instructions(control.prompt)
-        assert {"memory.search", "memory.read", "memory.describe"} <= instructions(control.prompt).keys()
+        assert "complete" not in action_names(control.prompt)
+        assert {"memory.search", "memory.read", "memory.describe"} <= action_names(control.prompt)
         with pytest.raises(ValueError, match="not available"):
             await asyncio.to_thread(call_control, control.file, {"action": "complete", "input": {"summary": "done"}})
         assert await asyncio.to_thread(call_control, control.file, {"action": "inspect"}) == [
             {"task_id": child.task_id, "spawned_by_task_id": root.task_id, "kind": child.kind, "status": "running"}
         ]
     async with agent.control.turn(child.task_id) as control:
-        assert "complete" in instructions(control.prompt)
+        assert "complete" in action_names(control.prompt)
         with pytest.raises(ValueError, match="descendants"):
             await asyncio.to_thread(
                 call_control, control.file, {"action": "inspect", "input": {"task_id": root.task_id}}
@@ -122,7 +125,7 @@ async def test_root_child_and_memory_visibility_match_call_admission(agent):
 
     no_memory = record_root(agent, "no-memory")
     async with agent.control.turn(no_memory.task_id) as control:
-        assert not any(name.startswith("memory.") for name in instructions(control.prompt))
+        assert not any(name.startswith("memory.") for name in action_names(control.prompt))
         for action in ("memory.search", "memory.read", "memory.describe"):
             with pytest.raises(ValueError, match="not available"):
                 await asyncio.to_thread(call_control, control.file, {"action": action})
@@ -135,7 +138,7 @@ async def test_root_child_and_memory_visibility_match_call_admission(agent):
         with pytest.raises(ValueError, match="not available"):
             await asyncio.to_thread(call_control, control.file, {"action": "memory.describe"})
     async with agent.control.turn(root.task_id) as control:
-        assert not any(name.startswith("memory.") for name in instructions(control.prompt))
+        assert not any(name.startswith("memory.") for name in action_names(control.prompt))
 
 
 @pytest.mark.anyio
@@ -151,9 +154,12 @@ async def test_reviewer_tools_are_advertised_and_callable_only_for_owning_roots(
     agent.store.mark_task_running(child.task_id, None)
     reviewer_actions = {"review-inventory", "review-verify", "ci-refresh"}
     async with agent.control.turn(root.task_id) as control:
-        advertised = instructions(control.prompt)
-        assert reviewer_actions <= advertised.keys()
-        schema = advertised["review-inventory"]["input_schema"]
+        advertised = action_names(control.prompt)
+        assert reviewer_actions <= advertised
+        help_result = await asyncio.to_thread(
+            call_control, control.file, {"action": "help", "input": {"name": "review-inventory"}}
+        )
+        schema = help_result["input_schema"]
         validate({}, schema)
         with pytest.raises(SchemaError):
             validate({"inventory_id": "partial"}, schema)
@@ -161,7 +167,7 @@ async def test_reviewer_tools_are_advertised_and_callable_only_for_owning_roots(
             await agent.control.dispatch(root.task_id, "review-inventory", {"inventory_id": "partial"})
     for task, error in ((child, "not available"), (record_root(agent, "unrelated"), "unknown task action")):
         async with agent.control.turn(task.task_id) as control:
-            assert not reviewer_actions & instructions(control.prompt).keys()
+            assert not reviewer_actions & action_names(control.prompt)
             for action in reviewer_actions:
                 with pytest.raises(ValueError, match=error):
                     await asyncio.to_thread(call_control, control.file, {"action": action})

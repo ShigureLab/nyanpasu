@@ -569,7 +569,7 @@ async def test_model_memory_capabilities_are_read_only_and_domain_scoped(tmp_pat
                         ("memory.read", {"source_id": hidden.id}),
                         ("memory.describe", {}),
                     ):
-                        assert f'"action":"{action}"' not in control.prompt
+                        assert action not in control.control_prompt
                         with pytest.raises(ValueError, match="not available"):
                             await call(action, payload)
                 for action in ("memory.write", "memory.merge", "memory.delete"):

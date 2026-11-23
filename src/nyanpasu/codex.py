@@ -187,6 +187,17 @@ class CodexAppServerBackend:
                 self._turn_waiters.pop(key, None)
                 self._agent_messages.pop(key, None)
 
+    async def steer_turn(self, thread_id: str, turn_id: str, message: str) -> bool:
+        result = await self._request_started(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": message, "text_elements": []}],
+            },
+        )
+        return result["turnId"] == turn_id
+
     async def _interrupt_turn(self, key: tuple[str, str]) -> None:
         # The RPC acknowledgement is not execution completion. Keep the workspace
         # until the server has emitted turn/completed as well.

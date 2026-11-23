@@ -36,6 +36,11 @@ class ControlRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
 
 
+class ToolHelp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+
 class Completion(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     summary: str = Field(min_length=1, description="Supported result for the parent task.")
@@ -102,6 +107,7 @@ class TaskControl:
 
     def _builtin_tools(self) -> tuple[ToolSpec[Any], ...]:
         return (
+            ToolSpec("help", "Read one available action and its input schema.", ToolHelp, self._help),
             ToolSpec(
                 "create",
                 "Start a child in a fresh session and separate workspace. Retry with the same request_key and input; "
@@ -215,16 +221,14 @@ class TaskControl:
             if self._memory_available(task):
                 summaries = await to_thread.run_sync(self.agent.memory.list_summaries, task.memory)
             memory_context = build_memory_context(task, summaries, enabled=self.agent.config.memory.enabled)
-            prompt = f"""\nNyanpasu task control (for this turn only):
-Pipe a JSON request to: {command} -
-Alternatively, replace - with a request-file path. Stdin requires no filesystem writes.
-Requests:
-{{"action":"available action name","input":{{"parameter":"value"}}}}
-Omit input for actions with no parameters. Only the actions listed below are available to this task.
-Their input schemas supply parameter names, types, defaults and constraints.
-Do not expose the control file or its contents, or include it in evidence. Only the root publishes externally.
-"""
-            prompt += "\n".join(tool.instructions() for tool in tools) + "\n"
+            prompt = (
+                f"\nNyanpasu task control (private, this turn only). Only the root publishes externally.\n"
+                f"Pipe a JSON request to: {command} -\n"
+                'Send {"action":"name","input":{...}}; omit empty input. '
+                'For usage and schema send {"action":"help","input":{"name":"action name"}}.\n'
+                "End the turn after await or complete.\n"
+                f"Actions: {', '.join(tool.name for tool in tools)}\n"
+            )
             yield TurnControl(prompt, control, memory_context)
         finally:
             async with self._calls[token]:
@@ -276,6 +280,12 @@ Do not expose the control file or its contents, or include it in evidence. Only 
         if tool is None:
             raise ValueError(f"unknown task action: {action}")
         return await tool.invoke(task, payload)
+
+    async def _help(self, task: AgentTask, request: ToolHelp) -> dict[str, Any]:
+        for tool in self.available_tools(task):
+            if tool.name == request.name:
+                return tool.instructions()
+        raise ValueError(f"task action is not available: {request.name}")
 
     async def _create(self, task: AgentTask, request: SubtaskRequest | SubtaskFollowup) -> dict[str, Any]:
         child = await self.agent.create_subtask(task.task_id, request)

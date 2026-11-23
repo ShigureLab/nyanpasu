@@ -1177,6 +1177,7 @@ def _snapshot_from_pr(repo: str, raw: dict[str, Any]) -> PullRequestSnapshot:
         **PullRequestRef.from_github(repo, raw).model_dump(),
         node_id=str(raw.get("node_id") or raw.get("id") or raw["number"]),
         head_repo=str(head_repo_data.get("full_name") or ""),
+        title=raw.get("title"),
         title_hash=_hash_text(str(raw.get("title") or "")),
         body_hash=_hash_text(str(raw.get("body") or "")),
         created_at=_normalize_timestamp(str(raw.get("created_at") or "")),
@@ -1197,6 +1198,9 @@ def _event_from_snapshot_diff(
     if action is None:
         return None
     payload = _payload_from_snapshot(snapshot, action=action)
+    if action == "edited" and previous is not None:
+        payload["changes"] = _snapshot_edits(snapshot, previous)
+        payload["pull_request"]["title"] = snapshot.title
     delivery_id = _synthetic_delivery_id(snapshot, action, previous)
     return parse_github_event("pull_request", delivery_id, payload, agent_login=agent_login)
 
@@ -1217,19 +1221,26 @@ def _snapshot_action(
         return "ready_for_review"
     if previous.head_sha != snapshot.head_sha and snapshot.state == "open":
         return "synchronize"
-    if (
-        previous.title_hash != snapshot.title_hash
-        or previous.body_hash != snapshot.body_hash
-        or previous.base_ref != snapshot.base_ref
-        or previous.stack != snapshot.stack
-        or (
-            snapshot.stack is not None
-            and snapshot.base_ref != snapshot.stack.base_ref
-            and previous.base_sha != snapshot.base_sha
-        )
-    ) and snapshot.state == "open":
+    if snapshot.state == "open" and _snapshot_edits(snapshot, previous):
         return "edited"
     return None
+
+
+def _snapshot_edits(snapshot: PullRequestSnapshot, previous: PullRequestSnapshot) -> dict[str, dict]:
+    changes = {}
+    if previous.title_hash != snapshot.title_hash:
+        changes["title"] = {"from": previous.title}
+    if previous.body_hash != snapshot.body_hash:
+        changes["body"] = {}
+    if previous.base_ref != snapshot.base_ref or (
+        snapshot.stack is not None
+        and snapshot.base_ref != snapshot.stack.base_ref
+        and previous.base_sha != snapshot.base_sha
+    ):
+        changes["base"] = {}
+    if previous.stack != snapshot.stack:
+        changes["stack"] = {}
+    return changes
 
 
 def _payload_from_snapshot(snapshot: PullRequestSnapshot, *, action: str) -> dict[str, Any]:
@@ -1248,8 +1259,9 @@ def _synthetic_delivery_id(
     action: str,
     previous: PullRequestSnapshot | None,
 ) -> str:
-    old = previous.model_dump(mode="json") if previous else None
-    raw = json.dumps([action, old, snapshot.model_dump(mode="json")], sort_keys=True)
+    # title_hash already identifies the title in historical delivery IDs.
+    old = previous.model_dump(mode="json", exclude={"title"}) if previous else None
+    raw = json.dumps([action, old, snapshot.model_dump(mode="json", exclude={"title"})], sort_keys=True)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
     return f"synthetic-pr-state-{safe_slug(snapshot.repo)}-{snapshot.number}-{action}-{digest}"
 
@@ -1601,7 +1613,17 @@ def _remaining_label(remaining: int | None, submitted: int) -> str:
 
 
 def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
-    keys = ("accepted", "duplicate", "ignored", "coalesced", "coalesced_into", "delivery_id", "task_id", "action")
+    keys = (
+        "accepted",
+        "duplicate",
+        "ignored",
+        "coalesced",
+        "coalesced_into",
+        "steered_into",
+        "delivery_id",
+        "task_id",
+        "action",
+    )
     return {key: result[key] for key in keys if key in result}
 
 

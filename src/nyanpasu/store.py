@@ -161,6 +161,13 @@ class StateStore:
             )
             return True, queued.task_id
 
+    def mark_task_steered(self, task_id: str, target_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE task_runs SET status='completed', coalesced_into=?, updated_at=? WHERE task_id=? AND status='queued'",
+                (target_id, time.time(), task_id),
+            )
+
     def mark_task_running(self, task_id: str, event_worktree: Path | None, backend: str | None = None) -> None:
         self._update_task(task_id, TaskStatus.RUNNING, event_worktree=event_worktree, backend=backend)
 

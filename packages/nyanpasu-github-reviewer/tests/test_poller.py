@@ -964,6 +964,11 @@ async def test_pr_state_poll_does_not_dedupe_distinct_edited_events_on_same_head
     first_edit = await poller.run_once()
     second_edit = await poller.run_once()
 
+    assert [event.raw["changes"] for event in agent.events] == [
+        {"title": {"from": "Title 1"}},
+        {"title": {"from": "Title 2"}},
+    ]
+    assert [event.raw["pull_request"]["title"] for event in agent.events] == ["Title 2", "Title 3"]
     assert first_edit.submitted == 1
     assert second_edit.submitted == 1
     assert [event.raw["nyanpasu"]["trigger"] for event in agent.events] == [
@@ -1178,6 +1183,7 @@ async def test_stack_base_updates_without_pr_timestamp_or_head_change(tmp_path):
         assert event.pr is not None and event.pr.stack is not None
         assert event.pr.number == 1 and event.pr.stack.base_ref == "main" and event.pr.base_sha == sha
     assert all(event.raw["nyanpasu"]["trigger"] == "pull_request_edited" for event in agent.events)
+    assert all(event.raw["changes"] == {"base": {}} for event in agent.events)
     assert not timelines
     snapshot = store.get_pr_snapshot("ExampleOrg/ExampleRepo", 1)
     assert snapshot is not None and snapshot.base_sha == "lower-c"

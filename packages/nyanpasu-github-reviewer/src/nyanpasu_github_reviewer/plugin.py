@@ -50,6 +50,7 @@ from nyanpasu_github_reviewer.prompt import (
     build_review_instructions,
     build_review_prompt,
     cleanup_prompt,
+    disclosure_footer,
     review_testing_instructions,
     review_trigger,
 )
@@ -196,9 +197,14 @@ class GitHubReviewerPlugin:
         context_key = f"github:{pr.repo}#{pr.number}" if pr else f"github:event:{event.delivery_id}"
         workspace = self._workspace_for_pr(pr) if pr else None
         prompt = f"Review {pr.repo} PR #{pr.number}." if pr else ""
+        steer_key = None
         if task_action is TaskAction.CLEANUP and pr is not None:
             prompt = cleanup_prompt(pr)
+        elif task_action is TaskAction.RUN and pr is not None and trigger.edit_notice:
+            prompt = trigger.edit_notice + " 请按需推进 review。"
+            steer_key = _review_steer_key(pr)
         return AgentTask(
+            steer_key=steer_key,
             task_id=event.delivery_id,
             kind="github_reviewer.review",
             memory=self.config.repos[pr.repo].memory_access(pr.repo)
@@ -627,13 +633,8 @@ class GitHubReviewerPlugin:
                         plugin_instruction_docs=self.config.instruction_docs,
                         repo_settings=self.config.repos,
                     ),
-                    "prompt": build_ci_followup_prompt(
-                        self.config,
-                        pr,
-                        runtime=task.execution,
-                        snapshot=snapshot,
-                        has_session=bool(context and context.thread_id),
-                    ),
+                    "steer_key": None,
+                    "prompt": build_ci_followup_prompt(self.config, pr, runtime=task.execution),
                     "metadata": metadata,
                 }
             )
@@ -653,26 +654,40 @@ class GitHubReviewerPlugin:
             else:
                 if dashboard is not None:
                     review_delta = build_review_delta(workspace.local_path, inventory, dashboard["data"])
+        instructions = build_review_instructions(self.config, pr)
+        if self.config.can_publish:
+            instructions += "\n" + disclosure_footer(task.execution)
+        if (
+            context
+            and context.thread_id
+            and review_delta is not None
+            and review_delta["previous_source"]["head_sha"] == pr.head_sha
+            and triggers
+            and all(item.edit_notice for item in triggers)
+        ):
+            prompt = " ".join(item.edit_notice for item in triggers) + " 请按需推进 review。"
+        else:
+            prompt = build_review_prompt(
+                self.config,
+                pr,
+                "{{NYANPASU_WORKTREE}}",
+                triggers=triggers,
+                has_session=bool(context and context.thread_id),
+                previous_task_head=context.revision if context else None,
+                inventory=inventory,
+                review_delta=review_delta,
+            )
         return task.model_copy(
             update={
                 "workspace": workspace,
-                "developer_instructions": build_review_instructions(self.config, pr),
+                "steer_key": _review_steer_key(pr),
+                "developer_instructions": instructions,
                 "instruction_docs": instruction_documents_for_repo(
                     repo=pr.repo,
                     plugin_instruction_docs=self.config.instruction_docs,
                     repo_settings=self.config.repos,
                 ),
-                "prompt": build_review_prompt(
-                    self.config,
-                    pr,
-                    "{{NYANPASU_WORKTREE}}",
-                    runtime=task.execution,
-                    triggers=triggers,
-                    has_session=bool(context and context.thread_id),
-                    previous_task_head=context.revision if context else None,
-                    inventory=inventory,
-                    review_delta=review_delta,
-                ),
+                "prompt": prompt,
                 "metadata": metadata,
             }
         )
@@ -755,6 +770,12 @@ def verify_signature(body: bytes, signature: str | None, secret: str | None) -> 
         verify_webhook_signature(body, signature, secret)
     except GitHubSignatureError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def _review_steer_key(pr: PullRequestRef) -> str | None:
+    if not pr.head_sha or not pr.base_sha:
+        return None
+    return pr.model_dump_json(include={"repo", "number", "head_sha", "base_ref", "base_sha", "stack"})
 
 
 def _task_action(action: ReviewAction) -> TaskAction:

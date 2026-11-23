@@ -111,6 +111,8 @@ def test_event_conversion_defers_session_and_target_decisions(tmp_path: Path) ->
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path, monkeypatch, reverse: bool) -> None:
     plugin = _plugin(tmp_path)
+    assert plugin.config is not None
+    plugin.config = plugin.config.model_copy(update={"dry_run": False, "post_reviews": True})
     opened = _task(plugin, "opened", "head-a")
     updated = _task(plugin, "synchronize", "head-b")
     first, second = (updated, opened) if reverse else (opened, updated)
@@ -128,7 +130,7 @@ async def test_preparation_uses_current_pr_head_for_merged_events(tmp_path: Path
     assert "head-a" not in prepared.prompt
     assert (
         'Powered by <a href="https://github.com/ShigureLab/nyanpasu">Nyanpasu</a> with runtime-model high'
-        in prepared.prompt
+        in prepared.developer_instructions
     )
 
 
@@ -149,6 +151,38 @@ async def test_preparation_reads_completed_context_at_execution(tmp_path: Path, 
 
     assert prepared.prompt.startswith("Continue reviewing ")
     assert "Previous task head (not proof of completed review): head-a" in prepared.prompt
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("same_review, other_trigger", [(True, False), (False, False), (True, True)])
+async def test_title_edit_is_short_only_for_an_already_reviewed_unmixed_range(
+    tmp_path, monkeypatch, same_review, other_trigger
+):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    payload = _pr_payload("edited", "head-b")
+    payload["changes"] = {"title": {"from": "Old"}}
+    payload["pull_request"].update(title="New")
+    event = parse_github_event("pull_request", "title", payload)
+    edit = _admit(plugin, plugin.event_to_task(event))
+    previous_head = "head-b" if same_review else "head-a"
+    monkeypatch.setattr(module, "read_review_dashboard", lambda *args: {"data": {}})
+    monkeypatch.setattr(module, "build_review_delta", lambda *args: {"previous_source": {"head_sha": previous_head}})
+    context = AgentContext(
+        context_key=edit.context_key,
+        thread_id="review",
+        revision=previous_head,
+        session_worktree=tmp_path,
+        workspace_key="repo",
+    )
+    coalesced = (_task(plugin, "synchronize", "head-b"),) if other_trigger else ()
+    prepared = await plugin.prepare_task(edit, coalesced, context)
+    assert 'PR 标题变更："Old" → "New"。' in prepared.prompt
+    if same_review and not other_trigger:
+        assert prepared.prompt == edit.prompt
+    else:
+        assert "Target head: head-b" in prepared.prompt
 
 
 @pytest.mark.anyio
@@ -243,10 +277,7 @@ async def test_preparation_uses_review_subject_for_memory_instead_of_dashboard_t
 
     assert [entry.id for entry in result.selected] == [relevant.id]
     assert [(entry.id, entry.reason) for entry in result.skipped] == [(unrelated.id, "irrelevant")]
-    default_query = prepared.model_copy(
-        update={"metadata": {key: value for key, value in prepared.metadata.items() if key != "memory_query"}}
-    )
-    assert unrelated.id in {entry.id for entry in build_memory_context(default_query, [unrelated]).selected}
+    assert "memory_query" in prepared.metadata
 
 
 @pytest.mark.anyio

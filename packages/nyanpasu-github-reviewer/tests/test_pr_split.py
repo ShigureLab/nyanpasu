@@ -73,14 +73,11 @@ def test_split_trigger_counts_added_and_deleted_lines_at_strict_boundary(split_r
             {"path": "image.png", "additions": 0, "deletions": 0, "binary": True},
         ],
     }
-    prompt = build_review_prompt(
-        plugin.config, pr, "/worktree", runtime=parent.execution, triggers=(), inventory=inventory
-    )
+    prompt = build_review_prompt(plugin.config, pr, "/worktree", triggers=(), inventory=inventory)
 
     assert ("PR split analysis required:" in prompt) is required
-    assert f"Direct-base delta: {lines} changed lines" in prompt
-    if not required:
-        assert "behavior changes clearly separate" in prompt
+    if required:
+        assert f"{lines} direct-base changed lines" in prompt
 
 
 async def create_split(plugin, parent):

@@ -974,6 +974,71 @@ def _review_task(plugin, action: str, sha: str) -> AgentTask:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["accepted", "ended", "new-head"])
+async def test_metadata_edit_steers_only_the_matching_live_turn(tmp_path, monkeypatch, outcome):
+    from nyanpasu.codex import CodexAppServerBackend
+    from nyanpasu_github_reviewer.events import parse_github_event
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    backend = Mock(spec=CodexAppServerBackend)
+
+    async def run(**kwargs):
+        calls.append(kwargs["prompt"])
+        turn = str(len(calls))
+        await kwargs["on_started"]("thread", turn)
+        started.set()
+        await release.wait()
+        return RunResult(thread_id="thread", turn_id=turn, final_message="reviewed")
+
+    backend.run_turn = run
+    backend.steer_turn = AsyncMock(
+        return_value=True, side_effect=RuntimeError("turn ended") if outcome == "ended" else None
+    )
+    backend.close = AsyncMock()
+    agent, plugin, _, head = _review_setup(tmp_path, monkeypatch, codex=backend)
+    first = _review_task(plugin, "opened", head["sha"])
+    edit = parse_github_event(
+        "pull_request",
+        "edit",
+        {
+            "action": "edited",
+            "changes": {"title": {"from": "old"}},
+            "repository": {"full_name": "ExampleOrg/ExampleRepo"},
+            "pull_request": {
+                "number": 42,
+                "state": "open",
+                "title": "new",
+                "base": {"ref": "main", "sha": "base-a"},
+                "head": {"ref": "feature", "sha": "new-head" if outcome == "new-head" else head["sha"]},
+            },
+        },
+    )
+    edit_task = plugin.event_to_task(edit)
+    try:
+        await agent.submit(first)
+        await asyncio.wait_for(started.wait(), 5)
+        receipt = await agent.submit(edit_task)
+        assert (await agent.submit(edit_task))["duplicate"]
+        release.set()
+        await asyncio.gather(*agent._tasks)
+        if outcome == "accepted":
+            assert receipt["steered_into"] == first.task_id
+            assert [child.task_id for child in agent.store.coalesced_tasks_for(first.task_id)] == [edit_task.task_id]
+            assert len(calls) == 1
+            backend.steer_turn.assert_awaited_once_with(
+                "thread", "1", 'PR 标题变更："old" → "new"。 请按需推进 review。'
+            )
+        else:
+            assert "steered_into" not in receipt and len(calls) == 2
+            assert backend.steer_turn.await_count == int(outcome == "ended")
+    finally:
+        release.set()
+        await agent.shutdown()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_reviewer_merged_events_produce_one_coherent_turn(tmp_path: Path, monkeypatch, reverse: bool) -> None:
     agent, plugin, codex, _ = _review_setup(tmp_path, monkeypatch)
@@ -993,8 +1058,8 @@ async def test_reviewer_merged_events_produce_one_coherent_turn(tmp_path: Path, 
     assert "{{NYANPASU" not in codex.prompts[0]
     assert "coalesced_tasks" not in codex.prompts[0]
     assert codex.prompts[0].count("Review ExampleOrg/ExampleRepo PR #42:") == 1
-    assert codex.prompts[0].count('"kind": "pull_request_opened"') == 1
-    assert codex.prompts[0].count('"kind": "pull_request_synchronize"') == 1
+    assert codex.prompts[0].count("pull_request_opened") == 1
+    assert codex.prompts[0].count("pull_request_synchronize") == 1
     context = agent.store.get_context(tasks[0].context_key)
     assert context is not None and context.revision == "head-b"
     await agent.shutdown()
@@ -1143,6 +1208,7 @@ async def test_reviewer_backend_switch_uses_fresh_review_and_current_model(tmp_p
         }
     )
     agent, plugin, execution, _ = _review_setup(tmp_path, monkeypatch, config=config)
+    plugin.config = plugin.config.model_copy(update={"dry_run": False, "post_reviews": True})
     task = _review_task(plugin, "synchronize", "head-b")
     agent.store.upsert_context(
         AgentContext(
@@ -1161,7 +1227,7 @@ async def test_reviewer_backend_switch_uses_fresh_review_and_current_model(tmp_p
         assert "Previous task head" not in execution.prompts[0]
         assert (
             'Powered by <a href="https://github.com/ShigureLab/nyanpasu">Nyanpasu</a> with claude-test medium'
-            in execution.prompts[0]
+            in execution.instructions[0]
         )
     finally:
         await agent.shutdown()

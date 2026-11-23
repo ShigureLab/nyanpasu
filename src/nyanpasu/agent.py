@@ -115,6 +115,7 @@ class AgentService:
         self._lease_heartbeats: set[asyncio.Task[None]] = set()
         self._admitted_roots: set[str] = set()
         self._submit_lock = asyncio.Lock()
+        self._steerable_turns: dict[str, tuple[AgentTask, Callable[[str], Awaitable[bool]]]] = {}
         self._memory_sweep_lock = asyncio.Lock()
         self._memory_producer: asyncio.Task[None] | None = None
         self._post_process_hooks: dict[str, list[PostProcessHook]] = {}
@@ -205,6 +206,9 @@ class AgentService:
                 task.context_key,
             )
             coalesce_since = time.time() - self.config.runtime.coalesce_window_seconds if task.coalesce_key else None
+            active = self._steer_target(task)
+            if active:
+                coalesce_since = None
             self._preparer_for(task)
             is_new, active_task_id = await to_thread.run_sync(
                 functools.partial(
@@ -233,12 +237,40 @@ class AgentService:
                     "task_id": task.task_id,
                     "coalesced_into": active_task_id,
                 }
+            if active and await self._steer(task, active):
+                return {"accepted": True, "task_id": task.task_id, "steered_into": active[0].task_id}
             if task.action is TaskAction.CLEANUP:
                 task = await to_thread.run_sync(self.store.task_request, task.task_id)
                 await to_thread.run_sync(self.store.begin_context_cleanup, task.context_key, task.context_generation)
             self._schedule(task)
             logger.info("task submit queued task_id={} context={}", task.task_id, task.context_key)
             return {"accepted": True, "task_id": task.task_id, "action": task.action.value}
+
+    def _steer_target(self, task: AgentTask) -> tuple[AgentTask, Callable[[str], Awaitable[bool]]] | None:
+        active = self._steerable_turns.get(task.context_key)
+        if task.action is not TaskAction.RUN or not task.steer_key or not active:
+            return None
+        target, _ = active
+        if (task.steer_key, task.kind, task.execution, task.memory, task.metadata.get("plugin_id")) == (
+            target.steer_key,
+            target.kind,
+            target.execution,
+            target.memory,
+            target.metadata.get("plugin_id"),
+        ):
+            return active
+        return None
+
+    async def _steer(self, task: AgentTask, active: tuple[AgentTask, Callable[[str], Awaitable[bool]]]) -> bool:
+        target, send = active
+        try:
+            if not await send(task.prompt):
+                return False
+        except (RuntimeError, OSError, TimeoutError) as exc:
+            logger.info("Turn steer unavailable for {}: {}", target.task_id, type(exc).__name__)
+            return False
+        await to_thread.run_sync(self.store.mark_task_steered, task.task_id, target.task_id)
+        return True
 
     async def run_now(self, task: AgentTask) -> TaskRunResult:
         task = self._admit(task)
@@ -651,6 +683,12 @@ class AgentService:
             if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
                 raise asyncio.CancelledError
 
+            if turn_id and task.steer_key and isinstance(backend, CodexAppServerBackend):
+                self._steerable_turns[task.context_key] = (
+                    task,
+                    functools.partial(backend.steer_turn, thread_id, turn_id),
+                )
+
         control_context = contextlib.nullcontext(None) if memory_job else self.control.turn(task.task_id)
         async with control_context as control, self.backends.turn(backend_name) as backend:
             if memory_job:
@@ -667,7 +705,7 @@ class AgentService:
                     run_turn = functools.partial(
                         backend.run_turn,
                         task_context=CodexTaskContext(
-                            task.context_key if task.spawned_by_task_id else task.task_id,
+                            task.context_key if task.spawned_by_task_id or task.coalesce_key else task.task_id,
                             role_instructions + "\n\n" + CODEX_WAIT_INSTRUCTIONS,
                             control.memory_context.prompt,
                         ),
@@ -677,14 +715,17 @@ class AgentService:
                     developer_instructions = role_instructions + control.prompt
                     if execution.driver == "codex":
                         developer_instructions += "\n\n" + CODEX_WAIT_INSTRUCTIONS
-                result = await run_turn(
-                    cwd=context.session_worktree,
-                    prompt=prompt,
-                    developer_instructions=developer_instructions,
-                    thread_id=context.thread_id,
-                    on_started=on_started,
-                    execution=execution,
-                )
+                try:
+                    result = await run_turn(
+                        cwd=context.session_worktree,
+                        prompt=prompt,
+                        developer_instructions=developer_instructions,
+                        thread_id=context.thread_id,
+                        on_started=on_started,
+                        execution=execution,
+                    )
+                finally:
+                    self._steerable_turns.pop(task.context_key, None)
         if not await to_thread.run_sync(self.store.task_is_active, task.task_id):
             raise asyncio.CancelledError
         context = replace_context(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -32,16 +31,12 @@ class ToolSpec(Generic[InputT]):
     handler: Callable[[AgentTask, InputT], Awaitable[Any]]
     available: Callable[[AgentTask], bool] = always_available
 
-    def instructions(self) -> str:
-        return json.dumps(
-            {
-                "action": self.name,
-                "description": self.description,
-                "input_schema": self.input_model.model_json_schema(),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+    def instructions(self) -> dict[str, Any]:
+        return {
+            "action": self.name,
+            "description": self.description,
+            "input_schema": self.input_model.model_json_schema(),
+        }
 
     async def invoke(self, task: AgentTask, payload: dict[str, Any]) -> Any:
         if not self.available(task):

@@ -61,6 +61,7 @@ class AgentTask(NyanpasuModel):
     developer_instructions: str = ""
     coalesce_key: str | None = None
     coalesce_until_started: bool = False
+    steer_key: str | None = None
     workspace: WorkspaceRef | None = None
     instruction_docs: tuple[InstructionDocument, ...] = ()
     dedupe_key: str | None = None

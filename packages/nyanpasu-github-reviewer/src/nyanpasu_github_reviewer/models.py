@@ -37,6 +37,7 @@ class ReviewEvent(GitHubReviewerModel):
 class ReviewTrigger(GitHubReviewerModel):
     kind: str
     summary: str = ""
+    edit_notice: str = ""
     actor: str = ""
     comment_url: str = ""
     body: str = Field(default="", validation_alias=AliasChoices("body", "body_excerpt"))
@@ -81,6 +82,7 @@ class PullRequestTimelineCursor(GitHubReviewerModel):
 class PullRequestSnapshot(PullRequestRef):
     node_id: str
     head_repo: str
+    title: str | None = None
     title_hash: str
     body_hash: str
     created_at: str

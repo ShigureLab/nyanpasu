@@ -114,6 +114,7 @@ class GitHubReviewerStore:
                 """
             )
             _ensure_column(conn, "github_pr_snapshots", "created_at_github", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(conn, "github_pr_snapshots", "title", "TEXT")
             _ensure_column(conn, "github_pr_snapshots", "base_sha", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(conn, "github_pr_snapshots", "stack_json", "TEXT")
 
@@ -285,7 +286,7 @@ class GitHubReviewerStore:
             row = conn.execute(
                 """
                 SELECT repo, number, node_id, url, state, draft, base_ref, head_ref, head_repo, head_sha,
-                    title_hash, body_hash, created_at_github, updated_at, base_sha, stack_json
+                    title_hash, body_hash, created_at_github, updated_at, base_sha, stack_json, title
                 FROM github_pr_snapshots WHERE repo = ? AND number = ?
                 """,
                 (repo, number),
@@ -307,9 +308,9 @@ class GitHubReviewerStore:
                 """
                 INSERT INTO github_pr_snapshots (
                     repo, number, node_id, url, state, draft, base_ref, head_ref, head_repo, head_sha,
-                    title_hash, body_hash, created_at_github, updated_at, created_at, modified_at, base_sha, stack_json
+                    title_hash, body_hash, created_at_github, updated_at, created_at, modified_at, base_sha, stack_json, title
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repo, number) DO UPDATE SET
                     node_id = excluded.node_id,
                     url = excluded.url,
@@ -321,6 +322,7 @@ class GitHubReviewerStore:
                     head_ref = excluded.head_ref,
                     head_repo = excluded.head_repo,
                     head_sha = excluded.head_sha,
+                    title = excluded.title,
                     title_hash = excluded.title_hash,
                     body_hash = excluded.body_hash,
                     created_at_github = excluded.created_at_github,
@@ -346,6 +348,7 @@ class GitHubReviewerStore:
                     now,
                     snapshot.base_sha,
                     snapshot.stack.model_dump_json() if snapshot.stack else None,
+                    snapshot.title,
                 ),
             )
 
@@ -523,6 +526,7 @@ def _pr_snapshot_from_row(row: sqlite3.Row) -> PullRequestSnapshot:
         head_ref=str(row["head_ref"]),
         head_repo=str(row["head_repo"]),
         head_sha=str(row["head_sha"]),
+        title=row["title"],
         title_hash=str(row["title_hash"]),
         body_hash=str(row["body_hash"]),
         created_at=str(row["created_at_github"]),
