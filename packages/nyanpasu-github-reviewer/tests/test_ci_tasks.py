@@ -87,6 +87,7 @@ def ci_plugin(tmp_path, monkeypatch, ci_mocks):
         number=1,
         url="https://github.com/owner/repo/pull/1",
         base_ref="main",
+        base_sha="b" * 40,
         head_ref="feature",
         head_sha=HEAD,
         state="open",
@@ -130,6 +131,11 @@ async def test_ci_followup_refreshes_current_state_without_building_review_inven
     prepared = await plugin.prepare_task(queued, (), context)
 
     assert prepared.action is (TaskAction.RUN if failed else TaskAction.IGNORED)
+    assert queued.steer_key
+    assert prepared.steer_key is None  # A dedicated CI turn cannot accept incoming code review requests.
+    if failed:
+        assert prepared.prompt == queued.prompt and "ci-refresh" in prepared.prompt
+        assert "Powered by" not in prepared.prompt
     assert prepared.context_key == queued.context_key == "github:owner/repo#1"
     assert prepared.kind == "github_reviewer.review"
     assert prepared.execution.model == "review-model"

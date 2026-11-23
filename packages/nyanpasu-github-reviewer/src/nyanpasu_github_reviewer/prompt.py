@@ -79,6 +79,33 @@ def review_trigger(event: ReviewEvent) -> ReviewTrigger:
     )
 
 
+CI_NOTICE = "CI 状态有变，请用 ci-refresh 核对当前失败项，仅更新 CI。"
+
+
+def followup_notice(trigger: ReviewTrigger) -> str:
+    if trigger.edit_notice:
+        return trigger.edit_notice + " 请按需推进 review。"
+    if trigger.kind == "ci_changed":
+        return CI_NOTICE
+    if trigger.kind == "pull_request_ready_for_review":
+        return "PR 已从草稿转为可审查，请继续 review。"
+    if trigger.kind == "pull_request_reopened":
+        return "PR 已重新打开，请继续 review。"
+    if trigger.explicit_request:
+        actor = f"@{trigger.actor} " if trigger.actor else ""
+        if trigger.kind in {"manual_review", "review_requested"}:
+            return f"{actor}请求重新审查此 PR。"
+        label = {
+            "mentioned_issue_comment": "在 PR 评论中提到了你",
+            "mentioned_pull_request_review": "在 review 中提到了你",
+            "review_thread_comment": "在 review 线程中留言",
+            "review_command": "请求 review",
+        }[trigger.kind]
+        body = json.dumps(trigger.body, ensure_ascii=False)
+        return f"{actor}{label}：{body} {trigger.comment_url}".rstrip()
+    return ""
+
+
 def build_review_prompt(
     config: GitHubReviewerConfig,
     pr: PullRequestRef,
@@ -90,19 +117,28 @@ def build_review_prompt(
     inventory: dict | None = None,
     review_delta: dict | None = None,
 ) -> str:
-    lines = [
-        f"{'Continue reviewing' if has_session else 'Review'} {pr.repo} PR #{pr.number}: {pr.url}",
-        f"Target head: {pr.head_sha}",
-        f"Base branch: {pr.base_ref}; head branch: {pr.head_ref}",
-        f"Worktree: {worktree}",
-    ]
+    notices = [followup_notice(trigger) for trigger in triggers]
+    previous = review_delta["previous_source"]["head_sha"] if review_delta is not None else None
+    resuming_review = has_session and previous is not None and previous_task_head == previous
+    if resuming_review and previous == pr.head_sha and notices and all(notices):
+        return "\n".join(notices)
+    continuing_delta = resuming_review and previous != pr.head_sha
+    lines = []
+    if not continuing_delta:
+        lines.extend(
+            (
+                f"{'Continue reviewing' if has_session else 'Review'} {pr.repo} PR #{pr.number}: {pr.url}",
+                f"Target head: {pr.head_sha}",
+                f"Base branch: {pr.base_ref}; head branch: {pr.head_ref}",
+            )
+        )
+    lines.append(f"Worktree: {worktree}")
     if config.codenip_skill is not None:
         lines.append(f"Codenip skill: {config.codenip_skill}")
     if review_delta is not None:
-        lines.append(
-            "Changes since the last verified review and its open findings (JSON evidence): "
-            + json.dumps(review_delta, ensure_ascii=False, separators=(",", ":"))
-        )
+        lines.append(f"Review changes since the verified head: git diff {previous}..{pr.head_sha}")
+        if findings := review_delta["open_findings"]:
+            lines.append("Recheck open findings: " + json.dumps(findings, ensure_ascii=False, separators=(",", ":")))
     elif previous_task_head:
         lines.append(f"Previous task head (not proof of completed review): {previous_task_head}")
     if inventory is not None:
@@ -111,13 +147,13 @@ def build_review_prompt(
             lines.append(f"PR split analysis required: {changed_lines} direct-base changed lines.")
     if pr.stack is not None:
         lines.append(f"Stack #{pr.stack.number}; trunk: {pr.stack.base_ref}. Review this PR's direct-base diff.")
-    for item in triggers:
-        if item.edit_notice:
-            lines.append(item.edit_notice)
-        elif item.explicit_request:
-            lines.append(json.dumps(item.model_dump(exclude_defaults=True, exclude={"summary"}), ensure_ascii=False))
-        elif item.kind not in lines:
-            lines.append(item.kind)
+    for trigger, notice in zip(triggers, notices, strict=True):
+        if notice:
+            lines.append(notice)
+        elif continuing_delta and trigger.kind in {"pull_request_synchronize", "push_pull_request"}:
+            continue
+        elif trigger.kind not in lines:
+            lines.append(trigger.kind)
     return "\n".join(lines) + "\n"
 
 
@@ -143,11 +179,6 @@ def build_ci_followup_instructions(config: GitHubReviewerConfig, pr: PullRequest
         f"Follow {INSTRUCTIONS_DIR / 'ci-followup.md'} for eligibility, CI analysis and publication. "
         f"Dashboard: {TEMPLATES_DIR / 'boards.toml'} (profile review)."
     )
-
-
-def build_ci_followup_prompt(config: GitHubReviewerConfig, pr: PullRequestRef, *, runtime: ExecutionTarget) -> str:
-    prompt = f"Refresh CI for {pr.url} with ci-refresh. Investigate current failures only."
-    return prompt + ("\n" + disclosure_footer(runtime) if config.can_publish else "")
 
 
 def build_ci_analysis_instructions(config: GitHubReviewerConfig, pr: PullRequestRef) -> str:

@@ -146,16 +146,19 @@ async def test_re_review_uses_published_verified_range_and_delivers_removed_path
     )
     prepared = await plugin.prepare_task(task, (), context)
 
-    prompt_line = next(line for line in prepared.prompt.splitlines() if line.startswith("Changes since the last"))
-    delta = json.loads(prompt_line.partition(": ")[2])
-    assert delta["previous_source"] == review_source(previous)
-    assert delta["previous_source"]["merge_base_sha"] == base
-    assert {entry["path"] for entry in delta["files"]} == {"helper.py", "demos/result.json"}
-    assert delta["open_findings"] == [{"id": "F1", **finding}]
+    range_arg = prepared.prompt.split("git diff ", 1)[1].splitlines()[0]
+    assert range_arg == f"{previous['head_sha']}..{head}"
+    assert set(git("diff", "--name-only", range_arg).splitlines()) == {"helper.py", "demos/result.json"}
+    findings = prepared.prompt.split("Recheck open findings: ", 1)[1].splitlines()[0]
+    assert json.loads(findings) == [{"id": "F1", **finding}]
     assert "last-unverified-turn" not in prepared.prompt
     inventory = prepared.metadata["review_inventory"]
     assert {entry["path"] for entry in inventory["files"]} == {"helper.py", "author-only.txt"}
     read.assert_called_once_with(plugin.config, pr)
+
+    resumed = await plugin.prepare_task(task, (), context.model_copy(update={"revision": previous["head_sha"]}))
+    assert range_arg in resumed.prompt and "F1" in resumed.prompt
+    assert "Target head:" not in resumed.prompt and "pull_request_synchronize" not in resumed.prompt
 
     for old_review in (
         {**prior_review, "status": "preliminary"},
@@ -166,12 +169,12 @@ async def test_re_review_uses_published_verified_range_and_delivers_removed_path
     ):
         assert build_review_delta(repo, inventory, old_review) is None
     unchanged = build_review_delta(repo, previous, prior_review)
-    assert unchanged is not None and unchanged["files"] == []
+    assert unchanged is not None and unchanged["previous_source"] == review_source(previous)
 
     read.side_effect = ValueError("dashboard has visible drift")
     fallback = await plugin.prepare_task(task, (), context)
     assert fallback.action is TaskAction.RUN and fallback.metadata["review_inventory"] == inventory
-    assert "Changes since the last verified review" not in fallback.prompt
+    assert "git diff " not in fallback.prompt
 
 
 @pytest.mark.anyio

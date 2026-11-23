@@ -44,13 +44,14 @@ from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 from nyanpasu_github_reviewer.pr_compare import prepare_pr_compare, validate_pr_compare_child
 from nyanpasu_github_reviewer.pr_split import prepare_pr_split, validate_pr_split_child
 from nyanpasu_github_reviewer.prompt import (
+    CI_NOTICE,
     INSTRUCTIONS_DIR,
     build_ci_followup_instructions,
-    build_ci_followup_prompt,
     build_review_instructions,
     build_review_prompt,
     cleanup_prompt,
     disclosure_footer,
+    followup_notice,
     review_testing_instructions,
     review_trigger,
 )
@@ -200,8 +201,8 @@ class GitHubReviewerPlugin:
         steer_key = None
         if task_action is TaskAction.CLEANUP and pr is not None:
             prompt = cleanup_prompt(pr)
-        elif task_action is TaskAction.RUN and pr is not None and trigger.edit_notice:
-            prompt = trigger.edit_notice + " 请按需推进 review。"
+        elif task_action is TaskAction.RUN and pr is not None and (notice := followup_notice(trigger)):
+            prompt = notice
             steer_key = _review_steer_key(pr)
         return AgentTask(
             steer_key=steer_key,
@@ -621,20 +622,21 @@ class GitHubReviewerPlugin:
             )
         workspace = self._workspace_for_pr(pr)
         assert task.execution is not None
+        footer = "\n" + disclosure_footer(task.execution) if self.config.can_publish else ""
         if triggers and all(trigger.kind == "ci_changed" for trigger in triggers):
             snapshot = ci_snapshot_data(fetch_ci_snapshot(self.config, pr))
             metadata["ci_snapshot"] = snapshot
             return task.model_copy(
                 update={
                     "workspace": workspace,
-                    "developer_instructions": build_ci_followup_instructions(self.config, pr),
+                    "developer_instructions": build_ci_followup_instructions(self.config, pr) + footer,
                     "instruction_docs": instruction_documents_for_repo(
                         repo=pr.repo,
                         plugin_instruction_docs=self.config.instruction_docs,
                         repo_settings=self.config.repos,
                     ),
                     "steer_key": None,
-                    "prompt": build_ci_followup_prompt(self.config, pr, runtime=task.execution),
+                    "prompt": CI_NOTICE,
                     "metadata": metadata,
                 }
             )
@@ -654,34 +656,21 @@ class GitHubReviewerPlugin:
             else:
                 if dashboard is not None:
                     review_delta = build_review_delta(workspace.local_path, inventory, dashboard["data"])
-        instructions = build_review_instructions(self.config, pr)
-        if self.config.can_publish:
-            instructions += "\n" + disclosure_footer(task.execution)
-        if (
-            context
-            and context.thread_id
-            and review_delta is not None
-            and review_delta["previous_source"]["head_sha"] == pr.head_sha
-            and triggers
-            and all(item.edit_notice for item in triggers)
-        ):
-            prompt = " ".join(item.edit_notice for item in triggers) + " 请按需推进 review。"
-        else:
-            prompt = build_review_prompt(
-                self.config,
-                pr,
-                "{{NYANPASU_WORKTREE}}",
-                triggers=triggers,
-                has_session=bool(context and context.thread_id),
-                previous_task_head=context.revision if context else None,
-                inventory=inventory,
-                review_delta=review_delta,
-            )
+        prompt = build_review_prompt(
+            self.config,
+            pr,
+            "{{NYANPASU_WORKTREE}}",
+            triggers=triggers,
+            has_session=bool(context and context.thread_id),
+            previous_task_head=context.revision if context else None,
+            inventory=inventory,
+            review_delta=review_delta,
+        )
         return task.model_copy(
             update={
                 "workspace": workspace,
                 "steer_key": _review_steer_key(pr),
-                "developer_instructions": instructions,
+                "developer_instructions": build_review_instructions(self.config, pr) + footer,
                 "instruction_docs": instruction_documents_for_repo(
                     repo=pr.repo,
                     plugin_instruction_docs=self.config.instruction_docs,
@@ -709,7 +698,7 @@ class GitHubReviewerPlugin:
         pr = event.pr
         if pr is None:
             return event
-        if not self._repo_allows_base_branch(pr):
+        if pr.state != "open" or pr.draft or not self._repo_allows_base_branch(pr):
             return event.model_copy(update={"action": ReviewAction.IGNORED})
         if not self._review_thread_event_is_relevant(event):
             return event.model_copy(update={"action": ReviewAction.IGNORED})

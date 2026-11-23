@@ -168,7 +168,11 @@ async def test_title_edit_is_short_only_for_an_already_reviewed_unmixed_range(
     edit = _admit(plugin, plugin.event_to_task(event))
     previous_head = "head-b" if same_review else "head-a"
     monkeypatch.setattr(module, "read_review_dashboard", lambda *args: {"data": {}})
-    monkeypatch.setattr(module, "build_review_delta", lambda *args: {"previous_source": {"head_sha": previous_head}})
+    monkeypatch.setattr(
+        module,
+        "build_review_delta",
+        lambda *args: {"previous_source": {"head_sha": previous_head}, "open_findings": []},
+    )
     context = AgentContext(
         context_key=edit.context_key,
         thread_id="review",
@@ -183,6 +187,57 @@ async def test_title_edit_is_short_only_for_an_already_reviewed_unmixed_range(
         assert prepared.prompt == edit.prompt
     else:
         assert "Target head: head-b" in prepared.prompt
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    [
+        ("issue_comment", issue_comment_payload("@review-bot can we retry?"), "@review-bot can we retry?"),
+        ("pull_request_review_comment", review_comment_payload(body="@review-bot fixed"), "@review-bot fixed"),
+        ("pull_request_review", pull_request_review_payload("/review the retry path"), "/review the retry path"),
+        ("pull_request", pr_payload("review_requested") | {"requested_reviewer": {"login": "review-bot"}}, "请求"),
+        ("pull_request", pr_payload("ready_for_review"), "草稿"),
+        ("pull_request", pr_payload("reopened"), "重新打开"),
+    ],
+)
+async def test_same_range_events_deliver_the_notice_to_a_live_or_resumed_review(
+    tmp_path, monkeypatch, event_type, payload, expected
+):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch, number=123)
+    raw = dict(payload)
+    if "pull_request" in raw:
+        raw["pull_request"] = _live_pr(number=123)
+    event = parse_github_event(event_type, "notice", raw, agent_login="review-bot")
+    incoming = _admit(plugin, plugin.event_to_task(event))
+    fresh = await plugin.prepare_task(incoming, (), None)
+    assert incoming.steer_key and incoming.steer_key == fresh.steer_key
+    assert expected in incoming.prompt and "Target head:" in fresh.prompt
+    if item := raw.get("comment") or raw.get("review"):
+        assert item["html_url"] in incoming.prompt and item["user"]["login"] in incoming.prompt
+
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    monkeypatch.setattr(module, "read_review_dashboard", lambda *args: {"data": {}})
+    monkeypatch.setattr(module, "build_review_delta", lambda *args: {"previous_source": {"head_sha": "head-b"}})
+    context = AgentContext(
+        context_key=incoming.context_key,
+        thread_id="thread",
+        revision="head-b",
+        session_worktree=tmp_path,
+        workspace_key="ExampleOrg/ExampleRepo",
+    )
+    resumed = await plugin.prepare_task(incoming, (), context)
+    assert resumed.prompt == incoming.prompt
+
+
+@pytest.mark.parametrize("updates", [{"state": "closed"}, {"draft": True}])
+def test_mentions_on_ineligible_pr_cannot_steer(tmp_path, monkeypatch, updates):
+    plugin = _plugin(tmp_path)
+    _stub_github(monkeypatch, number=123, **updates)
+    event = parse_github_event("issue_comment", "mention", issue_comment_payload(), agent_login="review-bot")
+    task = plugin.event_to_task(event)
+    assert task.action is TaskAction.IGNORED and task.steer_key is None
 
 
 @pytest.mark.anyio

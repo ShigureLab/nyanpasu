@@ -117,14 +117,11 @@ def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict 
         previous_id = _inventory_id(previous)
         if previous_id != source.get("inventory_id"):
             return None
-        delta = _range_stats(repo, previous_head, inventory["head_sha"])
     except subprocess.CalledProcessError:
         # A force-pushed or pruned commit may no longer be available locally.
         return None
     return {
         "previous_source": review_source({**previous, "inventory_id": previous_id}),
-        "path_encoding": delta["path_encoding"],
-        "files": delta["files"],
         "open_findings": [
             {"id": finding_id, **{key: finding[key] for key in ("title", "status", "url")}}
             for finding_id, finding in prior_review.get("findings", {}).items()
