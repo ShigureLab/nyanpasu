@@ -183,10 +183,12 @@ async def test_title_edit_is_short_only_for_an_already_reviewed_unmixed_range(
     coalesced = (_task(plugin, "synchronize", "head-b"),) if other_trigger else ()
     prepared = await plugin.prepare_task(edit, coalesced, context)
     assert 'PR 标题变更："Old" → "New"。' in prepared.prompt
-    if same_review and not other_trigger:
-        assert prepared.prompt == edit.prompt
-    else:
+    if not same_review:
+        assert "git diff head-a..head-b" in prepared.prompt
+    elif other_trigger:
         assert "Target head: head-b" in prepared.prompt
+    else:
+        assert prepared.prompt == edit.prompt
 
 
 @pytest.mark.anyio
