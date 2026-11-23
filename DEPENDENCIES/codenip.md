@@ -1,6 +1,6 @@
 # Codenip
 
-[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. A Sol coordinator queues every rule in the installed index. One Luna worker per rule decides applicability in the assigned diff and returns its verdict for the coordinator to collect. The service runs up to 32 rule workers across all reviews and starts the next queued worker as soon as a slot opens.
+[Codenip](https://github.com/ShigureLab/codenip) is an optional experimental GitHub reviewer skill. A Sol coordinator queues the eight rule pages selected in [codenip.py](../packages/nyanpasu-github-reviewer/src/nyanpasu_github_reviewer/codenip.py). One Luna worker per rule decides applicability in the assigned diff and returns its verdict for the coordinator to collect. The service runs up to 32 rule workers across all reviews and starts the next queued worker as soon as a slot opens.
 
 ## Install and enable
 
@@ -12,7 +12,7 @@ skill_dir=/absolute/path/to/skills
 install_dir=$(mktemp -d)
 trap 'rm -rf "$install_dir"' EXIT
 git clone --no-checkout https://github.com/ShigureLab/codenip.git "$install_dir/codenip"
-git -C "$install_dir/codenip" checkout --detach 6bfb8024cb217789708571b75cc69dbe63f6dfdc
+git -C "$install_dir/codenip" checkout --detach c9e63447ce259b5989aa117448ce2ee785444b42
 mkdir -p "$skill_dir"
 test ! -e "$skill_dir/codenip"
 cp -R "$install_dir/codenip/skills/codenip" "$skill_dir/codenip"

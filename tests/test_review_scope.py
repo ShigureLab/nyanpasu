@@ -304,15 +304,17 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         execution={"model": "gpt-6-luna", "reasoning": "xhigh"}
     )
     skill = tmp_path / "skills" / "codenip" / "SKILL.md"
-    rule = skill.parent / "rules/reuse-existing-operation/rule.md"
-    pr_rule = skill.parent / "rules/check-pr-description/rule.md"
+    rule = skill.parent / "rules/remove-discarded-parameter/rule.md"
+    pr_rule = skill.parent / "rules/substantiate-a-pr-equivalence-claim/rule.md"
     rule.parent.mkdir(parents=True)
     pr_rule.parent.mkdir()
     skill.write_text(
         "| [REF001 · Reuse an existing operation](rules/reuse-existing-operation/rule.md) | Cross-language | ... |\n"
-        "| [PR001 · Check PR description](rules/check-pr-description/rule.md) | PR description + diff | ... |\n"
+        "| [REF006 · Remove a discarded parameter](rules/remove-discarded-parameter/rule.md) | Cross-language | ... |\n"
+        "| [PR001 · Substantiate a behavior-preservation claim](rules/substantiate-a-pr-equivalence-claim/rule.md)"
+        " | PR description + diff | ... |\n"
     )
-    rule.write_text("---\nid: REF001\n---\n\n# Reuse an existing operation\n")
+    rule.write_text("---\nid: REF006\n---\n\n# Remove a discarded parameter\n")
     pr_rule.write_text("---\nid: PR001\n---\n\n# Check PR description\n")
     inventory = build_inventory(config, task)
     task = task.model_copy(update={"metadata": {**task.metadata, "review_inventory": inventory}})
@@ -368,11 +370,12 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
         )
         assert coordinator.kind == "github_reviewer.codenip"
         assert coordinator.execution is not None and coordinator.execution.model == "gpt-6.2-sol"
+        assert set(coordinator.metadata["inputs"]["codenip_rules"]) == {"PR001", "REF006"}
         await wait_status(agent, coordinator.task_id, "running")
         codenip = SubtaskRequest(
-            request_key="codenip-ref001",
+            request_key="codenip-ref006",
             purpose="codenip-rule",
-            prompt="Check for a reusable operation in the changed helper.",
+            prompt="Check for a discarded parameter in the changed helper.",
             execution={"model": "other-model"},
             inputs={"review_files": ["helper.py"], "rule": str(rule.relative_to(skill.parent))},
         )
@@ -401,9 +404,9 @@ async def test_review_inventory_bounds_children_without_placement_decisions(tmp_
             "xhigh",
         )
         assert audit.workspace is not None and audit.workspace.revision == inventory["head_sha"]
-        assert audit.metadata["inputs"]["rule_id"] == "REF001"
+        assert audit.metadata["inputs"]["rule_id"] == "REF006"
         assert audit.metadata["inputs"]["review_scope"]["files"] == ["helper.py"]
-        assert "[experimental · REF001]" in audit.developer_instructions
+        assert "[experimental · REF006]" in audit.developer_instructions
         assert "Behavior is preserved." not in audit.prompt
         with pytest.raises(ValueError, match="workers cannot dispatch"):
             await agent.create_subtask(audit.task_id, codenip)

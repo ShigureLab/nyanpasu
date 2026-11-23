@@ -14,6 +14,18 @@ if TYPE_CHECKING:
 
 CODENIP_PURPOSES = {"codenip", "codenip-rule"}
 CODENIP_RULE_CONCURRENCY = 32
+CODENIP_RULE_PAGES = frozenset(
+    {
+        "rules/justify-a-wider-test-tolerance/rule.md",
+        "rules/match-the-observed-dependency-contract/rule.md",
+        "rules/preserve-failure-at-a-success-boundary/rule.md",
+        "rules/read-required-attribute-directly/rule.md",
+        "rules/remove-discarded-parameter/rule.md",
+        "rules/substantiate-a-pr-equivalence-claim/rule.md",
+        "rules/test-replaces-behavior-under-test/rule.md",
+        "rules/test-the-public-result/rule.md",
+    }
+)
 
 
 def _rule_index(skill: Path) -> dict[str, dict[str, str]]:
@@ -63,10 +75,13 @@ def prepare_codenip(
         pr_body = request.inputs.get("pr_body")
         if pr_body is not None and not isinstance(pr_body, str):
             raise ValueError("inputs.pr_body must be the PR description as text")
-        inputs = {"codenip_rules": _rule_index(skill), "pr_body": pr_body}
+        rules = {identity: rule for identity, rule in _rule_index(skill).items() if rule["page"] in CODENIP_RULE_PAGES}
+        if not rules:
+            raise ValueError("the installed Codenip index contains none of the selected rules")
+        inputs = {"codenip_rules": rules, "pr_body": pr_body}
         instructions = (
-            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to queue every rule in the frozen "
-            "index. Await all returned active_task_ids. Workers decide applicability. Reconcile delivered results, "
+            "Coordinate the experimental Codenip audit. Call `codenip-dispatch` to queue the frozen selection. "
+            "Await all returned active_task_ids. Workers decide applicability. Reconcile delivered results, "
             "use inspect for missing evidence, and report verdict counts and rule IDs for gaps and findings. "
             "Mark each supported suggestion `[experimental · RULE_ID]` with its actual ID. Freeze the aggregate "
             "with task-control `complete`, then end the turn. The root reviewer owns publication."
