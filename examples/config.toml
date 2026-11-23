@@ -58,6 +58,16 @@ backend = "claude"
 backend = "codex"
 # This child always has shared memory disabled.
 
+[tasks.kinds."github_reviewer.pr-split".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "xhigh"
+
+[tasks.kinds."github_reviewer.pr-compare".execution]
+backend = "codex"
+model = "gpt-6-luna"
+reasoning = "xhigh"
+
 # Focused maintenance investigators use their purpose-specific route, not the parent kind.
 [tasks.kinds."github_reviewer.redundancy-review".execution]
 backend = "codex"
