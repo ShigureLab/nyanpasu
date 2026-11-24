@@ -852,8 +852,14 @@ class AgentService:
             finally:
                 if not stop_unconfirmed:
                     heartbeat.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
+                    try:
                         await heartbeat
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception(
+                            "context lease heartbeat failed task_id={} context={}", task.task_id, task.context_key
+                        )
                     await to_thread.run_sync(
                         functools.partial(
                             self.store.release_context_lease,

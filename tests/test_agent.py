@@ -600,6 +600,25 @@ async def test_heartbeat_keeps_publication_and_snapshot_cleanup_running_after_co
 
 
 @pytest.mark.anyio
+async def test_failed_heartbeat_releases_lease_for_next_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(tmp_path)
+    agent = AgentService(
+        config, worktrees=FakeWorktrees(tmp_path / "worktrees"), backends=fake_backends(config, FakeCodex())
+    )
+    task = _task("first")
+    with monkeypatch.context() as patch:
+        heartbeat = AsyncMock(side_effect=RuntimeError("can't start new thread"))
+        patch.setattr(agent, "_heartbeat_context_lease", heartbeat)
+        assert (await agent.run_now(task)).final_message == "done"
+        heartbeat.assert_awaited_once()
+
+    assert agent.store.get_context_lease(task.context_key) is None
+    async with asyncio.timeout(2):
+        assert (await agent.run_now(_task("next"))).final_message == "done"
+    await agent.shutdown()
+
+
+@pytest.mark.anyio
 async def test_agent_shutdown_requeues_running_tasks_and_releases_lease(tmp_path: Path) -> None:
     config = _config(tmp_path, concurrency=1)
     store = StateStore(config.db_path)
