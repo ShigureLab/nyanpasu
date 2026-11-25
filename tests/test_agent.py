@@ -981,6 +981,7 @@ def _review_setup(tmp_path: Path, monkeypatch, *, codex: FakeCodex | None = None
 
     head = {"sha": "head-b"}
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    monkeypatch.setattr(module, "_has_skip_review_label", lambda *args: False)
     monkeypatch.setattr(
         module,
         "gh_json",

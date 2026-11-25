@@ -770,7 +770,9 @@ class GitHubEventsPoller:
                 _log_journal_decision(record, "failed", reason="dispatch_error", error=str(exc))
                 raise
             status = GitHubEventJournalStatus.COMPLETED
-            if result.get("duplicate") or result.get("ignored"):
+            if result.get("deferred"):
+                status = GitHubEventJournalStatus.PENDING
+            elif result.get("duplicate") or result.get("ignored"):
                 status = GitHubEventJournalStatus.SKIPPED
             await to_thread.run_sync(
                 functools.partial(
@@ -810,7 +812,7 @@ class GitHubEventsPoller:
         )
         if wait_for_reviews:
             try:
-                await self.agent.run_now(event)
+                return await self.agent.run_now(event)
             except ValueError as exc:
                 if "duplicate" in str(exc):
                     logger.info(
@@ -820,7 +822,6 @@ class GitHubEventsPoller:
                     )
                     return {"accepted": False, "duplicate": True, "delivery_id": event.delivery_id}
                 raise
-            return {"accepted": True, "delivery_id": event.delivery_id, "action": event.action.value}
         result = await self.agent.submit(event)
         logger.info(
             "agent dispatch accepted delivery_id={} pr={} result={}",
@@ -1198,8 +1199,9 @@ def _event_from_snapshot_diff(
     if action is None:
         return None
     payload = _payload_from_snapshot(snapshot, action=action)
-    if action == "edited" and previous is not None:
+    if action in {"edited", "synchronize"} and previous is not None:
         payload["changes"] = _snapshot_edits(snapshot, previous)
+    if action == "edited":
         payload["pull_request"]["title"] = snapshot.title
     delivery_id = _synthetic_delivery_id(snapshot, action, previous)
     return parse_github_event("pull_request", delivery_id, payload, agent_login=agent_login)
@@ -1616,7 +1618,9 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "accepted",
         "duplicate",
+        "deferred",
         "ignored",
+        "reason",
         "coalesced",
         "coalesced_into",
         "steered_into",

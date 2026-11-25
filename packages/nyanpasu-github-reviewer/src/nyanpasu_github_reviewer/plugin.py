@@ -21,6 +21,7 @@ from nyanpasu.memory import MemoryAccess
 from nyanpasu.memory_consolidation import MemoryPolicy
 from nyanpasu.models import AgentContext, AgentTask, SubtaskRequest, TaskAction, TaskStatus, WorkspaceRef
 from nyanpasu.store import StateStore
+from nyanpasu_github_reviewer.base_refresh import is_base_refresh
 from nyanpasu_github_reviewer.ci import CISnapshot, fetch_ci_snapshot
 from nyanpasu_github_reviewer.ci_dashboard import apply_ci_patch, read_review_dashboard, reuse_ci_section
 from nyanpasu_github_reviewer.ci_tasks import ci_snapshot_data, prepare_ci_analysis, validate_ci_child
@@ -56,7 +57,7 @@ from nyanpasu_github_reviewer.prompt import (
     review_trigger,
 )
 from nyanpasu_github_reviewer.reference import prepare_reference
-from nyanpasu_github_reviewer.scope import build_inventory, build_review_delta, review_source
+from nyanpasu_github_reviewer.scope import build_inventory, build_review_delta, completed_review_source, review_source
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
 if TYPE_CHECKING:
@@ -122,13 +123,7 @@ class GitHubReviewerPlugin:
         )
         config = config.model_copy(update={"gh_env": self.github.gh_env()})
         self.config = config
-        self.runtime = runtime
-        self.store = GitHubReviewerStore(runtime.config.db_path)
-        self.state_store = StateStore(runtime.config.db_path)
-        runtime.add_task_preparer(self.id, self.prepare_task)
-        runtime.add_subtask_preparer(self.id, self.prepare_subtask)
-        runtime.add_task_control_tools(self.id, self.task_control_tools())
-        runtime.limit_subtask_concurrency("github_reviewer.codenip-rule", CODENIP_RULE_CONCURRENCY)
+        self.bind_runtime(runtime)
         # Plugin setup precedes task recovery and polling; reject old unscoped work
         # before any stored child can resume or be returned as an active retry.
         await asyncio.to_thread(self._validate_recovered_subtasks)
@@ -139,6 +134,7 @@ class GitHubReviewerPlugin:
             require_auth=not bool(config.webhook_secret),
         )
         if config.poll_enabled:
+            assert self.state_store is not None
             poller = GitHubEventsPoller(
                 config,
                 store=self.store,
@@ -151,6 +147,15 @@ class GitHubReviewerPlugin:
                 ",".join(config.repos),
                 config.poll_interval_seconds,
             )
+
+    def bind_runtime(self, runtime: PluginRuntime) -> None:
+        self.runtime = runtime
+        self.store = GitHubReviewerStore(runtime.config.db_path)
+        self.state_store = StateStore(runtime.config.db_path)
+        runtime.add_task_preparer(self.id, self.prepare_task)
+        runtime.add_subtask_preparer(self.id, self.prepare_subtask)
+        runtime.add_task_control_tools(self.id, self.task_control_tools())
+        runtime.limit_subtask_concurrency("github_reviewer.codenip-rule", CODENIP_RULE_CONCURRENCY)
 
     async def shutdown(self) -> None:
         if self.poller_task is not None:
@@ -182,11 +187,86 @@ class GitHubReviewerPlugin:
             except json.JSONDecodeError as exc:
                 raise HTTPException(status_code=400, detail=f"invalid JSON payload: {exc}") from exc
             event = parse_github_event(github_event, delivery_id, payload, agent_login=self.config.github_login)
-            task = self.event_to_task(event)
-            result = await self.runtime.submit(task)
+            result = await self.dispatch_event(event)
+            if result.get("deferred"):
+                raise HTTPException(status_code=503, detail="Could not verify live PR eligibility.")
             return result
 
         return router
+
+    async def dispatch_event(self, event: ReviewEvent, *, wait_for_review: bool = False) -> dict[str, Any]:
+        assert self.runtime is not None
+        event, reason = await asyncio.to_thread(self._check_admission, event)
+        if reason is not None:
+            logger.info("Review admission declined delivery_id={} reason={}", event.delivery_id, reason)
+            result = {"accepted": False, "delivery_id": event.delivery_id, "reason": reason}
+            return {**result, "deferred" if reason == "eligibility_unavailable" else "ignored": True}
+        task = self.event_to_task(event)
+        if wait_for_review:
+            result = await self.runtime.run_now(task)
+            return {"accepted": True, "task_id": result.task_id, "action": task.action.value}
+        return await self.runtime.submit(task)
+
+    def _check_admission(self, event: ReviewEvent) -> tuple[ReviewEvent, str | None]:
+        assert self.config is not None
+        pr = event.pr
+        if event.action is not ReviewAction.REVIEW or pr is None or pr.repo not in self.config.repos:
+            return event, None
+        try:
+            data = _fetch_pr_data(self.config, pr.repo, pr.number)
+            labels = data["labels"]
+            if not isinstance(labels, list):
+                raise ValueError(f"GitHub returned invalid labels for {pr.key}")
+            skipped = _skip_review_label([label["name"] for label in labels], pr)
+            live = PullRequestRef.from_github(pr.repo, data)
+        except (OSError, subprocess.TimeoutExpired, GitHubCommandError, ValueError, KeyError, TypeError):
+            logger.warning("Could not verify live review labels for {}", pr.key)
+            return event, "eligibility_unavailable"
+        if skipped:
+            return event, "skip_review_label"
+        if self._is_base_refresh(event, live):
+            return event, "base_refresh"
+        return event.model_copy(update={"pr": live, "after_sha": event.after_sha or live.head_sha}), None
+
+    def _is_base_refresh(self, event: ReviewEvent, pr: PullRequestRef) -> bool:
+        trigger = review_trigger(event)
+        changes = event.raw.get("changes") or {}
+        if (
+            pr.state != "open"
+            or pr.draft
+            or not self._repo_allows_base_branch(pr)
+            or not isinstance(changes, dict)
+            or changes.keys() - {"base"}
+            or not (
+                trigger.kind in {"pull_request_synchronize", "push_pull_request"}
+                or (trigger.kind == "pull_request_edited" and changes.keys() == {"base"})
+            )
+            or (event.after_sha and event.after_sha != pr.head_sha)
+        ):
+            return False
+        assert self.config is not None
+        assert self.state_store is not None
+        key = f"github:{pr.key}"
+        statuses = (TaskStatus.QUEUED.value, TaskStatus.RUNNING.value, TaskStatus.WAITING.value)
+        active = self.state_store.active_task_for_context(key, statuses=statuses)
+        if active is not None:
+            # CI-only tasks check their own current head and don't pin a code review.
+            request = self.state_store.task_request(active.task_id)
+            triggers = request.metadata.get("triggers", ())
+            if not triggers or any(trigger["kind"] != "ci_changed" for trigger in triggers):
+                return False
+            if self.state_store.coalesced_tasks_for(active.task_id):
+                return False
+            if self.state_store.active_task_for_context(key, statuses=statuses, exclude_task_id=active.task_id):
+                return False
+        try:
+            dashboard = read_review_dashboard(self.config, pr)
+        except (OSError, subprocess.TimeoutExpired, GitHubCommandError, ValueError):
+            logger.warning("Review dashboard unavailable for {}; keeping the base update eligible", pr.key)
+            return False
+        source = completed_review_source(dashboard["data"]) if dashboard is not None else None
+        workspace = self._workspace_for_pr(pr)
+        return source is not None and workspace is not None and is_base_refresh(workspace, pr, source)
 
     def event_to_task(self, event: ReviewEvent) -> AgentTask:
         if self.config is None:
@@ -553,8 +633,6 @@ class GitHubReviewerPlugin:
         def finish(message: str) -> AgentTask:
             return task.model_copy(update={"action": TaskAction.IGNORED, "prompt": message})
 
-        if await asyncio.to_thread(_has_skip_review_label, config, pr):
-            return finish("CI follow-up skipped because the PR has the nyanpasu: skip-review label.")
         if not snapshot.failures and not config.can_publish:
             return finish("No current CI failures. Dashboard publication is read-only.")
 
@@ -617,6 +695,14 @@ class GitHubReviewerPlugin:
                 update={
                     "action": TaskAction.IGNORED,
                     "prompt": f"Review skipped: {pr.url} is no longer an eligible open PR.",
+                    "metadata": metadata,
+                }
+            )
+        if _has_skip_review_label(self.config, pr):
+            return task.model_copy(
+                update={
+                    "action": TaskAction.IGNORED,
+                    "prompt": "Review skipped because the PR has the nyanpasu: skip-review label.",
                     "metadata": metadata,
                 }
             )
@@ -782,26 +868,33 @@ def _mentions_login(text: str, login: str) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
-def manual_event_task(config: GitHubReviewerConfig, repo: str, pr_number: int) -> AgentTask:
-    pr = _fetch_pr(config, repo, pr_number)
-    event = ReviewEvent(
+def manual_review_event(repo: str, pr_number: int) -> ReviewEvent:
+    return ReviewEvent(
         delivery_id=f"manual-{safe_slug(repo)}-{pr_number}-{time.time_ns()}",
         github_event="manual_review",
         action=ReviewAction.REVIEW,
-        pr=pr,
-        after_sha=pr.head_sha,
+        pr=PullRequestRef(
+            repo=repo, number=pr_number, url="", base_ref="", head_ref="", head_sha="", state="open", draft=False
+        ),
+        after_sha=None,
         raw={"nyanpasu": {"trigger": "manual_review", "trigger_summary": "Review explicitly requested from the CLI."}},
     )
-    return GitHubReviewerPlugin(config).event_to_task(event)
+
+
+def _fetch_pr_data(config: GitHubReviewerConfig, repo: str, pr_number: int) -> dict[str, Any]:
+    return gh_json(["api", f"repos/{repo}/pulls/{pr_number}"], env=config.gh_env)
 
 
 def _fetch_pr(config: GitHubReviewerConfig, repo: str, pr_number: int) -> PullRequestRef:
-    data = gh_json(["api", f"repos/{repo}/pulls/{pr_number}"], env=config.gh_env)
-    return PullRequestRef.from_github(repo, data)
+    return PullRequestRef.from_github(repo, _fetch_pr_data(config, repo, pr_number))
 
 
 def _has_skip_review_label(config: GitHubReviewerConfig, pr: PullRequestRef) -> bool:
     labels = gh_json(["api", f"repos/{pr.repo}/issues/{pr.number}", "--jq", "[.labels[].name]"], env=config.gh_env)
+    return _skip_review_label(labels, pr)
+
+
+def _skip_review_label(labels: Any, pr: PullRequestRef) -> bool:
     if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
         raise ValueError(f"GitHub returned invalid labels for {pr.key}")
     return "nyanpasu: skip-review" in labels
@@ -816,12 +909,7 @@ class GitHubPollAgent:
         self.plugin = plugin
 
     async def submit(self, event: ReviewEvent) -> dict[str, Any]:
-        if self.plugin.runtime is None:
-            raise RuntimeError("github reviewer plugin is not initialized")
-        return await self.plugin.runtime.submit(self.plugin.event_to_task(event))
+        return await self.plugin.dispatch_event(event)
 
     async def run_now(self, event: ReviewEvent) -> dict[str, Any]:
-        if self.plugin.runtime is None:
-            raise RuntimeError("github reviewer plugin is not initialized")
-        result = await self.plugin.runtime.run_now(self.plugin.event_to_task(event))
-        return {"accepted": True, "task_id": result.task_id, "action": event.action.value}
+        return await self.plugin.dispatch_event(event, wait_for_review=True)

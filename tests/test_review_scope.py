@@ -118,6 +118,7 @@ async def test_re_review_uses_published_verified_range_and_delivers_removed_path
     plugin.runtime = Mock(config=runtime)
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
     monkeypatch.setattr(module, "_fetch_pr", lambda *args: pr)
+    monkeypatch.setattr(module, "_has_skip_review_label", lambda *args: False)
     finding = {"title": "Recheck callers", "status": "partial", "url": pr.url + "#discussion_r1"}
     prior_review = {
         "status": "changes_requested",

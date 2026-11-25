@@ -411,6 +411,38 @@ async def test_events_poller_processes_events_after_previous_cursor(tmp_path: Pa
 
 
 @pytest.mark.anyio
+async def test_label_lookup_failure_leaves_one_shot_poll_event_pending(tmp_path: Path) -> None:
+    class DeferredAgent(FakeAgent):
+        async def run_now(self, event: ReviewEvent) -> dict[str, Any]:
+            if not self.events:
+                self.events.append(event)
+                return {"accepted": False, "deferred": True, "reason": "eligibility_unavailable"}
+            return await super().run_now(event)
+
+    config = _config(tmp_path)
+    store = GitHubReviewerStore(tmp_path / "state.sqlite3")
+    repo = "ExampleOrg/ExampleRepo"
+    store.upsert_poll_event_cursor(repo, last_event_created_at="2026-05-30T10:00:00Z", cursor_event_ids=())
+    agent = DeferredAgent()
+    poller = GitHubEventsPoller(
+        config,
+        store=store,
+        agent=agent,
+        list_repo_events=lambda *_: [
+            _repo_event(1, "PullRequestEvent", created_at="2026-05-30T10:05:00Z", payload=_pr_payload("synchronize")),
+        ],
+        list_pull_requests=lambda *_: [],
+        list_pull_request_timeline=lambda *_: [],
+    )
+
+    assert (await poller.run_once(wait_for_reviews=True)).submitted == 0
+    (record,) = store.pending_events()
+    assert json.loads(record.result_json or "{}")["reason"] == "eligibility_unavailable"
+    assert (await poller.run_once(wait_for_reviews=True)).submitted == 1
+    assert store.pending_events() == []
+
+
+@pytest.mark.anyio
 async def test_events_poller_handles_same_timestamp_events_not_in_cursor_ids(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = GitHubReviewerStore(tmp_path / "state.sqlite3")

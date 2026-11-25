@@ -18,7 +18,6 @@ from nyanpasu.plugins import PluginRegistry
 from nyanpasu.store import StateStore
 from nyanpasu.web import create_app
 from nyanpasu_github_reviewer.events import parse_github_event
-from nyanpasu_github_reviewer.models import PullRequestRef
 from nyanpasu_github_reviewer.plugin import GitHubPollAgent, GitHubReviewerPlugin, verify_signature
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 
@@ -77,7 +76,12 @@ def test_verify_signature_rejects_invalid_signature() -> None:
 @pytest.mark.parametrize(
     "server_token,webhook_secret", [(None, None), ("dashboard-token", None), ("dashboard-token", "webhook-secret")]
 )
-async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secret) -> None:
+async def test_webhook_accepts_event(tmp_path: Path, monkeypatch, server_token, webhook_secret) -> None:
+    monkeypatch.setattr(
+        importlib.import_module("nyanpasu_github_reviewer.plugin"),
+        "_fetch_pr_data",
+        lambda *_: pr_payload()["pull_request"] | {"labels": []},
+    )
     config = NyanpasuConfig(
         state_dir=tmp_path / "state",
         memory=MemoryConfig(enabled=False),
@@ -134,6 +138,7 @@ async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secre
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("poll_first", [False, True])
+@pytest.mark.parametrize("labeled", [False, True])
 @pytest.mark.parametrize(
     "github_event,event_type,payload",
     [
@@ -145,7 +150,13 @@ async def test_webhook_accepts_event(tmp_path: Path, server_token, webhook_secre
     ],
 )
 async def test_webhook_and_polling_enqueue_same_event_once(
-    tmp_path: Path, monkeypatch, poll_first: bool, github_event: str, event_type: str, payload: dict[str, Any]
+    tmp_path: Path,
+    monkeypatch,
+    poll_first: bool,
+    labeled: bool,
+    github_event: str,
+    event_type: str,
+    payload: dict[str, Any],
 ) -> None:
     repo = "ExampleOrg/ExampleRepo"
     config = NyanpasuConfig(
@@ -163,8 +174,8 @@ async def test_webhook_and_polling_enqueue_same_event_once(
     monkeypatch.setattr(agent, "_schedule", lambda _: None)
     monkeypatch.setattr(
         importlib.import_module("nyanpasu_github_reviewer.plugin"),
-        "_fetch_pr",
-        lambda *_: PullRequestRef.from_github(repo, pr_payload()["pull_request"]),
+        "_fetch_pr_data",
+        lambda *_: pr_payload()["pull_request"] | {"labels": [{"name": "nyanpasu: skip-review"}] if labeled else []},
     )
     plugin = GitHubReviewerPlugin()
     registry = PluginRegistry()
@@ -201,6 +212,16 @@ async def test_webhook_and_polling_enqueue_same_event_once(
         if not poll_first:
             polled = await poller.run_once()
         assert response.status_code == 202
+        if labeled:
+            assert response.json()["reason"] == "skip_review_label"
+            assert polled.submitted == 0
+            assert polled.ignored == 1
+            assert agent.store.unfinished_tasks() == []
+            with plugin.store._connect() as conn:
+                journal = conn.execute("SELECT status, result_json FROM github_event_journal").fetchone()
+            assert journal["status"] == "skipped"
+            assert json.loads(journal["result_json"])["reason"] == "skip_review_label"
+            return
         assert response.json()["accepted"] is (not poll_first)
         assert polled.submitted == int(poll_first)
         assert polled.duplicates == int(not poll_first)

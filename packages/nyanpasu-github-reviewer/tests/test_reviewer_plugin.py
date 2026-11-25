@@ -4,7 +4,7 @@ import importlib
 import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from test_github_events import issue_comment_payload, pr_payload, pull_request_review_payload, review_comment_payload
@@ -16,8 +16,8 @@ from nyanpasu.memory_context import build_memory_context
 from nyanpasu.models import AgentContext, AgentTask, TaskAction
 from nyanpasu.store import StateStore
 from nyanpasu_github_reviewer.events import parse_github_event
-from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings, ReviewTrigger
-from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_task
+from nyanpasu_github_reviewer.models import GitHubReviewerConfig, RepoSettings, ReviewAction, ReviewTrigger
+from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_review_event
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -82,6 +82,7 @@ def _live_pr(**updates):
 def _stub_github(monkeypatch, *, files=(), **updates):
     module = importlib.import_module("nyanpasu_github_reviewer.plugin")
     monkeypatch.setattr(module, "gh_json", lambda *args, **kwargs: _live_pr(**updates))
+    monkeypatch.setattr(module, "_has_skip_review_label", lambda *args: False)
     monkeypatch.setattr(module, "read_review_dashboard", lambda *args: None)
     monkeypatch.setattr(
         module,
@@ -353,9 +354,123 @@ def test_manual_review_preserves_explicit_request(tmp_path: Path, monkeypatch) -
     _stub_github(monkeypatch)
     plugin = _plugin(tmp_path)
     assert plugin.config is not None
-    task = manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 1)
+    task = plugin.event_to_task(manual_review_event("ExampleOrg/ExampleRepo", 1))
 
     assert task.metadata["triggers"][0]["kind"] == "manual_review"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["push", "review_command", "manual_review", "ci_changed"])
+async def test_skip_review_label_prevents_runtime_admission(tmp_path, monkeypatch, kind):
+    plugin = _plugin(tmp_path)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    assert plugin.runtime is not None
+    submit = AsyncMock()
+    run_now = AsyncMock()
+    monkeypatch.setattr(plugin.runtime, "submit", submit)
+    monkeypatch.setattr(plugin.runtime, "run_now", run_now)
+    monkeypatch.setattr(module, "_fetch_pr_data", lambda *args: _live_pr(labels=[{"name": "nyanpasu: skip-review"}]))
+    if kind == "review_command":
+        event = parse_github_event("issue_comment", "request", issue_comment_payload("/review"))
+    elif kind == "manual_review":
+        event = manual_review_event("ExampleOrg/ExampleRepo", 1)
+    else:
+        event = parse_github_event("pull_request", "update", _pr_payload("synchronize", "head-b"))
+        if kind == "ci_changed":
+            event = event.model_copy(update={"raw": {"nyanpasu": {"trigger": "ci_changed"}}})
+
+    result = await plugin.dispatch_event(event, wait_for_review=kind == "manual_review")
+
+    assert result["ignored"] is True
+    assert result["reason"] == "skip_review_label"
+    submit.assert_not_awaited()
+    run_now.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_malformed_live_labels_defer_admission(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    assert plugin.runtime is not None
+    submit = AsyncMock()
+    monkeypatch.setattr(plugin.runtime, "submit", submit)
+    monkeypatch.setattr(module, "_fetch_pr_data", lambda *args: _live_pr(labels={}))
+
+    result = await plugin.dispatch_event(manual_review_event("ExampleOrg/ExampleRepo", 1))
+
+    assert result["deferred"] is True
+    submit.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_label_added_after_admission_skips_before_inventory(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    _stub_github(monkeypatch)
+    monkeypatch.setattr(module, "_has_skip_review_label", lambda *args: True)
+    inventory = Mock()
+    monkeypatch.setattr(module, "build_inventory", inventory)
+
+    prepared = await plugin.prepare_task(_task(plugin, "synchronize", "head-b"), (), None)
+
+    assert prepared.action is TaskAction.IGNORED
+    inventory.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("main", True),
+        ("stack", True),
+        ("queued_ci", True),
+        ("open", False),
+        ("explicit", False),
+        ("edited_body", False),
+        ("unreviewed", False),
+        ("incomplete_scope", False),
+        ("queued_review", False),
+        ("outdated_event", False),
+    ],
+)
+async def test_base_refresh_admission_preserves_other_review_work(tmp_path, monkeypatch, case, expected):
+    plugin = _plugin(tmp_path)
+    module = importlib.import_module("nyanpasu_github_reviewer.plugin")
+    plugin.state_store = StateStore(tmp_path / "admission.sqlite")
+    assert plugin.runtime is not None
+    submit = AsyncMock(return_value={"accepted": True})
+    monkeypatch.setattr(plugin.runtime, "submit", submit)
+    pr = _live_pr(labels=[])
+    if case == "stack":
+        pr.update(base={"ref": "lower", "sha": "base-a"}, stack={"number": 7, "base": {"ref": "main"}})
+    monkeypatch.setattr(module, "_fetch_pr_data", lambda *args: pr)
+    data = {"status": "comment", "source": {"head_sha": "reviewed"}}
+    if case == "unreviewed":
+        data["status"] = "reviewing"
+    if case == "incomplete_scope":
+        data["scope"] = {"round": {"groups": [{"decision": "defer"}]}}
+    monkeypatch.setattr(module, "read_review_dashboard", lambda *args: {"data": data})
+    proof = Mock(return_value=True)
+    monkeypatch.setattr(module, "is_base_refresh", proof)
+    if case in {"queued_review", "queued_ci"}:
+        queued = _task(plugin, "synchronize", "head-a")
+        if case == "queued_ci":
+            queued = queued.model_copy(update={"metadata": {**queued.metadata, "triggers": [{"kind": "ci_changed"}]}})
+        assert plugin.state_store.record_task(_admit(plugin, queued))
+    action = "opened" if case == "open" else "synchronize"
+    payload = _pr_payload(action, "head-a" if case == "outdated_event" else "head-b")
+    if case == "edited_body":
+        payload["changes"] = {"base": {}, "body": {}}
+    event = parse_github_event("pull_request", "refresh", payload)
+    assert event.action is ReviewAction.REVIEW
+    if case == "explicit":
+        event = manual_review_event("ExampleOrg/ExampleRepo", 1)
+
+    result = await plugin.dispatch_event(event)
+
+    assert bool(result.get("ignored")) is expected
+    assert proof.call_count == int(expected)
+    assert submit.await_count == int(not expected)
 
 
 @pytest.mark.parametrize("github_event", ["issue_comment", "pull_request_review_comment", "pull_request_review"])
@@ -501,5 +616,5 @@ def test_explicit_review_requests_on_same_head_remain_admissible(tmp_path, monke
         assert not store.record_task(admitted)
     assert plugin.config is not None
     for _ in range(2):
-        task = manual_event_task(plugin.config, "ExampleOrg/ExampleRepo", 123)
+        task = plugin.event_to_task(manual_review_event("ExampleOrg/ExampleRepo", 123))
         assert store.record_task(_admit(plugin, task))

@@ -11,9 +11,9 @@ from nyanpasu_github.models import github_integration_from_config
 
 from nyanpasu.agent import AgentService
 from nyanpasu.config import ensure_state_dirs, load_config
-from nyanpasu.store import StateStore
+from nyanpasu.web import WebPluginRuntime
 from nyanpasu_github_reviewer.models import GitHubReviewerConfig
-from nyanpasu_github_reviewer.plugin import GitHubReviewerPlugin, manual_event_task
+from nyanpasu_github_reviewer.plugin import GitHubPollAgent, GitHubReviewerPlugin, manual_review_event
 from nyanpasu_github_reviewer.poller import GitHubEventsPoller
 from nyanpasu_github_reviewer.store import GitHubReviewerStore
 
@@ -45,14 +45,16 @@ def review(
     plugin_config = _plugin_config(
         core_config.plugins.settings.get("github_reviewer", {}), core_config.integrations, cwd=core_config.state_dir
     )
-    task = manual_event_task(plugin_config, repo, pr)
 
     async def run() -> None:
         agent = AgentService(core_config)
-        plugin = GitHubReviewerPlugin(plugin_config)
-        agent.add_task_preparer(plugin.id, plugin.prepare_task)
+        plugin = _reviewer(plugin_config, agent)
         try:
-            await agent.run_now(task)
+            result = await plugin.dispatch_event(manual_review_event(repo, pr), wait_for_review=True)
+            if result.get("reason"):
+                typer.echo(result["reason"])
+            if result.get("deferred"):
+                raise typer.Exit(1)
         finally:
             await agent.shutdown()
 
@@ -84,14 +86,12 @@ def poll(
 
     async def run() -> None:
         agent = AgentService(core_config)
-        state_store = StateStore(core_config.db_path)
-        plugin = GitHubReviewerPlugin(plugin_config)
-        agent.add_task_preparer(plugin.id, plugin.prepare_task)
+        plugin = _reviewer(plugin_config, agent)
         poller = GitHubEventsPoller(
             plugin_config,
             store=GitHubReviewerStore(core_config.db_path),
-            agent=_PluginPollAgent(plugin, agent),
-            event_status=state_store.task_status,
+            agent=GitHubPollAgent(plugin),
+            event_status=agent.store.task_status,
         )
         try:
             if once or rebaseline:
@@ -127,17 +127,10 @@ def _plugin_config(
     return GitHubReviewerConfig.model_validate(raw).model_copy(update={"gh_env": github.gh_env()})
 
 
-class _PluginPollAgent:
-    def __init__(self, plugin: GitHubReviewerPlugin, agent: AgentService) -> None:
-        self.plugin = plugin
-        self.agent = agent
-
-    async def submit(self, event) -> dict[str, object]:
-        return await self.agent.submit(self.plugin.event_to_task(event))
-
-    async def run_now(self, event) -> dict[str, object]:
-        result = await self.agent.run_now(self.plugin.event_to_task(event))
-        return {"accepted": True, "task_id": result.task_id, "action": event.action.value}
+def _reviewer(config: GitHubReviewerConfig, agent: AgentService) -> GitHubReviewerPlugin:
+    plugin = GitHubReviewerPlugin(config)
+    plugin.bind_runtime(WebPluginRuntime(config=agent.config, app=None, agent=agent))
+    return plugin
 
 
 if __name__ == "__main__":

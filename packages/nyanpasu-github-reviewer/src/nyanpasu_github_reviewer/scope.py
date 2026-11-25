@@ -91,8 +91,7 @@ def review_source(inventory: dict) -> dict:
     return {key: inventory[key] for key in ("head_sha", "base_ref", "merge_base_sha", "inventory_id")}
 
 
-def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict | None:
-    """Compare against a completed dashboard review whose pinned range still verifies."""
+def completed_review_source(prior_review: dict) -> dict | None:
     if prior_review.get("status") not in {"approved", "changes_requested", "comment"}:
         return None
     # Earlier dashboards could finish with files deferred from review.
@@ -101,7 +100,13 @@ def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict 
     ):
         return None
     source = prior_review.get("source")
-    if not isinstance(source, dict):
+    return source if isinstance(source, dict) else None
+
+
+def build_review_delta(repo: Path, inventory: dict, prior_review: dict) -> dict | None:
+    """Compare against a completed dashboard review whose pinned range still verifies."""
+    source = completed_review_source(prior_review)
+    if source is None:
         return None
     base = inventory["merge_base_sha"]
     previous_head = source.get("head_sha")
